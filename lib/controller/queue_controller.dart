@@ -1,7 +1,7 @@
 import 'dart:collection';
 import 'dart:io';
 
-import 'package:get/get.dart';
+import 'package:namida/core/utils.dart';
 
 import 'package:namida/class/queue.dart';
 import 'package:namida/class/track.dart';
@@ -63,17 +63,20 @@ class QueueController {
   }
 
   Future<void> removeQueue(Queue queue) async {
-    if (queue.date == _latestAddedQueueDate) _latestAddedQueueDate = queuesMap.value.keys.lastOrNull ?? 0;
-
     queuesMap.value.remove(queue.date);
     queuesMap.refresh();
+    if (queue.date == _latestAddedQueueDate) _latestAddedQueueDate = 0;
     await _deleteQueueFromStorage(queue);
   }
 
   Future<void> removeQueues(List<int> queuesDates) async {
-    _latestAddedQueueDate = queuesMap.value.keys.lastOrNull ?? 0;
-    queuesDates.loop((date, _) => queuesMap.value.remove(date));
+    bool hasLatestAdded = false;
+    queuesDates.loop((date) {
+      queuesMap.value.remove(date);
+      if (date == _latestAddedQueueDate) hasLatestAdded = true;
+    });
     queuesMap.refresh();
+    if (hasLatestAdded) _latestAddedQueueDate = 0;
     await _deleteQueuesFromStorage(queuesDates);
   }
 
@@ -105,15 +108,20 @@ class QueueController {
   }
 
   Future<void> updateLatestQueue(List<Playable> items) async {
-    await _saveLatestQueueToStorage(items);
-
-    // updating last queue inside queuesMap.
-    if (items.firstOrNull is Track) {
-      final latestQueueInsideMap = _latestQueueInMap;
-      if (latestQueueInsideMap != null) {
-        updateQueue(latestQueueInsideMap, latestQueueInsideMap.copyWith(tracks: items.cast<Track>()));
-      }
-    }
+    await Future.wait([
+      _saveLatestQueueToStorage(items),
+      () async {
+        // updating last queue inside queuesMap.
+        final firstItem = items.firstOrNull;
+        if (firstItem is Selectable) {
+          final latestQueueInsideMap = _latestQueueInMap;
+          final tracks = items.cast<Selectable>().tracks.toList();
+          if (latestQueueInsideMap != null) {
+            await updateQueue(latestQueueInsideMap, latestQueueInsideMap.copyWith(tracks: tracks));
+          }
+        }
+      }(),
+    ]);
   }
 
   Future<void> insertTracksQueue(Queue queue, List<Track> tracks, int index) async {
@@ -133,7 +141,7 @@ class QueueController {
     String getNewPath(String old) => old.replaceFirst(oldDir, newDir);
 
     final queuesToSave = <Queue>{};
-    queuesMap.value.entries.toList().loop((entry, index) {
+    queuesMap.value.entries.toList().loop((entry) {
       final q = entry.value;
       q.tracks.replaceWhere(
         (e) {
@@ -157,7 +165,7 @@ class QueueController {
 
   Future<void> replaceTrackInAllQueues(Map<Track, Track> oldNewTrack) async {
     final queuesToSave = <Queue>[];
-    queuesMap.value.entries.toList().loop((entry, index) {
+    queuesMap.value.entries.toList().loop((entry) {
       final q = entry.value;
       for (final e in oldNewTrack.entries) {
         q.tracks.replaceItems(
@@ -175,21 +183,22 @@ class QueueController {
 
   ///
   Future<void> prepareAllQueuesFile() async {
-    final map = await _readQueueFilesCompute.thready(AppDirs.QUEUES);
-    queuesMap.value = map;
-    _latestAddedQueueDate = map.keys.lastOrNull ?? 0;
+    final mapAndLatest = await _readQueueFilesCompute.thready(AppDirs.QUEUES);
+    queuesMap.value = mapAndLatest.$1;
+    _latestAddedQueueDate = mapAndLatest.$2;
     _isLoadingQueues = false;
     // Adding queues that were rejected by [addNewQueue] since Queues wasn't fully loaded.
     if (_queuesToAddAfterAllQueuesLoad.isNotEmpty) {
-      await _queuesToAddAfterAllQueuesLoad.loopFuture(
-        (q, index) async => await addNewQueue(source: q.source, homePageItem: q.homePageItem, date: q.date, tracks: q.tracks),
-      );
+      for (final q in _queuesToAddAfterAllQueuesLoad) {
+        await addNewQueue(source: q.source, homePageItem: q.homePageItem, date: q.date, tracks: q.tracks);
+      }
       printy("Added ${_queuesToAddAfterAllQueuesLoad.length} queue that were suspended");
       _queuesToAddAfterAllQueuesLoad.clear();
     }
   }
 
-  static Future<SplayTreeMap<int, Queue>> _readQueueFilesCompute(String path) async {
+  static (SplayTreeMap<int, Queue>, int) _readQueueFilesCompute(String path) {
+    int newestQueueDate = 0;
     final map = SplayTreeMap<int, Queue>((date1, date2) => date1.compareTo(date2));
     for (final f in Directory(path).listSyncSafe()) {
       if (f is File) {
@@ -197,12 +206,13 @@ class QueueController {
           final response = f.readAsJsonSync();
           final q = Queue.fromJson(response);
           map[q.date] = q;
+          if (q.date > newestQueueDate) newestQueueDate = q.date;
         } catch (e) {
           continue;
         }
       }
     }
-    return map;
+    return (map, newestQueueDate);
   }
 
   Future<void> emptyLatestQueue() async {
@@ -223,10 +233,10 @@ class QueueController {
         index = settings.player.lastPlayedIndices[t] ?? 0;
         switch (t) {
           case LibraryCategory.localTracks:
-            items.loop((e, _) => latestQueue.add(Track(e)));
+            items.loop((e) => latestQueue.add(Track(e)));
             break;
           case LibraryCategory.youtube:
-            items.loop((e, _) => latestQueue.add(YoutubeID.fromJson(e)));
+            items.loop((e) => latestQueue.add(YoutubeID.fromJson(e)));
             break;
           // case LibraryCategory.localVideos:
           // break;
@@ -241,7 +251,7 @@ class QueueController {
       latestQueue,
       QueueSource.playerQueue,
       startPlaying: false,
-      addAsNewQueue: false,
+      updateQueue: false,
     );
   }
 
@@ -253,17 +263,16 @@ class QueueController {
     String type = '';
     final queue = <Object>[];
     switch (items.firstOrNull.runtimeType) {
-      case Track:
+      case const (Selectable):
+      case const (Track):
+      case const (TrackWithDate):
         type = LibraryCategory.localTracks;
-        (items.cast<Track>()).loop((e, _) => queue.add(e.path));
+        items.loop((e) => queue.add((e as Selectable).track.path));
         break;
-      case TrackWithDate:
-        type = LibraryCategory.localTracks;
-        (items.cast<TrackWithDate>()).loop((e, _) => queue.add(e.track.path));
-        break;
-      case YoutubeID:
+
+      case const (YoutubeID):
         type = LibraryCategory.youtube;
-        (items.cast<YoutubeID>()).loop((e, _) => queue.add(e.toJson()));
+        (items.cast<YoutubeID>()).loop((e) => queue.add(e.toJson()));
         break;
     }
     final map = {
@@ -282,7 +291,7 @@ class QueueController {
   }
 
   static void _deleteQueuesFromStorageIsolate((String, List<int>) pathAndDates) async {
-    pathAndDates.$2.loop((date, _) {
+    pathAndDates.$2.loop((date) {
       try {
         File('${pathAndDates.$1}$date.json').deleteSync();
       } catch (_) {}

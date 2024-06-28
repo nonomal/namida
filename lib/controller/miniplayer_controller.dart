@@ -5,7 +5,7 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
-import 'package:get/get.dart';
+import 'package:namida/core/utils.dart';
 
 import 'package:namida/controller/navigator_controller.dart';
 import 'package:namida/controller/player_controller.dart';
@@ -16,6 +16,7 @@ import 'package:namida/core/dimensions.dart';
 import 'package:namida/core/extensions.dart';
 import 'package:namida/core/icon_fonts/broken_icons.dart';
 import 'package:namida/packages/mp.dart';
+import 'package:namida/youtube/class/youtube_id.dart';
 
 class MiniPlayerController {
   static MiniPlayerController get inst => _instance;
@@ -30,10 +31,10 @@ class MiniPlayerController {
   bool get isInQueue => animation.value > 1.0;
 
   /// Used to temporarily hold the seek value.
-  final RxInt seekValue = 0.obs;
+  final seekValue = 0.obs;
 
   /// Indicates that play/pause button is currently pressed.
-  final RxBool isPlayPauseButtonHighlighted = false.obs;
+  final isPlayPauseButtonHighlighted = false.obs;
 
   /// Prevents Listener while reorderding or dismissing items inside queue.
   bool isReorderingQueue = false;
@@ -42,9 +43,9 @@ class MiniPlayerController {
   Completer<void>? reorderingQueueCompleterPlayer;
 
   /// Icon that represents the direction of the current track
-  final Rx<IconData> arrowIcon = Broken.cd.obs;
+  final arrowIcon = Broken.cd.obso;
 
-  final ScrollController queueScrollController = ScrollController();
+  late final ScrollController queueScrollController = ScrollController()..addListener(_updateIcon);
 
   Future<void> _onMiniplayerDismiss() async => await Player.inst.clearQueue();
 
@@ -118,7 +119,8 @@ class MiniPlayerController {
   late double bottomInset;
   late double maxOffset;
   final _velocity = VelocityTracker.withKind(PointerDeviceKind.touch);
-  final Cubic _bouncingCurve = const Cubic(0.175, 0.885, 0.32, 1.125);
+  static const _bouncingCurve = Cubic(0.175, 0.885, 0.32, 1.125);
+  static const _bouncingCurveSoft = Cubic(0.150, 0.96, 0.28, 1.04);
   double _offset = 0.0;
   double _prevOffset = 0.0;
 
@@ -138,42 +140,41 @@ class MiniPlayerController {
   bool bounceUp = false;
   bool bounceDown = false;
 
-  double get _currentItemExtent => Player.inst.currentQueueYoutube.isNotEmpty ? Dimensions.youtubeCardItemExtent : Dimensions.inst.trackTileItemExtent;
+  double get _currentItemExtent => Player.inst.currentItem.value is YoutubeID ? Dimensions.youtubeCardItemExtent : Dimensions.inst.trackTileItemExtent;
 
   void animateQueueToCurrentTrack({bool jump = false, bool minZero = false}) {
     if (queueScrollController.hasClients) {
-      final trackTileItemScrollOffsetInQueue = _currentItemExtent * Player.inst.currentIndex - screenSize.height * 0.3;
+      final trackTileItemScrollOffsetInQueue = _currentItemExtent * Player.inst.currentIndex.value - screenSize.height * 0.3;
       if (queueScrollController.positions.lastOrNull?.pixels == trackTileItemScrollOffsetInQueue) {
         return;
       }
       final finalOffset = minZero ? trackTileItemScrollOffsetInQueue.withMinimum(0) : trackTileItemScrollOffsetInQueue;
-      if (jump) {
-        queueScrollController.jumpTo(finalOffset);
-      } else {
-        queueScrollController.animateToEff(
-          finalOffset,
-          duration: const Duration(milliseconds: 600),
-          curve: Curves.fastEaseInToSlowEaseOut,
-        );
-      }
+      try {
+        if (jump) {
+          queueScrollController.jumpTo(finalOffset);
+        } else {
+          queueScrollController.animateToEff(
+            finalOffset,
+            duration: const Duration(milliseconds: 600),
+            curve: Curves.fastEaseInToSlowEaseOut,
+          );
+        }
+      } catch (_) {}
     }
   }
 
-  Future<bool> onWillPop() async {
-    bool val = true;
-    // final isMini = maxOffset == 0;
-    final isExpanded = _offset == maxOffset;
-    final isQueue = _offset > maxOffset;
-    if (isQueue) {
+  bool onWillPop() {
+    if (_offset > maxOffset) {
+      // -- isQueue
       snapToExpanded();
-      val = false;
-    }
-    if (isExpanded) {
+      return false;
+    } else if (_offset == maxOffset) {
+      // -- isExpanded
       snapToMini();
-      val = false;
+      return false;
     }
 
-    return val;
+    return true;
   }
 
   void onPointerDown(PointerDownEvent event) {
@@ -309,8 +310,6 @@ class MiniPlayerController {
       }
     }
 
-    queueScrollController.removeListener(() {});
-
     if (shouldSnapToExpanded) {
       snapToExpanded();
     } else {
@@ -324,7 +323,7 @@ class MiniPlayerController {
     _offset = maxOffset;
     if (_prevOffset < maxOffset) bounceUp = true;
     if (_prevOffset > maxOffset) bounceDown = true;
-    _snap(haptic: haptic);
+    _snap(haptic: haptic, curve: Curves.fastEaseInToSlowEaseOut);
     if (_maintainStatusBarShowing) SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
   }
 
@@ -332,26 +331,25 @@ class MiniPlayerController {
     WakelockController.inst.updateMiniplayerStatus(false);
     _offset = 0;
     bounceDown = false;
-    _snap(haptic: haptic);
+    _snap(haptic: haptic, curve: _bouncingCurve);
     if (_maintainStatusBarShowing) NamidaNavigator.inst.setDefaultSystemUI();
   }
 
-  void _updateScrollPositionInQueue() {
-    void updateIcon() {
-      final sizeInSettings = _currentItemExtent * Player.inst.currentIndex - Get.height * 0.3;
-      final pixels = queueScrollController.positions.lastOrNull?.pixels ?? sizeInSettings;
-      if (pixels > sizeInSettings) {
-        arrowIcon.value = Broken.arrow_up_1;
-      } else if (pixels < sizeInSettings) {
-        arrowIcon.value = Broken.arrow_down;
-      } else if (pixels == sizeInSettings) {
-        arrowIcon.value = Broken.cd;
-      }
+  void _updateIcon() {
+    final sizeInSettings = _currentItemExtent * Player.inst.currentIndex.value - maxOffset * 0.3;
+    double pixels;
+    try {
+      pixels = queueScrollController.positions.first.pixels;
+    } catch (_) {
+      pixels = sizeInSettings;
     }
-
-    animateQueueToCurrentTrack(jump: true);
-    updateIcon();
-    queueScrollController.addListener(updateIcon);
+    if (pixels > sizeInSettings) {
+      arrowIcon.value = Broken.arrow_up_1;
+    } else if (pixels < sizeInSettings) {
+      arrowIcon.value = Broken.arrow_down;
+    } else if (pixels == sizeInSettings) {
+      arrowIcon.value = Broken.cd;
+    }
   }
 
   Future<void> snapToQueue({bool animateScrollController = true, bool haptic = true}) async {
@@ -363,10 +361,10 @@ class MiniPlayerController {
     if (animateScrollController) {
       // updating scroll before snapping makes a nice effect.
       SchedulerBinding.instance.addPostFrameCallback((timeStamp) {
-        _updateScrollPositionInQueue();
+        animateQueueToCurrentTrack(jump: true);
       });
     }
-    await _snap(haptic: haptic);
+    await _snap(haptic: haptic, curve: _bouncingCurveSoft);
   }
 
   Future<void> animateMiniplayer(
@@ -382,10 +380,10 @@ class MiniPlayerController {
     VideoController.inst.updateShouldShowControls(animation.value);
   }
 
-  Future<void> _snap({bool haptic = true}) async {
+  Future<void> _snap({bool haptic = true, required Curve curve}) async {
     await animateMiniplayer(
       _offset / maxOffset,
-      curve: _bouncingCurve,
+      curve: curve,
       duration: const Duration(milliseconds: 300),
     );
     bounceUp = false;
@@ -395,13 +393,12 @@ class MiniPlayerController {
   Future<void> snapToPrev() async {
     if (Player.inst.canJumpToPrevious) {
       _sOffset = -sMaxOffset;
-      Player.inst.previous();
-      // await sAnim.animateTo(-1.0, curve: _bouncingCurve, duration: const Duration(milliseconds: 300));
-
       _sOffset = 0;
-      await sAnim.animateTo(0.0, duration: Duration.zero);
+      // await sAnim.animateTo(-1.0, curve: _bouncingCurve, duration: const Duration(milliseconds: 300));
+      sAnim.animateTo(0.0, duration: Duration.zero);
 
       if ((_sPrevOffset - _sOffset).abs() > _actuationOffset) HapticFeedback.lightImpact();
+      Player.inst.previous();
     }
   }
 
@@ -414,13 +411,12 @@ class MiniPlayerController {
   Future<void> snapToNext() async {
     if (Player.inst.canJumpToNext) {
       _sOffset = sMaxOffset;
-      Player.inst.next();
-      // await sAnim.animateTo(1.0, curve: _bouncingCurve, duration: const Duration(milliseconds: 300));
-
       _sOffset = 0;
-      await sAnim.animateTo(0.0, duration: Duration.zero);
+      // await sAnim.animateTo(1.0, curve: _bouncingCurve, duration: const Duration(milliseconds: 300));
+      sAnim.animateTo(0.0, duration: Duration.zero);
 
       if ((_sPrevOffset - _sOffset).abs() > _actuationOffset) HapticFeedback.lightImpact();
+      Player.inst.next();
     }
   }
 }

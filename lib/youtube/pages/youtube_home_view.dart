@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
+import 'package:namida/class/route.dart';
 import 'package:namida/controller/settings_controller.dart';
-import 'package:namida/core/dimensions.dart';
 import 'package:namida/core/enums.dart';
 import 'package:namida/core/namida_converter_ext.dart';
 import 'package:namida/ui/widgets/custom_widgets.dart';
@@ -10,7 +10,10 @@ import 'package:namida/youtube/pages/yt_channels_page.dart';
 import 'package:namida/youtube/pages/yt_downloads_page.dart';
 import 'package:namida/youtube/youtube_playlists_view.dart';
 
-class YouTubeHomeView extends StatelessWidget {
+class YouTubeHomeView extends StatelessWidget with NamidaRouteWidget {
+  @override
+  RouteType get route => RouteType.YOUTUBE_HOME;
+
   const YouTubeHomeView({super.key});
 
   @override
@@ -23,11 +26,11 @@ class YouTubeHomeView extends StatelessWidget {
         onIndexChanged: (index) {
           settings.save(ytInitialHomePage: YTHomePages.values[index]);
         },
-        children: [
-          const YoutubePage(),
-          const YoutubeChannelsPage(),
-          YoutubePlaylistsView(bottomPadding: Dimensions.inst.globalBottomPaddingTotal, scrollable: false),
-          const YTDownloadsPage(),
+        children: const [
+          YoutubePage(),
+          YoutubeChannelsPage(),
+          YoutubePlaylistsView(),
+          YTDownloadsPage(),
         ],
       ),
     );

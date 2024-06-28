@@ -1,3 +1,4 @@
+// ignore_for_file: avoid_rx_value_getter_outside_obx
 import 'dart:io';
 
 import 'package:history_manager/history_manager.dart';
@@ -221,6 +222,20 @@ class TrackExtended {
     required this.lyrics,
   });
 
+  static String _padInt(int val) => val.toString().padLeft(2, '0');
+
+  static int? enforceYearFormat(String? fromYearString) {
+    final intVal = fromYearString.getIntValue();
+    if (intVal != null) return intVal;
+    if (fromYearString != null) {
+      try {
+        final yearDate = DateTime.parse(fromYearString.replaceAll(RegExp(r'[\s]'), '-'));
+        return int.parse("${yearDate.year}${_padInt(yearDate.month)}${_padInt(yearDate.day)}");
+      } catch (_) {}
+    }
+    return null;
+  }
+
   factory TrackExtended.fromJson(
     Map<String, dynamic> json, {
     required ArtistsSplitConfig artistsSplitConfig,
@@ -310,22 +325,22 @@ extension TrackExtUtils on TrackExtended {
   bool get hasUnknownAlbum => album == '' || album == UnknownTags.ALBUM;
   bool get hasUnknownAlbumArtist => albumArtist == '' || albumArtist == UnknownTags.ALBUMARTIST;
   bool get hasUnknownComposer => composer == '' || composer == UnknownTags.COMPOSER;
-  bool get hasUnknownArtist => artistsList.isEmpty || artistsList.firstOrNull == UnknownTags.ARTIST;
-  bool get hasUnknownGenre => genresList.isEmpty || genresList.firstOrNull == UnknownTags.GENRE;
-  bool get hasUnknownMood => moodList.isEmpty || moodList.firstOrNull == UnknownTags.MOOD;
+  bool get hasUnknownArtist => artistsList.isEmpty || artistsList.first == UnknownTags.ARTIST;
+  bool get hasUnknownGenre => genresList.isEmpty || genresList.first == UnknownTags.GENRE;
+  bool get hasUnknownMood => moodList.isEmpty || moodList.first == UnknownTags.MOOD || moodList.first == UnknownTags.GENRE; // cuz moods get parsed like genres
 
   String get filename => path.getFilename;
   String get filenameWOExt => path.getFilenameWOExt;
   String get extension => path.getExtension;
   String get folderPath => path.getDirectoryName;
   Folder get folder => Folder(folderPath);
-  String get folderName => folderPath.split(Platform.pathSeparator).last;
+  String get folderName => folderPath.splitLast(Platform.pathSeparator);
   String get pathToImage {
     final identifier = settings.groupArtworksByAlbum.value ? albumIdentifier : filename;
     return "${AppDirs.ARTWORKS}$identifier.png";
   }
 
-  String get albumIdentifier => getAlbumIdentifier(settings.albumIdentifiers);
+  String get albumIdentifier => getAlbumIdentifier(settings.albumIdentifiers.value);
 
   String getAlbumIdentifier(List<AlbumIdentifier> identifiers) {
     final n = identifiers.contains(AlbumIdentifier.albumName) ? album : '';
@@ -344,7 +359,7 @@ extension TrackExtUtils on TrackExtended {
 
   String get youtubeID => youtubeLink.getYoutubeID;
 
-  TrackStats get stats => Indexer.inst.trackStatsMap[toTrack()] ?? TrackStats(kDummyTrack, 0, [], [], 0);
+  TrackStats get stats => Indexer.inst.trackStatsMap.value[toTrack()] ?? TrackStats(kDummyTrack, 0, [], [], 0);
 
   String get yearPreferyyyyMMdd {
     final tostr = year.toString();
@@ -372,7 +387,7 @@ extension TrackExtUtils on TrackExtended {
       moodList: tag.mood != null ? [tag.mood!] : moodList,
       composer: tag.composer ?? composer,
       trackNo: tag.trackNumber.getIntValue() ?? trackNo,
-      year: tag.year.getIntValue() ?? year,
+      year: TrackExtended.enforceYearFormat(tag.year) ?? year,
       dateModified: dateModified ?? this.dateModified,
       path: path ?? this.path,
       comment: tag.comment ?? comment,
@@ -455,9 +470,10 @@ extension TrackUtils on Track {
   TrackExtended? toTrackExtOrNull() => path.toTrackExtOrNull();
 
   set duration(int value) {
-    final trx = Indexer.inst.allTracksMappedByPath[this];
+    final trx = Indexer.inst.allTracksMappedByPath.value[this];
     if (trx != null) {
-      Indexer.inst.allTracksMappedByPath[this] = trx.copyWith(duration: value);
+      Indexer.inst.allTracksMappedByPath.value[this] = trx.copyWith(duration: value);
+      Indexer.inst.allTracksMappedByPath.refresh();
     }
   }
 
@@ -494,7 +510,7 @@ extension TrackUtils on Track {
   String get extension => path.getExtension;
   String get folderPath => path.getDirectoryName;
   Folder get folder => Folder(folderPath);
-  String get folderName => folderPath.split(Platform.pathSeparator).last;
+  String get folderName => folderPath.splitLast(Platform.pathSeparator);
   String get pathToImage {
     final identifier = settings.groupArtworksByAlbum.value ? albumIdentifier : filename;
     return "${AppDirs.ARTWORKS}$identifier.png";

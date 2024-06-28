@@ -1,6 +1,11 @@
 import 'package:flutter/material.dart';
-import 'package:get/get.dart';
-import 'package:newpipeextractor_dart/newpipeextractor_dart.dart';
+import 'package:namida/controller/scroll_search_controller.dart';
+import 'package:youtipie/class/execute_details.dart';
+import 'package:youtipie/class/result_wrapper/search_result.dart';
+import 'package:youtipie/class/youtipie_feed/channel_info_item.dart';
+import 'package:youtipie/class/youtipie_feed/playlist_info_item.dart';
+import 'package:youtipie/class/stream_info_item/stream_info_item.dart';
+import 'package:youtipie/class/stream_info_item/stream_info_item_short.dart';
 
 import 'package:namida/controller/connectivity.dart';
 import 'package:namida/controller/current_color.dart';
@@ -9,10 +14,11 @@ import 'package:namida/core/dimensions.dart';
 import 'package:namida/core/extensions.dart';
 import 'package:namida/core/icon_fonts/broken_icons.dart';
 import 'package:namida/core/translations/language.dart';
+import 'package:namida/core/utils.dart';
 import 'package:namida/packages/three_arched_circle.dart';
 import 'package:namida/ui/widgets/custom_widgets.dart';
 import 'package:namida/ui/widgets/settings/extra_settings.dart';
-import 'package:namida/youtube/controller/youtube_controller.dart';
+import 'package:namida/youtube/controller/youtube_info_controller.dart';
 import 'package:namida/youtube/controller/youtube_local_search_controller.dart';
 import 'package:namida/youtube/pages/yt_local_search_results.dart';
 import 'package:namida/youtube/widgets/yt_channel_card.dart';
@@ -35,9 +41,10 @@ class YoutubeSearchResultsPageState extends State<YoutubeSearchResultsPage> with
   String get currentSearchText => _latestSearched ?? widget.searchText;
   String? _latestSearched;
 
-  final _searchResult = <dynamic>[];
+  YoutiPieSearchResult? _searchResult;
   final _isFetchingMoreResults = false.obs;
   bool? _loadingFirstResults;
+  bool? _cachedSearchResults;
 
   List<StreamInfoItem> get _searchResultsLocal => YTLocalSearchController.inst.searchResults;
 
@@ -46,15 +53,17 @@ class YoutubeSearchResultsPageState extends State<YoutubeSearchResultsPage> with
   final _offlineSearchPageKey = GlobalKey<YTLocalSearchResultsState>();
 
   void _onSearchDone(bool hasItems) {
-    setState(() {});
-    _offlineSearchPageKey.currentState?.updateIsSearching(false);
+    if (mounted) setState(() {});
   }
+
+  final _searchListenerKey = "YoutubeSearchResultsPage";
 
   @override
   void initState() {
     super.initState();
     fetchSearch();
-    YTLocalSearchController.inst.initializeLookupMap(onSearchDone: _onSearchDone).then((value) {
+    YTLocalSearchController.inst.addOnSearchDone(_searchListenerKey, _onSearchDone);
+    YTLocalSearchController.inst.initialize().then((value) {
       fetchSearch(customText: currentSearchText);
     });
   }
@@ -62,6 +71,7 @@ class YoutubeSearchResultsPageState extends State<YoutubeSearchResultsPage> with
   @override
   void dispose() {
     _isFetchingMoreResults.close();
+    YTLocalSearchController.inst.removeOnSearchDone(_searchListenerKey);
     super.dispose();
   }
 
@@ -72,35 +82,36 @@ class YoutubeSearchResultsPageState extends State<YoutubeSearchResultsPage> with
     YTLocalSearchController.inst.search(
       newSearch,
       maxResults: NamidaNavigator.inst.isytLocalSearchInFullPage ? null : _maxSearchResultsMini,
-      onStart: () => _offlineSearchPageKey.currentState?.updateIsSearching(true),
     );
-    _searchResult.clear();
+    if (_searchResult != null) refreshState(() => _searchResult = null);
     if (newSearch == '') return;
-    if (!ConnectivityController.inst.hasConnection) return;
     if (NamidaNavigator.inst.isytLocalSearchInFullPage) return;
 
-    if (mounted) {
-      setState(() {
-        _loadingFirstResults = true;
-      });
+    refreshState(() => _loadingFirstResults = true);
+
+    YoutiPieSearchResult? result;
+    if (ConnectivityController.inst.hasConnection) {
+      result = await YoutubeInfoController.search.search(newSearch, details: ExecuteDetails.forceRequest());
+      _cachedSearchResults = false;
+    } else {
+      result = YoutubeInfoController.search.searchSync(newSearch);
+      _cachedSearchResults = result != null;
     }
-    final result = await YoutubeController.inst.searchForItems(newSearch);
-    _searchResult.addAll(result);
+
+    _searchResult = result;
     _loadingFirstResults = false;
-    if (mounted) setState(() {});
+    refreshState();
   }
 
   Future<void> _fetchSearchNextPage() async {
-    if (_searchResult.isEmpty) return; // return if still fetching first results.
+    final searchRes = _searchResult;
+    if (searchRes == null) return; // return if still fetching first results.
+    if (!searchRes.canFetchNext) return;
     if (!ConnectivityController.inst.hasConnection) return;
     _isFetchingMoreResults.value = true;
-    final result = await YoutubeController.inst.searchNextPage();
+    await searchRes.fetchNext();
     _isFetchingMoreResults.value = false;
-    if (mounted) {
-      setState(() {
-        _searchResult.addAll(result);
-      });
-    }
+    refreshState();
   }
 
   @override
@@ -113,6 +124,9 @@ class YoutubeSearchResultsPageState extends State<YoutubeSearchResultsPage> with
     const thumbnailWidthLocal = thumbnailWidth * localMultiplier;
     const thumbnailHeightLocal = thumbnailHeight * localMultiplier;
     const thumbnailItemExtentLocal = thumbnailItemExtent * localMultiplier;
+
+    final searchResult = _searchResult;
+
     return BackgroundWrapper(
       child: Navigator(
         key: NamidaNavigator.inst.ytLocalSearchNavigatorKey,
@@ -138,18 +152,16 @@ class YoutubeSearchResultsPageState extends State<YoutubeSearchResultsPage> with
                           onTap: () {
                             // if (_isLoadingLocalLookupList.value || currentSearchText == '') return;
                             NamidaNavigator.inst.isytLocalSearchInFullPage = true;
-                            NamidaNavigator.inst.ytLocalSearchNavigatorKey?.currentState?.push(
-                              GetPageRoute(
-                                transition: Transition.cupertino,
-                                page: () => YTLocalSearchResults(
-                                  key: _offlineSearchPageKey,
-                                  initialSearch: currentSearchText,
-                                  onVideoTap: widget.onVideoTap,
-                                  onPopping: (didChangeSort) {
-                                    if (didChangeSort) setState(() {});
-                                  },
-                                ),
+                            NamidaNavigator.inst.ytLocalSearchNavigatorKey.currentState?.pushPage(
+                              YTLocalSearchResults(
+                                key: _offlineSearchPageKey,
+                                initialSearch: currentSearchText,
+                                onVideoTap: widget.onVideoTap,
+                                onPopping: (didChangeSort) {
+                                  if (didChangeSort) setState(() {});
+                                },
                               ),
+                              maintainState: false,
                             );
                           },
                           child: Row(
@@ -162,8 +174,13 @@ class YoutubeSearchResultsPageState extends State<YoutubeSearchResultsPage> with
                               ),
                               const Spacer(),
                               const SizedBox(width: 6.0),
-                              Obx(
-                                () => YTLocalSearchController.inst.didLoadLookupLists.value == false ? const LoadingIndicator() : const SizedBox(),
+                              if (_cachedSearchResults == true) ...[
+                                const SizedBox(width: 6.0),
+                                const Icon(Broken.global_refresh, size: 20.0),
+                              ],
+                              ObxO(
+                                rx: YTLocalSearchController.inst.didLoadLookupLists,
+                                builder: (didLoadLookupLists) => didLoadLookupLists == false ? const LoadingIndicator() : const SizedBox(),
                               ),
                               const SizedBox(width: 6.0),
                               const Icon(Broken.arrow_right_3),
@@ -182,6 +199,7 @@ class YoutubeSearchResultsPageState extends State<YoutubeSearchResultsPage> with
                           thumbnailWidthPercentage: 0.6,
                           thumbnailHeight: thumbnailHeightLocal,
                           thumbnailWidth: thumbnailWidthLocal,
+                          dateInsteadOfChannel: true,
                           isImageImportantInCache: false,
                           video: item,
                           playlistID: null,
@@ -199,54 +217,137 @@ class YoutubeSearchResultsPageState extends State<YoutubeSearchResultsPage> with
                       ),
                     ),
 
-                    // -- yt
+                    // -- yt (header)
+                    if (searchResult != null && searchResult.correctedQuery.isNotEmpty)
+                      SliverToBoxAdapter(
+                        child: Align(
+                          alignment: Alignment.center,
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 4.0),
+                            child: Material(
+                              borderRadius: BorderRadius.circular(6.0.multipliedRadius),
+                              child: InkWell(
+                                borderRadius: BorderRadius.circular(6.0.multipliedRadius),
+                                onTap: () {
+                                  final correctedQuery = searchResult.correctedQuery.map((c) => c.text).join();
+                                  ScrollSearchController.inst.searchTextEditingController.text = correctedQuery;
+                                  fetchSearch(customText: correctedQuery);
+                                },
+                                child: Padding(
+                                  padding: const EdgeInsets.symmetric(horizontal: 6.0, vertical: 4.0),
+                                  child: Text.rich(
+                                    TextSpan(
+                                      text: "${lang.DID_YOU_MEAN}: ",
+                                      style: context.textTheme.displaySmall?.copyWith(fontSize: 13.0),
+                                      children: searchResult.correctedQuery
+                                          .map((c) => TextSpan(
+                                                text: c.text,
+                                                style: context.textTheme.displaySmall?.copyWith(
+                                                  fontSize: 14.0,
+                                                  fontWeight: c.corrected ? FontWeight.w700 : FontWeight.w500,
+                                                ),
+                                              ))
+                                          .toList(),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+
+                    // -- yt (items list)
                     _loadingFirstResults == null
                         ? const SliverToBoxAdapter()
                         : _loadingFirstResults == true
                             ? SliverToBoxAdapter(
                                 child: Center(
                                   child: Padding(
-                                    padding: const EdgeInsets.all(24.0),
+                                    padding: const EdgeInsets.all(32.0),
                                     child: ThreeArchedCircle(
-                                      color: CurrentColor.inst.color.withOpacity(0.6),
-                                      size: context.width * 0.4,
+                                      color: CurrentColor.inst.color.withOpacity(0.4),
+                                      size: context.width * 0.35,
                                     ),
                                   ),
                                 ),
                               )
-                            : SliverFixedExtentList.builder(
-                                itemExtent: thumbnailItemExtent,
-                                itemCount: _searchResult.length,
-                                itemBuilder: (context, index) {
-                                  final item = _searchResult[index];
-                                  switch (item.runtimeType) {
-                                    case StreamInfoItem:
-                                      return YoutubeVideoCard(
-                                        thumbnailHeight: thumbnailHeight,
-                                        thumbnailWidth: thumbnailWidth,
-                                        isImageImportantInCache: false,
-                                        video: item,
-                                        playlistID: null,
-                                        onTap: widget.onVideoTap == null ? null : () => widget.onVideoTap!(item as StreamInfoItem),
+                            : searchResult == null
+                                ? const SliverToBoxAdapter()
+                                : SliverList.builder(
+                                    itemCount: searchResult.length,
+                                    itemBuilder: (context, index) {
+                                      final chunk = searchResult.items[index];
+                                      final items = chunk.items;
+                                      return Column(
+                                        mainAxisSize: MainAxisSize.min,
+                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                        children: [
+                                          if (chunk.title.isNotEmpty)
+                                            Padding(
+                                              padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 6.0),
+                                              child: Text(
+                                                chunk.title,
+                                                style: context.textTheme.displayMedium,
+                                              ),
+                                            ),
+                                          SizedBox(
+                                            height: items.length * Dimensions.youtubeCardItemExtent,
+                                            child: ListView.builder(
+                                              primary: false,
+                                              itemExtent: thumbnailItemExtent,
+                                              itemCount: items.length,
+                                              itemBuilder: (context, index) {
+                                                final item = items[index];
+                                                return switch (item.runtimeType) {
+                                                  const (StreamInfoItem) => YoutubeVideoCard(
+                                                      thumbnailHeight: thumbnailHeight,
+                                                      thumbnailWidth: thumbnailWidth,
+                                                      isImageImportantInCache: false,
+                                                      video: item as StreamInfoItem,
+                                                      playlistID: null,
+                                                      onTap: widget.onVideoTap == null ? null : () => widget.onVideoTap!(item),
+                                                    ),
+                                                  const (StreamInfoItemShort) => YoutubeShortVideoCard(
+                                                      thumbnailHeight: thumbnailHeight,
+                                                      thumbnailWidth: thumbnailWidth,
+                                                      short: item as StreamInfoItemShort,
+                                                      playlistID: null,
+                                                    ),
+                                                  const (PlaylistInfoItem) =>
+                                                    // (item as PlaylistInfoItem).isMix
+                                                    //     ? YoutubePlaylistCardMix(
+                                                    //         firstVideoID: firstItem.id,
+                                                    //         title: firstItem.title,
+                                                    //         subtitle: chunk.title,
+                                                    //       )
+                                                    //     :
+                                                    YoutubePlaylistCard(
+                                                      playlist: item as PlaylistInfoItem,
+                                                      subtitle: item.subtitle.isNotEmpty ? item.subtitle : item.initialVideos.firstOrNull?.title,
+                                                    ),
+                                                  const (ChannelInfoItem) => YoutubeChannelCard(
+                                                      channel: item as ChannelInfoItem,
+                                                      subscribersCount: null,
+                                                      thumbnailSize: context.width * 0.18,
+                                                    ),
+                                                  _ => const YoutubeVideoCardDummy(
+                                                      shimmerEnabled: true,
+                                                      thumbnailHeight: thumbnailHeight,
+                                                      thumbnailWidth: thumbnailWidth,
+                                                    ),
+                                                };
+                                              },
+                                            ),
+                                          ),
+                                          if (chunk.title.isNotEmpty) const SizedBox(height: 8.0),
+                                        ],
                                       );
-                                    case YoutubePlaylist:
-                                      return YoutubePlaylistCard(
-                                        playlist: item,
-                                        thumbnailHeight: thumbnailHeight,
-                                        thumbnailWidth: thumbnailWidth,
-                                      );
-                                    case YoutubeChannel:
-                                      return YoutubeChannelCard(
-                                        channel: item,
-                                        thumbnailSize: context.width * 0.18,
-                                      );
-                                  }
-                                  return const SizedBox();
-                                },
-                              ),
+                                    },
+                                  ),
                     SliverToBoxAdapter(
                       child: Obx(
-                        () => _isFetchingMoreResults.value
+                        () => _isFetchingMoreResults.valueR
                             ? const Padding(
                                 padding: EdgeInsets.all(8.0),
                                 child: Stack(

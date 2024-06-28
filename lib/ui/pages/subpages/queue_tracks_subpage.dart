@@ -1,14 +1,20 @@
 import 'package:flutter/material.dart';
 
-import 'package:get/get.dart';
-
 import 'package:namida/class/queue.dart';
+import 'package:namida/class/route.dart';
 import 'package:namida/core/enums.dart';
 import 'package:namida/core/extensions.dart';
+import 'package:namida/core/utils.dart';
 import 'package:namida/ui/widgets/custom_widgets.dart';
 import 'package:namida/ui/widgets/library/multi_artwork_container.dart';
 
-class QueueTracksPage extends StatelessWidget {
+class QueueTracksPage extends StatelessWidget with NamidaRouteWidget {
+  @override
+  String? get name => queue.date.toString();
+
+  @override
+  RouteType get route => RouteType.SUBPAGE_queueTracks;
+
   final Queue queue;
   const QueueTracksPage({super.key, required this.queue});
 
@@ -29,11 +35,11 @@ class QueueTracksPage extends StatelessWidget {
           ].join(' - '),
           heroTag: 'queue_${queue.date}',
           imageWidget: MultiArtworkContainer(
-            size: Get.width * 0.35,
+            size: namida.width * 0.35,
             heroTag: 'queue_${queue.date}',
             tracks: queue.tracks.toImageTracks(),
           ),
-          tracks: queue.tracks,
+          tracksFn: () => queue.tracks,
         ),
       ),
     );

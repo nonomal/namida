@@ -3,7 +3,6 @@
 import 'dart:async';
 import 'dart:io';
 
-import 'package:get/get.dart';
 import 'package:playlist_manager/module/playlist_id.dart';
 import 'package:playlist_manager/playlist_manager.dart';
 
@@ -13,6 +12,7 @@ import 'package:namida/core/constants.dart';
 import 'package:namida/core/enums.dart';
 import 'package:namida/core/extensions.dart';
 import 'package:namida/core/translations/language.dart';
+import 'package:namida/core/utils.dart';
 import 'package:namida/youtube/class/youtube_id.dart';
 
 typedef YoutubePlaylist = GeneralPlaylist<YoutubeID>;
@@ -23,10 +23,11 @@ class YoutubePlaylistController extends PlaylistManager<YoutubeID> {
   YoutubePlaylistController._internal();
 
   final canReorderVideos = false.obs;
+  void resetCanReorder() => canReorderVideos.value = false;
 
   void addNewPlaylist(
     String name, {
-    Iterable<String> videoIds = const <String>[],
+    Iterable<String>? videoIds,
     int? creationDate,
     String comment = '',
     List<String> moods = const [],
@@ -36,7 +37,7 @@ class YoutubePlaylistController extends PlaylistManager<YoutubeID> {
       name,
       tracks: (playlistID) {
         final newTracks = videoIds
-            .map(
+            ?.map(
               (id) => YoutubeID(
                 id: id,
                 watchNull: YTWatch(dateNull: DateTime.now(), isYTMusic: false),
@@ -59,7 +60,7 @@ class YoutubePlaylistController extends PlaylistManager<YoutubeID> {
 
     if (preventDuplicates) {
       final existingIds = <String, bool>{};
-      playlist.tracks.loop((e, index) {
+      playlist.tracks.loop((e) {
         existingIds[e.id] = true;
       });
       // only add ids that doesnt exist inside playlist.
@@ -80,8 +81,8 @@ class YoutubePlaylistController extends PlaylistManager<YoutubeID> {
     return newtracks;
   }
 
-  Future<bool> favouriteButtonOnPressed(String id) async {
-    return await super.toggleTrackFavourite(
+  bool favouriteButtonOnPressed(String id) {
+    return super.toggleTrackFavourite(
       newTrack: YoutubeID(
         id: id,
         watchNull: YTWatch(dateNull: DateTime.now(), isYTMusic: false),
@@ -120,9 +121,7 @@ class YoutubePlaylistController extends PlaylistManager<YoutubeID> {
         null;
     }
 
-    playlistsMap
-      ..clear()
-      ..addEntries(playlistList);
+    playlistsMap.assignAllEntries(playlistList);
 
     settings.save(ytPlaylistSort: sortBy, ytPlaylistSortReversed: reverse);
   }

@@ -1,31 +1,31 @@
-import 'package:flutter/widgets.dart';
-import 'package:get/get.dart';
+import 'package:namida/core/utils.dart';
 import 'package:waveform_extractor/waveform_extractor.dart';
 
 import 'package:namida/controller/settings_controller.dart';
 import 'package:namida/core/extensions.dart';
-import 'package:namida/ui/widgets/waveform.dart';
 
 class WaveformController {
   static WaveformController get inst => _instance;
   static final WaveformController _instance = WaveformController._internal();
   WaveformController._internal();
 
-  final waveBarsKey = GlobalKey<WaveformComponentState>();
-  final waveBarsAltKey = GlobalKey<WaveformComponentState>();
+  int get _defaultUserBarsCount => settings.waveformTotalBars.value;
 
-  List<double> currentWaveformUI = [];
+  RxBaseCore<bool> get isWaveformUIEnabled => _isWaveformUIEnabled;
+  final _isWaveformUIEnabled = false.obso;
+
+  late List<double> currentWaveformUI = List<double>.filled(_defaultUserBarsCount, -1, growable: false);
 
   List<double> _currentWaveform = [];
 
-  final RxMap<int, double> _currentScaleMap = <int, double>{}.obs;
+  var _currentScaleMap = <int, double>{};
 
   bool get isDummy => _currentWaveform.isEmpty;
 
   void resetWaveform() {
     _currentWaveform = [];
-    waveBarsKey.currentState?.setEnabled(false);
-    waveBarsAltKey.currentState?.setEnabled(false);
+    _currentScaleMap = {};
+    _isWaveformUIEnabled.value = false;
   }
 
   /// Extracts waveform data from a given track, or immediately read from .wave file if exists, then assigns wavedata to [_currentWaveform].
@@ -38,8 +38,12 @@ class WaveformController {
 
     List<int> waveformData = [];
     await Future.wait([
-      _waveformExtractor.extractWaveformDataOnly(path, samplePerSecond: samplePerSecond).then((value) {
-        waveformData = value;
+      _waveformExtractor.extractWaveformDataOnly(path, samplePerSecond: samplePerSecond).catchError((_) => <int>[]).then((value) async {
+        if (value.isNotEmpty) {
+          waveformData = value;
+        } else if (stillPlaying(path)) {
+          waveformData = await _waveformExtractor.extractWaveformDataOnly(path).catchError((_) => <int>[]); // re-extracting without samples (out of boundaries error)
+        }
       }),
       Future.delayed(const Duration(milliseconds: 800)),
     ]);
@@ -54,23 +58,22 @@ class WaveformController {
       ));
 
       _currentWaveform = downscaledLists[maxWaveformCount] ?? [];
-      calculateUIWaveform();
+      _currentScaleMap = downscaledLists[numberOfScales]?.asMap() ?? {};
 
-      // ----- Updating [currentScale]
-      _updateScaleMap(downscaledLists[numberOfScales] ?? []);
+      calculateUIWaveform();
     }
   }
 
   void calculateUIWaveform() async {
     if (_currentWaveform.isEmpty) return;
-    final userBars = settings.waveformTotalBars.value;
+
+    final userBars = _defaultUserBarsCount;
     final waveform = await _calculateUIWaveformIsolate.thready((
       targetSize: userBars,
       original: _currentWaveform,
     ));
     currentWaveformUI = waveform;
-    waveBarsKey.currentState?.setEnabled(true);
-    waveBarsAltKey.currentState?.setEnabled(true);
+    _isWaveformUIEnabled.value = true;
   }
 
   static List<double> _calculateUIWaveformIsolate(({List<double> original, int targetSize}) params) {
@@ -88,7 +91,7 @@ class WaveformController {
   static Map<int, List<double>> _downscaledWaveformLists(({List<int> original, List<int> targetSizes}) params) {
     final newLists = <int, List<double>>{};
     const maxClamping = 64.0;
-    params.targetSizes.loop((targetSize, index) {
+    params.targetSizes.loop((targetSize) {
       newLists[targetSize] = params.original.changeListSize(
         targetSize: targetSize,
         clampToMax: maxClamping,
@@ -100,10 +103,6 @@ class WaveformController {
       );
     });
     return newLists;
-  }
-
-  void _updateScaleMap(List<double> doubleList) {
-    _currentScaleMap.value = doubleList.asMap();
   }
 
   double getCurrentAnimatingScale(int positionInMs) {

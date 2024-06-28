@@ -4,9 +4,11 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter_volume_controller/flutter_volume_controller.dart';
-import 'package:get/get.dart';
-import 'package:newpipeextractor_dart/newpipeextractor_dart.dart';
+import 'package:flutter_volume_controller/flutter_volume_controller.dart' show FlutterVolumeController;
+import 'package:namida/youtube/class/youtube_id.dart';
+import 'package:namida/youtube/controller/youtube_info_controller.dart';
+import 'package:youtipie/class/streams/audio_stream.dart';
+import 'package:youtipie/class/streams/video_streams_result.dart';
 
 import 'package:namida/class/track.dart';
 import 'package:namida/class/video.dart';
@@ -20,11 +22,11 @@ import 'package:namida/core/extensions.dart';
 import 'package:namida/core/icon_fonts/broken_icons.dart';
 import 'package:namida/core/namida_converter_ext.dart';
 import 'package:namida/core/translations/language.dart';
+import 'package:namida/core/utils.dart';
 import 'package:namida/packages/three_arched_circle.dart';
 import 'package:namida/ui/dialogs/edit_tags_dialog.dart';
 import 'package:namida/ui/widgets/artwork.dart';
 import 'package:namida/ui/widgets/custom_widgets.dart';
-import 'package:namida/youtube/controller/youtube_controller.dart';
 import 'package:namida/youtube/seek_ready_widget.dart';
 import 'package:namida/youtube/widgets/yt_thumbnail.dart';
 import 'package:namida/youtube/yt_utils.dart';
@@ -91,8 +93,6 @@ class NamidaVideoControlsState extends State<NamidaVideoControls> with TickerPro
     _startTimer();
   }
 
-  final userSeekMS = 0.obs;
-
   Widget _getBuilder({
     required Widget child,
   }) {
@@ -150,7 +150,7 @@ class NamidaVideoControlsState extends State<NamidaVideoControls> with TickerPro
           onSecondsReady: (finalSeconds) {
             if (_shouldSeekOnTap && !_lastSeekWasForward) {
               // only increase if not at the start
-              if (Player.inst.nowPlayingPosition != 0) {
+              if (Player.inst.nowPlayingPosition.value != 0) {
                 _seekSeconds += finalSeconds;
               }
             } else {
@@ -167,7 +167,7 @@ class NamidaVideoControlsState extends State<NamidaVideoControls> with TickerPro
           onSecondsReady: (finalSeconds) {
             if (_shouldSeekOnTap && _lastSeekWasForward) {
               // only increase if not at the end
-              if (Player.inst.nowPlayingPosition != Player.inst.currentItemDuration?.inMilliseconds) {
+              if (Player.inst.nowPlayingPosition.value != Player.inst.currentItemDuration.value?.inMilliseconds) {
                 _seekSeconds += finalSeconds;
               }
             } else {
@@ -260,7 +260,6 @@ class NamidaVideoControlsState extends State<NamidaVideoControls> with TickerPro
     seekAnimationForward2.dispose();
     seekAnimationBackward1.dispose();
     seekAnimationBackward2.dispose();
-    userSeekMS.close();
     _currentDeviceVolume.close();
     _canShowBrightnessSlider.close();
     Player.inst.onVolumeChangeRemoveListener(_volumeListenerKey);
@@ -370,7 +369,8 @@ class NamidaVideoControlsState extends State<NamidaVideoControls> with TickerPro
 
   Widget _getQualityChip({
     required String title,
-    String subtitle = '',
+    String? subtitle,
+    String? thirdLine,
     IconData? icon,
     required void Function(bool isSelected) onPlay,
     required bool selected,
@@ -391,15 +391,30 @@ class NamidaVideoControlsState extends State<NamidaVideoControls> with TickerPro
         children: [
           Icon(icon ?? (isCached ? Broken.tick_circle : Broken.story), size: 20.0),
           const SizedBox(width: 4.0),
-          Text(
-            title,
-            style: context.textTheme.displayMedium?.copyWith(fontSize: 13.0.multipliedFontScale),
+          Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Text(
+                    title,
+                    style: context.textTheme.displayMedium?.copyWith(fontSize: 13.0),
+                  ),
+                  if (subtitle != null && subtitle != '')
+                    Text(
+                      subtitle,
+                      style: context.textTheme.displaySmall?.copyWith(fontSize: 12.0),
+                    ),
+                ],
+              ),
+              if (thirdLine != null && thirdLine != '')
+                Text(
+                  thirdLine,
+                  style: context.textTheme.displaySmall?.copyWith(fontSize: 12.0),
+                ),
+            ],
           ),
-          if (subtitle != '')
-            Text(
-              subtitle,
-              style: context.textTheme.displaySmall?.copyWith(fontSize: 12.0.multipliedFontScale),
-            ),
         ],
       ),
     );
@@ -444,7 +459,7 @@ class NamidaVideoControlsState extends State<NamidaVideoControls> with TickerPro
 
   bool _isDraggingSeekBar = false;
 
-  RxDouble get _currentBrigthnessDim => VideoController.inst.currentBrigthnessDim;
+  Rx<double> get _currentBrigthnessDim => VideoController.inst.currentBrigthnessDim;
 
   Widget _getVerticalSliderWidget(String key, double? perc, IconData icon, ui.FlutterView view) {
     final totalHeight = view.physicalSize.shortestSide / view.devicePixelRatio * 0.75;
@@ -516,7 +531,6 @@ class NamidaVideoControlsState extends State<NamidaVideoControls> with TickerPro
   bool get _canShowControls => widget.showControls && !NamidaChannel.inst.isInPip.value;
 
   EdgeInsets _deviceInsets = EdgeInsets.zero;
-  Orientation? _latestOrientation;
 
   @override
   Widget build(BuildContext context) {
@@ -528,57 +542,64 @@ class NamidaVideoControlsState extends State<NamidaVideoControls> with TickerPro
     final fallbackHeight = inLandscape ? maxHeight : maxWidth * 9 / 16;
     final fallbackWidth = inLandscape ? maxHeight * 16 / 9 : maxWidth;
 
-    final finalVideoWidget = Obx(() {
-      final info = Player.inst.videoPlayerInfo;
-      if (info != null && info.isInitialized) {
-        return NamidaAspectRatio(
-          aspectRatio: info.aspectRatio,
-          child: Obx(
-            () => AnimatedScale(
-              duration: const Duration(milliseconds: 200),
-              scale: 1.0 + VideoController.inst.videoZoomAdditionalScale.value * 0.02,
-              child: Texture(textureId: info.textureId),
-            ),
-          ),
-        );
-      }
-      if (widget.isLocal && !widget.isFullScreen) {
-        return Container(
-          key: const Key('dummy_container'),
-          color: Colors.transparent,
-        );
-      }
-      // -- fallback images
-      if (widget.isLocal) {
-        final track = Player.inst.nowPlayingTrack;
-        if (File(track.pathToImage).existsSync()) {
-          return ArtworkWidget(
-            key: Key(track.path),
-            track: track,
-            path: track.pathToImage,
-            thumbnailSize: fallbackWidth,
-            width: fallbackWidth,
-            height: fallbackHeight,
-            borderRadius: 0,
-            blur: 0,
-            compressed: false,
-          );
-        }
-      }
-      final vidId = Player.inst.nowPlayingVideoID?.id ?? (YoutubeController.inst.currentYoutubeMetadataVideo.value ?? Player.inst.currentVideoInfo)?.id;
-      return YoutubeThumbnail(
-        key: Key(vidId ?? ''),
-        isImportantInCache: true,
-        width: fallbackWidth,
-        height: fallbackHeight,
-        borderRadius: 0,
-        blur: 0,
-        videoId: vidId,
-        displayFallbackIcon: false,
-        compressed: false,
-        preferLowerRes: false,
-      );
-    });
+    final finalVideoWidget = ObxO(
+        rx: Player.inst.videoPlayerInfo,
+        builder: (info) {
+          if (info != null && info.isInitialized) {
+            return NamidaAspectRatio(
+              aspectRatio: info.aspectRatio,
+              child: ObxO(
+                rx: VideoController.inst.videoZoomAdditionalScale,
+                builder: (pinchInZoom) => AnimatedScale(
+                  duration: const Duration(milliseconds: 200),
+                  scale: 1.0 + pinchInZoom * 0.02,
+                  child: Texture(textureId: info.textureId),
+                ),
+              ),
+            );
+          }
+          if (widget.isLocal && !widget.isFullScreen) {
+            return Container(
+              key: const Key('dummy_container'),
+              color: Colors.transparent,
+            );
+          }
+          // -- fallback images
+          return ObxO(
+              rx: Player.inst.currentItem,
+              builder: (item) {
+                if (item is YoutubeID) {
+                  final vidId = item.id;
+                  return YoutubeThumbnail(
+                    key: Key(vidId),
+                    isImportantInCache: true,
+                    width: fallbackWidth,
+                    height: fallbackHeight,
+                    borderRadius: 0,
+                    blur: 0,
+                    videoId: vidId,
+                    displayFallbackIcon: false,
+                    compressed: false,
+                    preferLowerRes: false,
+                  );
+                }
+                final track = item is Selectable ? item.track : null;
+                return ArtworkWidget(
+                  key: ValueKey(track?.path),
+                  track: track,
+                  path: track?.pathToImage,
+                  thumbnailSize: fallbackWidth,
+                  width: fallbackWidth,
+                  height: fallbackHeight,
+                  borderRadius: 0,
+                  blur: 0,
+                  compressed: false,
+                );
+              });
+        });
+
+    final newDeviceInsets = MediaQuery.paddingOf(context);
+    if (newDeviceInsets != EdgeInsets.zero) _deviceInsets = newDeviceInsets;
 
     final horizontalControlsPadding = widget.isFullScreen
         ? inLandscape
@@ -599,12 +620,6 @@ class NamidaVideoControlsState extends State<NamidaVideoControls> with TickerPro
     final shouldShowSliders = _canShowControls && widget.isFullScreen;
     final shouldShowSeekBar = widget.isFullScreen;
     final view = View.of(context);
-    final newDeviceInsets = MediaQuery.paddingOf(context);
-    final newOrientation = MediaQuery.orientationOf(context);
-    if (_latestOrientation != newOrientation || _deviceInsets.horizontal < newDeviceInsets.horizontal || _deviceInsets.vertical < newDeviceInsets.vertical) {
-      _deviceInsets = newDeviceInsets;
-      _latestOrientation = newOrientation;
-    }
 
     return Listener(
       onPointerDown: (event) {
@@ -689,9 +704,10 @@ class NamidaVideoControlsState extends State<NamidaVideoControls> with TickerPro
             ),
             // ---- Brightness Mask -----
             Positioned.fill(
-              child: Obx(
-                () => Container(
-                  color: Colors.black.withOpacity(1 - _currentBrigthnessDim.value),
+              child: ObxO(
+                rx: _currentBrigthnessDim,
+                builder: (brightness) => Container(
+                  color: Colors.black.withOpacity(1 - brightness),
                 ),
               ),
             ),
@@ -731,22 +747,38 @@ class NamidaVideoControlsState extends State<NamidaVideoControls> with TickerPro
                                 ? Material(
                                     type: MaterialType.transparency,
                                     child: Obx(() {
-                                      final videoName = widget.isLocal
-                                          ? Player.inst.nowPlayingTrack.title
-                                          : YoutubeController.inst.currentYoutubeMetadataVideo.value?.name ?? Player.inst.currentVideoInfo?.name ?? '';
-                                      final channelName = widget.isLocal
-                                          ? Player.inst.nowPlayingTrack.originalArtist
-                                          : YoutubeController.inst.currentYoutubeMetadataChannel.value?.name ?? Player.inst.currentVideoInfo?.uploaderName ?? '';
+                                      String? videoName;
+                                      String? channelName;
+
+                                      if (widget.isLocal) {
+                                        final track = Player.inst.currentTrackR?.track;
+                                        videoName = track?.title;
+                                        channelName = track?.originalArtist;
+                                      } else {
+                                        videoName = YoutubeInfoController.current.currentVideoPage.valueR?.videoInfo?.title ??
+                                            YoutubeInfoController.current.currentYTStreams.valueR?.info?.title;
+                                        if (videoName == null) {
+                                          final vidId = Player.inst.currentVideoR?.id;
+                                          if (vidId != null) videoName = YoutubeInfoController.utils.getVideoName(vidId);
+                                        }
+
+                                        channelName = YoutubeInfoController.current.currentVideoPage.valueR?.channelInfo?.title ??
+                                            YoutubeInfoController.current.currentYTStreams.valueR?.info?.channelName;
+                                        if (channelName == null) {
+                                          final vidId = Player.inst.currentVideoR?.id;
+                                          if (vidId != null) channelName = YoutubeInfoController.utils.getVideoChannelName(vidId);
+                                        }
+                                      }
                                       return Column(
                                         mainAxisSize: MainAxisSize.min,
                                         crossAxisAlignment: CrossAxisAlignment.start,
                                         children: [
-                                          if (videoName != '')
+                                          if (videoName != null && videoName != '')
                                             Text(
                                               videoName,
                                               style: context.textTheme.displayLarge?.copyWith(color: const Color.fromRGBO(255, 255, 255, 0.85)),
                                             ),
-                                          if (channelName != '')
+                                          if (channelName != null && channelName != '')
                                             Text(
                                               channelName,
                                               style: context.textTheme.displaySmall?.copyWith(color: const Color.fromRGBO(255, 255, 255, 0.7)),
@@ -759,13 +791,14 @@ class NamidaVideoControlsState extends State<NamidaVideoControls> with TickerPro
                           ),
                           const SizedBox(width: 8.0),
                           // ==== Reset Brightness ====
-                          Obx(
-                            () => AnimatedSwitcher(
+                          ObxO(
+                            rx: _currentBrigthnessDim,
+                            builder: (brigthnessDim) => AnimatedSwitcher(
                               duration: const Duration(milliseconds: 200),
-                              child: _currentBrigthnessDim.value < 1.0
+                              child: brigthnessDim < 1.0
                                   ? NamidaIconButton(
                                       key: const Key('brightnesseto_ok'),
-                                      tooltip: lang.RESET_BRIGHTNESS,
+                                      tooltip: () => lang.RESET_BRIGHTNESS,
                                       icon: Broken.sun_1,
                                       iconColor: itemsColor.withOpacity(0.8),
                                       horizontalPadding: 0.0,
@@ -787,9 +820,10 @@ class NamidaVideoControlsState extends State<NamidaVideoControls> with TickerPro
                             },
                             children: () => [
                               ...settings.player.speeds.map((speed) {
-                                return Obx(
-                                  () {
-                                    final isSelected = Player.inst.currentSpeed == speed;
+                                return ObxO(
+                                  rx: Player.inst.currentSpeed,
+                                  builder: (selectedSpeed) {
+                                    final isSelected = selectedSpeed == speed;
                                     return NamidaInkWell(
                                       onTap: () {
                                         _startTimer();
@@ -810,14 +844,14 @@ class NamidaVideoControlsState extends State<NamidaVideoControls> with TickerPro
                                           const SizedBox(width: 12.0),
                                           Text(
                                             "${speed}x",
-                                            style: context.textTheme.displayMedium?.copyWith(fontSize: 13.0.multipliedFontScale),
+                                            style: context.textTheme.displayMedium?.copyWith(fontSize: 13.0),
                                           ),
                                         ],
                                       ),
                                     );
                                   },
                                 );
-                              }).toList(),
+                              }),
                               NamidaInkWell(
                                 onTap: () {
                                   _startTimer();
@@ -835,7 +869,7 @@ class NamidaVideoControlsState extends State<NamidaVideoControls> with TickerPro
                                     const SizedBox(width: 12.0),
                                     Text(
                                       lang.ADD,
-                                      style: context.textTheme.displayMedium?.copyWith(fontSize: 13.0.multipliedFontScale),
+                                      style: context.textTheme.displayMedium?.copyWith(fontSize: 13.0),
                                     ),
                                   ],
                                 ),
@@ -854,285 +888,319 @@ class NamidaVideoControlsState extends State<NamidaVideoControls> with TickerPro
                                       borderRadius: BorderRadius.circular(6.0.multipliedRadius),
                                     ),
                                     child: Obx(
-                                      () => Row(
-                                        children: [
-                                          Icon(
-                                            Broken.play_cricle,
-                                            size: 16.0,
-                                            color: itemsColor,
-                                          ),
-                                          const SizedBox(width: 4.0).animateEntrance(showWhen: Player.inst.currentSpeed != 1.0, allCurves: Curves.easeInOutQuart),
-                                          Text(
-                                            "${Player.inst.currentSpeed}x",
-                                            style: context.textTheme.displaySmall?.copyWith(
+                                      () {
+                                        final speed = Player.inst.currentSpeed.valueR;
+                                        return Row(
+                                          children: [
+                                            Icon(
+                                              Broken.play_cricle,
+                                              size: 16.0,
                                               color: itemsColor,
-                                              fontSize: 12.0,
                                             ),
-                                          ).animateEntrance(showWhen: Player.inst.currentSpeed != 1.0, allCurves: Curves.easeInOutQuart),
-                                        ],
-                                      ),
+                                            const SizedBox(width: 4.0).animateEntrance(showWhen: speed != 1.0, allCurves: Curves.easeInOutQuart),
+                                            Text(
+                                              "${speed}x",
+                                              style: context.textTheme.displaySmall?.copyWith(
+                                                color: itemsColor,
+                                                fontSize: 12.0,
+                                              ),
+                                            ).animateEntrance(showWhen: speed != 1.0, allCurves: Curves.easeInOutQuart),
+                                          ],
+                                        );
+                                      },
                                     ),
                                   ),
                                 ),
                               ),
                             ),
                           ),
-                          Obx(() {
-                            final audioStreamsAll = List<AudioOnlyStream>.from(YoutubeController.inst.currentYTAudioStreams);
-                            final streamsMap = <String, AudioOnlyStream>{}; // {language: audiostream}
-                            audioStreamsAll.sortBy((e) => e.displayLanguage ?? '');
-                            audioStreamsAll.loop((e, index) {
-                              if (e.language != null && e.formatSuffix != 'webm') {
-                                streamsMap[e.language!] = e;
-                              }
-                            });
-                            if (streamsMap.keys.length <= 1) return const SizedBox();
+                          ObxO(
+                              rx: YoutubeInfoController.current.currentYTStreams,
+                              builder: (streams) {
+                                final currentYTAudioStreams = streams?.audioStreams;
+                                if (currentYTAudioStreams == null || currentYTAudioStreams.isEmpty) return const SizedBox();
+                                final audioStreamsAll = List<AudioStream>.from(currentYTAudioStreams); // check below
+                                final streamsMap = <String, AudioStream>{}; // {language: audiostream}
+                                audioStreamsAll.sortBy((e) => e.audioTrack?.displayName ?? '');
+                                audioStreamsAll.loop((e) {
+                                  if (!e.isWebm) {
+                                    final langCode = e.audioTrack?.langCode;
+                                    if (langCode != null) streamsMap[langCode] = e;
+                                  }
+                                });
+                                if (streamsMap.keys.length <= 1) return const SizedBox();
 
-                            return NamidaPopupWrapper(
-                              openOnTap: true,
-                              onPop: _startTimer,
-                              onTap: () {
-                                _resetTimer();
-                                setControlsVisibily(true);
-                              },
-                              children: () => [
-                                ...streamsMap.values.map(
-                                  (element) => Obx(
-                                    () {
-                                      final isSelected1 = element.language == Player.inst.currentCachedAudio?.langaugeCode;
-                                      final isSelected2 = element.language == Player.inst.currentAudioStream?.language;
-                                      final isSelected = isSelected1 || isSelected2;
-                                      final id = Player.inst.nowPlayingVideoID?.id;
-                                      return _getQualityChip(
-                                        title: '${element.displayLanguage}',
-                                        subtitle: " • ${element.language ?? 0}",
-                                        onPlay: (isSelected) {
-                                          if (!isSelected) {
-                                            Player.inst.onItemPlayYoutubeIDSetAudio(
-                                              stream: element,
-                                              cachedFile: null,
-                                              useCache: true,
-                                              videoId: Player.inst.nowPlayingVideoID?.id ?? '',
-                                            );
+                                return NamidaPopupWrapper(
+                                  openOnTap: true,
+                                  onPop: _startTimer,
+                                  onTap: () {
+                                    _resetTimer();
+                                    setControlsVisibily(true);
+                                  },
+                                  children: () => [
+                                    ...streamsMap.values.map(
+                                      (element) => Obx(
+                                        () {
+                                          bool isSelected = false;
+                                          final audioTrack = element.audioTrack;
+                                          final langCode = audioTrack?.langCode;
+                                          if (langCode != null) {
+                                            if (langCode == Player.inst.currentCachedAudio.valueR?.langaugeCode) {
+                                              isSelected = true;
+                                            } else if (langCode == Player.inst.currentAudioStream.valueR?.audioTrack?.langCode) {
+                                              isSelected = true;
+                                            }
                                           }
+                                          final id = Player.inst.currentVideoR?.id;
+                                          return _getQualityChip(
+                                            title: audioTrack?.displayName ?? '?',
+                                            subtitle: " • ${audioTrack?.langCode ?? 0}",
+                                            onPlay: (isSelected) {
+                                              if (!isSelected) {
+                                                Player.inst.onItemPlayYoutubeIDSetAudio(
+                                                  stream: element,
+                                                  mainStreams: streams,
+                                                  cachedFile: null,
+                                                  useCache: true,
+                                                  videoId: Player.inst.currentVideo?.id ?? '',
+                                                );
+                                              }
+                                            },
+                                            selected: isSelected,
+                                            isCached: element.getCachedFile(id) != null,
+                                          );
                                         },
-                                        selected: isSelected,
-                                        isCached: element.getCachedFile(id) != null,
-                                      );
+                                      ),
+                                    ),
+                                  ],
+                                  child: Padding(
+                                    padding: const EdgeInsets.all(4.0),
+                                    child: BorderRadiusClip(
+                                      borderRadius: BorderRadius.circular(6.0.multipliedRadius),
+                                      child: NamidaBgBlur(
+                                        blur: 3.0,
+                                        child: Container(
+                                          padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 6.0),
+                                          decoration: BoxDecoration(
+                                            color: Colors.black.withOpacity(0.2),
+                                            borderRadius: BorderRadius.circular(6.0.multipliedRadius),
+                                          ),
+                                          child: Obx(
+                                            () {
+                                              final displayName =
+                                                  Player.inst.currentAudioStream.valueR?.audioTrack?.displayName ?? Player.inst.currentCachedAudio.valueR?.langaugeName;
+                                              return displayName == null || displayName == ''
+                                                  ? const SizedBox()
+                                                  : Text(
+                                                      displayName,
+                                                      style: context.textTheme.displaySmall?.copyWith(color: itemsColor),
+                                                    );
+                                            },
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                );
+                              }),
+                          // ===== Quality Chip =====
+                          NamidaPopupWrapper(
+                            openOnTap: true,
+                            onPop: _startTimer,
+                            onTap: () {
+                              _resetTimer();
+                              setControlsVisibily(true);
+                            },
+                            children: () {
+                              VideoStreamsResult? streams;
+                              if (widget.isLocal) {
+                                streams = VideoController.inst.currentYTStreams.value;
+                              } else {
+                                streams = YoutubeInfoController.current.currentYTStreams.value;
+                              }
+                              final ytQualities = streams?.videoStreams.where((s) => !s.isWebm);
+                              final cachedQualitiesAll = widget.isLocal ? VideoController.inst.currentPossibleLocalVideos : YoutubeInfoController.current.currentCachedQualities;
+                              final cachedQualities = List<NamidaVideo>.from(cachedQualitiesAll.value);
+                              final videoId = Player.inst.currentVideoR?.id;
+                              if (ytQualities != null && ytQualities.isNotEmpty) {
+                                cachedQualities.removeWhere(
+                                  (cq) {
+                                    return ytQualities.any((ytq) {
+                                      if (widget.isLocal) return ytq.height == cq.height;
+                                      final cachePath = videoId == null ? null : ytq.cachePath(videoId);
+                                      if (cachePath == cq.path) return true;
+                                      if (ytq.sizeInBytes == cq.sizeInBytes) return true;
+                                      final sameRes = cq.resolution.toString().startsWith(ytq.qualityLabel); // 720p.startsWith(720p60).
+                                      if (!sameRes) return false;
+                                      final sameFrames = ytq.fps == cq.framerate;
+                                      if (!sameFrames) return false;
+                                      return true; // same res && same frames
+                                    });
+                                  },
+                                );
+                              }
+                              return [
+                                Obx(
+                                  () => _getQualityChip(
+                                    title: lang.AUDIO_ONLY,
+                                    onPlay: (isSelected) {
+                                      Player.inst.setAudioOnlyPlayback(true);
+                                      VideoController.inst.currentVideo.value = null;
+                                      settings.save(enableVideoPlayback: false);
                                     },
+                                    selected: (widget.isLocal ? VideoController.inst.currentVideo.valueR == null : settings.ytIsAudioOnlyMode.valueR),
+                                    isCached: false,
+                                    icon: Broken.musicnote,
                                   ),
                                 ),
-                              ],
-                              child: Padding(
-                                padding: const EdgeInsets.all(4.0),
-                                child: BorderRadiusClip(
-                                  borderRadius: BorderRadius.circular(6.0.multipliedRadius),
-                                  child: NamidaBgBlur(
-                                    blur: 3.0,
-                                    child: Container(
-                                      padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 6.0),
-                                      decoration: BoxDecoration(
-                                        color: Colors.black.withOpacity(0.2),
-                                        borderRadius: BorderRadius.circular(6.0.multipliedRadius),
-                                      ),
-                                      child: Obx(
-                                        () {
-                                          final currentStream = Player.inst.currentAudioStream;
-                                          final currentCached = Player.inst.currentCachedAudio;
-                                          final qt = currentStream?.displayLanguage ?? currentCached?.langaugeName;
-                                          return qt == null
-                                              ? const SizedBox()
-                                              : Text(
-                                                  qt,
-                                                  style: context.textTheme.displaySmall?.copyWith(color: itemsColor),
-                                                );
-                                        },
-                                      ),
+                                ...cachedQualities.map(
+                                  (element) => Obx(
+                                    () => _getQualityChip(
+                                      title: '${element.resolution}p${element.framerateText()}',
+                                      subtitle: " • ${element.sizeInBytes.fileSizeFormatted}",
+                                      onPlay: (isSelected) {
+                                        // sometimes video is not initialized so we need the second check
+                                        if (!isSelected || Player.inst.videoPlayerInfo.value?.isInitialized != true) {
+                                          Player.inst.onItemPlayYoutubeIDSetQuality(
+                                            mainStreams: streams,
+                                            stream: null,
+                                            cachedFile: File(element.path),
+                                            videoItem: element,
+                                            useCache: true,
+                                            videoId: Player.inst.currentVideo?.id ?? '',
+                                          );
+                                          if (widget.isLocal) {
+                                            VideoController.inst.currentVideo.value = element;
+                                            settings.save(enableVideoPlayback: true);
+                                          }
+                                        }
+                                      },
+                                      selected: widget.isLocal
+                                          ? VideoController.inst.currentVideo.valueR?.path == element.path
+                                          : settings.ytIsAudioOnlyMode.valueR
+                                              ? false
+                                              : Player.inst.currentCachedVideo.valueR?.path == element.path,
+                                      isCached: true,
+                                    ),
+                                  ),
+                                ),
+                                ...?ytQualities?.map((element) {
+                                  return Obx(
+                                    () {
+                                      if (widget.isLocal) {
+                                        final id = Player.inst.currentVideoR?.id;
+                                        final isSelected = element.height == VideoController.inst.currentVideo.valueR?.height;
+
+                                        return _getQualityChip(
+                                          title: element.qualityLabel,
+                                          subtitle: " • ${element.sizeInBytes.fileSizeFormatted}",
+                                          onPlay: (isSelected) {
+                                            if (!isSelected || Player.inst.videoPlayerInfo.value?.isInitialized != true) {
+                                              Player.inst.onItemPlayYoutubeIDSetQuality(
+                                                mainStreams: streams,
+                                                stream: element,
+                                                cachedFile: null,
+                                                useCache: true,
+                                                videoId: id ?? '',
+                                              );
+                                            }
+                                          },
+                                          selected: isSelected,
+                                          isCached: isSelected,
+                                        );
+                                      } else {
+                                        final id = Player.inst.currentVideoR?.id;
+                                        final cachedFile = id == null ? null : element.getCachedFile(id);
+                                        bool isSelected = settings.ytIsAudioOnlyMode.valueR
+                                            ? false
+                                            : (element.itag == Player.inst.currentVideoStream.valueR?.itag ||
+                                                (Player.inst.currentCachedVideo.valueR != null && cachedFile?.path == Player.inst.currentCachedVideo.valueR?.path));
+                                        if (settings.ytIsAudioOnlyMode.valueR) {
+                                          isSelected = false;
+                                        } else {
+                                          final currentVS = Player.inst.currentVideoStream.valueR;
+                                          if (currentVS != null) {
+                                            isSelected = element.itag == currentVS.itag;
+                                          } else {
+                                            final currentCachedV = Player.inst.currentCachedVideo.valueR;
+                                            if (currentCachedV != null) {
+                                              isSelected = cachedFile?.path == currentCachedV.path;
+                                            }
+                                          }
+                                        }
+
+                                        return _getQualityChip(
+                                          title: element.qualityLabel,
+                                          subtitle: " • ${element.sizeInBytes.fileSizeFormatted}",
+                                          thirdLine: element.bitrateText(),
+                                          onPlay: (isSelected) {
+                                            if (!isSelected) {
+                                              Player.inst.onItemPlayYoutubeIDSetQuality(
+                                                mainStreams: streams,
+                                                stream: element,
+                                                cachedFile: cachedFile,
+                                                useCache: true,
+                                                videoId: id ?? '',
+                                              );
+                                            }
+                                          },
+                                          selected: isSelected,
+                                          isCached: cachedFile != null,
+                                        );
+                                      }
+                                    },
+                                  );
+                                }),
+                              ];
+                            },
+                            child: Padding(
+                              padding: const EdgeInsets.all(4.0),
+                              child: BorderRadiusClip(
+                                borderRadius: BorderRadius.circular(6.0.multipliedRadius),
+                                child: NamidaBgBlur(
+                                  blur: 3.0,
+                                  child: Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 6.0),
+                                    decoration: BoxDecoration(
+                                      color: Colors.black.withOpacity(0.2),
+                                      borderRadius: BorderRadius.circular(6.0.multipliedRadius),
+                                    ),
+                                    child: Obx(
+                                      () {
+                                        final isAudio = widget.isLocal ? VideoController.inst.currentVideo.valueR == null : settings.ytIsAudioOnlyMode.valueR;
+
+                                        String? qt;
+                                        if (!isAudio) {
+                                          if (widget.isLocal) {
+                                            final video = VideoController.inst.currentVideo.valueR;
+                                            qt = video == null ? null : '${video.resolution}p${video.framerateText()}';
+                                          } else {
+                                            qt = Player.inst.currentVideoStream.valueR?.qualityLabel;
+                                          }
+                                        }
+
+                                        return Row(
+                                          children: [
+                                            if (qt != null) ...[
+                                              Text(
+                                                qt,
+                                                style: context.textTheme.displaySmall?.copyWith(color: itemsColor),
+                                              ),
+                                              const SizedBox(width: 4.0),
+                                            ],
+                                            Icon(
+                                              isAudio ? Broken.musicnote : Broken.setting,
+                                              color: itemsColor,
+                                              size: 16.0,
+                                            ),
+                                          ],
+                                        );
+                                      },
                                     ),
                                   ),
                                 ),
                               ),
-                            );
-                          }),
-                          // ===== Quality Chip =====
-                          Obx(
-                            () {
-                              final ytQualities =
-                                  (widget.isLocal ? VideoController.inst.currentYTQualities : YoutubeController.inst.currentYTQualities).where((s) => s.formatSuffix != 'webm');
-                              final cachedQualitiesAll = widget.isLocal ? VideoController.inst.currentPossibleVideos : YoutubeController.inst.currentCachedQualities;
-                              final cachedQualities = List<NamidaVideo>.from(cachedQualitiesAll);
-                              final videoId = Player.inst.nowPlayingVideoID?.id;
-                              cachedQualities.removeWhere(
-                                (cq) {
-                                  return ytQualities.any((ytq) {
-                                    if (widget.isLocal) return ytq.height == cq.height;
-                                    final cachePath = videoId == null ? null : ytq.cachePath(videoId);
-                                    if (cachePath == cq.path) return true;
-                                    if (ytq.sizeInBytes == cq.sizeInBytes) return true;
-                                    final sameRes = ytq.resolution == null ? false : cq.resolution.toString().startsWith(ytq.resolution!); // 720p.startsWith(720p60).
-                                    final sameFrames = ytq.fps == null ? true : ytq.fps == cq.framerate;
-                                    return sameRes && sameFrames;
-                                  });
-                                },
-                              );
-                              return NamidaPopupWrapper(
-                                openOnTap: true,
-                                onPop: _startTimer,
-                                onTap: () {
-                                  _resetTimer();
-                                  setControlsVisibily(true);
-                                },
-                                children: () => [
-                                  Obx(
-                                    () => _getQualityChip(
-                                      title: lang.AUDIO_ONLY,
-                                      onPlay: (isSelected) {
-                                        Player.inst.setAudioOnlyPlayback(true);
-                                        VideoController.inst.currentVideo.value = null;
-                                        settings.save(enableVideoPlayback: false);
-                                      },
-                                      selected: (widget.isLocal ? VideoController.inst.currentVideo.value == null : Player.inst.isAudioOnlyPlayback),
-                                      isCached: false,
-                                      icon: Broken.musicnote,
-                                    ),
-                                  ),
-                                  ...cachedQualities.map(
-                                    (element) => Obx(
-                                      () => _getQualityChip(
-                                        title: '${element.resolution}p${element.framerateText()}',
-                                        subtitle: " • ${element.sizeInBytes.fileSizeFormatted}",
-                                        onPlay: (isSelected) {
-                                          // sometimes video is not initialized so we need the second check
-                                          if (!isSelected || !Player.inst.videoInitialized) {
-                                            Player.inst.onItemPlayYoutubeIDSetQuality(
-                                              stream: null,
-                                              cachedFile: File(element.path),
-                                              videoItem: element,
-                                              useCache: true,
-                                              videoId: Player.inst.nowPlayingVideoID?.id ?? '',
-                                            );
-                                            if (widget.isLocal) {
-                                              VideoController.inst.currentVideo.value = element;
-                                              settings.save(enableVideoPlayback: true);
-                                            }
-                                          }
-                                        },
-                                        selected: widget.isLocal
-                                            ? VideoController.inst.currentVideo.value?.path == element.path
-                                            : Player.inst.isAudioOnlyPlayback
-                                                ? false
-                                                : Player.inst.currentCachedVideo?.path == element.path,
-                                        isCached: true,
-                                      ),
-                                    ),
-                                  ),
-                                  ...ytQualities.map((element) {
-                                    final sizeInBytes = element.sizeInBytes;
-                                    return Obx(
-                                      () {
-                                        if (widget.isLocal) {
-                                          final id = Player.inst.nowPlayingVideoID?.id;
-                                          final isSelected = element.height == VideoController.inst.currentVideo.value?.height;
-
-                                          return _getQualityChip(
-                                            title: element.resolution ?? '',
-                                            subtitle: sizeInBytes == null ? '' : " • ${sizeInBytes.fileSizeFormatted}",
-                                            onPlay: (isSelected) {
-                                              if (!isSelected || !Player.inst.videoInitialized) {
-                                                Player.inst.onItemPlayYoutubeIDSetQuality(
-                                                  stream: element,
-                                                  cachedFile: null,
-                                                  useCache: true,
-                                                  videoId: id ?? '',
-                                                );
-                                              }
-                                            },
-                                            selected: isSelected,
-                                            isCached: isSelected,
-                                          );
-                                        } else {
-                                          final id = Player.inst.nowPlayingVideoID?.id;
-                                          final cachedFile = id == null ? null : element.getCachedFile(id);
-                                          final isSelected = Player.inst.isAudioOnlyPlayback
-                                              ? false
-                                              : (element.resolution == Player.inst.currentVideoStream?.resolution ||
-                                                  (Player.inst.currentCachedVideo != null && cachedFile?.path == Player.inst.currentCachedVideo?.path));
-
-                                          return _getQualityChip(
-                                            title: element.resolution ?? '',
-                                            subtitle: sizeInBytes == null ? '' : " • ${sizeInBytes.fileSizeFormatted}",
-                                            onPlay: (isSelected) {
-                                              if (!isSelected) {
-                                                Player.inst.onItemPlayYoutubeIDSetQuality(
-                                                  stream: element,
-                                                  cachedFile: cachedFile,
-                                                  useCache: true,
-                                                  videoId: id ?? '',
-                                                );
-                                              }
-                                            },
-                                            selected: isSelected,
-                                            isCached: cachedFile != null,
-                                          );
-                                        }
-                                      },
-                                    );
-                                  }).toList(),
-                                ],
-                                child: Padding(
-                                  padding: const EdgeInsets.all(4.0),
-                                  child: BorderRadiusClip(
-                                    borderRadius: BorderRadius.circular(6.0.multipliedRadius),
-                                    child: NamidaBgBlur(
-                                      blur: 3.0,
-                                      child: Container(
-                                        padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 6.0),
-                                        decoration: BoxDecoration(
-                                          color: Colors.black.withOpacity(0.2),
-                                          borderRadius: BorderRadius.circular(6.0.multipliedRadius),
-                                        ),
-                                        child: Obx(
-                                          () {
-                                            final isAudio = widget.isLocal ? VideoController.inst.currentVideo.value == null : Player.inst.isAudioOnlyPlayback;
-
-                                            String? qt;
-                                            if (!isAudio) {
-                                              if (widget.isLocal) {
-                                                final video = VideoController.inst.currentVideo.value;
-                                                qt = video == null ? null : '${video.resolution}p${video.framerateText()}';
-                                              } else {
-                                                qt = Player.inst.currentVideoStream?.resolution;
-                                                if (qt == null) {
-                                                  final c = Player.inst.currentCachedVideo;
-                                                  qt = c == null ? null : '${c.resolution}p${c.framerateText()}';
-                                                }
-                                              }
-                                            }
-
-                                            return Row(
-                                              children: [
-                                                if (qt != null) ...[
-                                                  Text(
-                                                    qt,
-                                                    style: context.textTheme.displaySmall?.copyWith(color: itemsColor),
-                                                  ),
-                                                  const SizedBox(width: 4.0),
-                                                ],
-                                                Icon(
-                                                  isAudio ? Broken.musicnote : Broken.setting,
-                                                  color: itemsColor,
-                                                  size: 16.0,
-                                                ),
-                                              ],
-                                            );
-                                          },
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                              );
-                            },
+                            ),
                           ),
                         ],
                       ),
@@ -1200,26 +1268,26 @@ class NamidaVideoControlsState extends State<NamidaVideoControls> with TickerPro
                                           children: [
                                             Obx(
                                               () => Text(
-                                                "${Player.inst.nowPlayingPosition.milliSecondsLabel}/",
+                                                "${Player.inst.nowPlayingPositionR.milliSecondsLabel}/",
                                                 style: context.textTheme.displayMedium?.copyWith(
-                                                  fontSize: 13.5.multipliedFontScale,
+                                                  fontSize: 13.5,
                                                   color: itemsColor,
                                                 ),
                                               ),
                                             ),
                                             Obx(
                                               () {
-                                                int totalDurMs = Player.inst.getCurrentVideoDuration.inMilliseconds;
+                                                int totalDurMs = Player.inst.getCurrentVideoDurationR.inMilliseconds;
                                                 String prefix = '';
-                                                if (settings.player.displayRemainingDurInsteadOfTotal.value) {
-                                                  totalDurMs = totalDurMs - Player.inst.nowPlayingPosition;
+                                                if (settings.player.displayRemainingDurInsteadOfTotal.valueR) {
+                                                  totalDurMs = totalDurMs - Player.inst.nowPlayingPositionR;
                                                   prefix = '-';
                                                 }
 
                                                 return Text(
                                                   "$prefix${totalDurMs.milliSecondsLabel}",
                                                   style: context.textTheme.displayMedium?.copyWith(
-                                                    fontSize: 13.5.multipliedFontScale,
+                                                    fontSize: 13.5,
                                                     color: itemsColor,
                                                   ),
                                                 );
@@ -1236,7 +1304,7 @@ class NamidaVideoControlsState extends State<NamidaVideoControls> with TickerPro
                                   // -- queue order
                                   Obx(
                                     () {
-                                      final queueL = (widget.isLocal ? Player.inst.currentQueue : Player.inst.currentQueueYoutube).length;
+                                      final queueL = Player.inst.currentQueue.valueR.length;
                                       if (queueL <= 1) return const SizedBox();
                                       return BorderRadiusClip(
                                         borderRadius: borr8,
@@ -1250,7 +1318,7 @@ class NamidaVideoControlsState extends State<NamidaVideoControls> with TickerPro
                                             ),
                                             child: Obx(
                                               () => Text(
-                                                "${Player.inst.currentIndex + 1}/$queueL",
+                                                "${Player.inst.currentIndex.valueR + 1}/$queueL",
                                                 style: context.textTheme.displaySmall?.copyWith(fontWeight: FontWeight.w600, color: itemsColor),
                                               ),
                                             ),
@@ -1314,7 +1382,8 @@ class NamidaVideoControlsState extends State<NamidaVideoControls> with TickerPro
                                             iconColor: itemsColor,
                                             onPressed: () {
                                               _startTimer();
-                                              YTUtils().copyVideoUrl(Player.inst.getCurrentVideoId);
+                                              final id = Player.inst.currentVideo?.id;
+                                              if (id != null) YTUtils().copyCurrentVideoUrl(id);
                                             },
                                           ),
                                           SizedBox(width: widget.isFullScreen ? 12.0 : 10.0),
@@ -1352,9 +1421,10 @@ class NamidaVideoControlsState extends State<NamidaVideoControls> with TickerPro
                   mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                   children: [
                     const SizedBox(),
-                    Obx(
-                      () {
-                        final shouldShowPrev = Player.inst.currentIndex != 0;
+                    ObxO(
+                      rx: Player.inst.currentIndex,
+                      builder: (currentIndex) {
+                        final shouldShowPrev = currentIndex != 0;
                         return IgnorePointer(
                           ignoring: !shouldShowPrev,
                           child: Opacity(
@@ -1394,8 +1464,8 @@ class NamidaVideoControlsState extends State<NamidaVideoControls> with TickerPro
                           color: Colors.black.withOpacity(0.3),
                           child: Obx(
                             () {
-                              final currentPosition = Player.inst.nowPlayingPosition;
-                              final currentTotalDur = Player.inst.currentItemDuration?.inMilliseconds ?? 0;
+                              final currentPosition = Player.inst.nowPlayingPositionR;
+                              final currentTotalDur = Player.inst.currentItemDuration.valueR?.inMilliseconds ?? 0;
                               final reachedLastPosition = currentPosition != 0 && (currentPosition - currentTotalDur).abs() < 100; // 100ms allowance
 
                               return reachedLastPosition
@@ -1428,10 +1498,11 @@ class NamidaVideoControlsState extends State<NamidaVideoControls> with TickerPro
                                       },
                                       child: Padding(
                                         padding: const EdgeInsets.all(14.0),
-                                        child: Obx(
-                                          () => AnimatedSwitcher(
+                                        child: ObxO(
+                                          rx: Player.inst.isPlaying,
+                                          builder: (isPlaying) => AnimatedSwitcher(
                                             duration: const Duration(milliseconds: 200),
-                                            child: Player.inst.isPlaying
+                                            child: isPlaying
                                                 ? Icon(
                                                     Broken.pause,
                                                     size: 40.0,
@@ -1453,38 +1524,44 @@ class NamidaVideoControlsState extends State<NamidaVideoControls> with TickerPro
                         ),
                       ),
                     ),
-                    Obx(
-                      () {
-                        final shouldShowNext = Player.inst.currentIndex != Player.inst.currentQueueYoutube.length - 1;
-                        return IgnorePointer(
-                          ignoring: !shouldShowNext,
-                          child: Opacity(
-                            opacity: shouldShowNext ? 1.0 : 0.0,
-                            child: ClipOval(
-                              child: NamidaBgBlur(
-                                blur: 2,
-                                child: ColoredBox(
-                                  color: Colors.black.withOpacity(0.2),
-                                  child: NamidaIconButton(
-                                      icon: null,
-                                      horizontalPadding: 0.0,
-                                      padding: EdgeInsets.zero,
-                                      onPressed: () {
-                                        Player.inst.next();
-                                        _startTimer();
-                                      },
-                                      child: Padding(
-                                        padding: const EdgeInsets.all(10.0),
-                                        child: Icon(
-                                          Broken.next,
-                                          size: 30.0,
-                                          color: itemsColor,
-                                        ),
-                                      )),
+                    ObxO(
+                      rx: Player.inst.currentIndex,
+                      builder: (currentIndex) {
+                        return ObxO(
+                          rx: Player.inst.currentQueue,
+                          builder: (ytqueue) {
+                            final shouldShowNext = currentIndex != ytqueue.length - 1;
+                            return IgnorePointer(
+                              ignoring: !shouldShowNext,
+                              child: Opacity(
+                                opacity: shouldShowNext ? 1.0 : 0.0,
+                                child: ClipOval(
+                                  child: NamidaBgBlur(
+                                    blur: 2,
+                                    child: ColoredBox(
+                                      color: Colors.black.withOpacity(0.2),
+                                      child: NamidaIconButton(
+                                          icon: null,
+                                          horizontalPadding: 0.0,
+                                          padding: EdgeInsets.zero,
+                                          onPressed: () {
+                                            Player.inst.next();
+                                            _startTimer();
+                                          },
+                                          child: Padding(
+                                            padding: const EdgeInsets.all(10.0),
+                                            child: Icon(
+                                              Broken.next,
+                                              size: 30.0,
+                                              color: itemsColor,
+                                            ),
+                                          )),
+                                    ),
+                                  ),
                                 ),
                               ),
-                            ),
-                          ),
+                            );
+                          },
                         );
                       },
                     ),
@@ -1493,7 +1570,7 @@ class NamidaVideoControlsState extends State<NamidaVideoControls> with TickerPro
                 ),
               ),
               Obx(
-                () => Player.inst.shouldShowLoadingIndicator
+                () => Player.inst.shouldShowLoadingIndicatorR
                     ? ThreeArchedCircle(
                         color: itemsColor,
                         size: 52.0,
@@ -1544,7 +1621,7 @@ class NamidaVideoControlsState extends State<NamidaVideoControls> with TickerPro
                   left: context.width * 0.15,
                   child: Obx(
                     () {
-                      final bri = _canShowBrightnessSlider.value ? _currentBrigthnessDim.value : null;
+                      final bri = _canShowBrightnessSlider.valueR ? _currentBrigthnessDim.valueR : null;
                       return _getVerticalSliderWidget(
                         'brightness',
                         bri,
@@ -1557,16 +1634,14 @@ class NamidaVideoControlsState extends State<NamidaVideoControls> with TickerPro
                 // ======= Volume Slider ========
                 Positioned(
                   right: context.width * 0.15,
-                  child: Obx(
-                    () {
-                      final vol = _currentDeviceVolume.value;
-                      return _getVerticalSliderWidget(
-                        'volume',
-                        vol,
-                        Broken.volume_high,
-                        view,
-                      );
-                    },
+                  child: ObxO(
+                    rx: _currentDeviceVolume,
+                    builder: (vol) => _getVerticalSliderWidget(
+                      'volume',
+                      vol,
+                      Broken.volume_high,
+                      view,
+                    ),
                   ),
                 ),
               ],
@@ -1604,7 +1679,7 @@ class __SpeedsEditorDialogState extends State<_SpeedsEditorDialog> {
         actions: [
           TextButton(
             onPressed: NamidaNavigator.inst.closeDialog,
-            child: Text(lang.DONE),
+            child: NamidaButtonText(lang.DONE),
           ),
           NamidaButton(
             text: lang.ADD,
@@ -1632,7 +1707,10 @@ class __SpeedsEditorDialogState extends State<_SpeedsEditorDialog> {
                           ),
                           child: InkWell(
                             onTap: () {
-                              if (e == 1.0) return snackyy(message: lang.ERROR);
+                              if (e == 1.0) {
+                                snackyy(message: lang.ERROR); // we already ignore tap but uh
+                                return;
+                              }
                               if (settings.player.speeds.length <= 4) return showMinimumItemsSnack(4);
 
                               settings.player.speeds

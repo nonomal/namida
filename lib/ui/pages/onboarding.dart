@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:get/get.dart';
+import 'package:namida/core/utils.dart';
 
 import 'package:namida/controller/backup_controller.dart';
 import 'package:namida/controller/current_color.dart';
@@ -97,11 +97,8 @@ class _FirstRunConfigureScreenState extends State<FirstRunConfigureScreen> {
         icon: Broken.refresh_circle,
         normalTitleStyle: true,
         title: lang.BACKUP_AND_RESTORE,
-        actions: [
-          NamidaButton(
-            text: lang.DONE,
-            onPressed: NamidaNavigator.inst.closeDialog,
-          ),
+        actions: const [
+          DoneButton(),
         ],
         child: Column(
           children: [
@@ -145,7 +142,7 @@ class _FirstRunConfigureScreenState extends State<FirstRunConfigureScreen> {
               trailing: Column(
                 children: [
                   NamidaIconButton(
-                    tooltip: lang.RESTORE_BACKUP,
+                    tooltip: () => lang.RESTORE_BACKUP,
                     icon: Broken.back_square,
                     onPressed: _onRestoreBackupIconTap,
                   ),
@@ -188,7 +185,7 @@ class _FirstRunConfigureScreenState extends State<FirstRunConfigureScreen> {
                                   decoration: BoxDecoration(
                                     boxShadow: [
                                       BoxShadow(
-                                        color: _shouldShowGlow.value ? CurrentColor.inst.color : Colors.transparent,
+                                        color: _shouldShowGlow.valueR ? CurrentColor.inst.color : Colors.transparent,
                                         blurRadius: 12.0,
                                         spreadRadius: 2.0,
                                       )
@@ -251,7 +248,8 @@ class _FirstRunConfigureScreenState extends State<FirstRunConfigureScreen> {
                                 onTap: () async {
                                   await _requestPermission();
                                   if (BackupController.inst.isRestoringBackup.value) {
-                                    return snackyy(title: lang.NOTE, message: lang.ANOTHER_PROCESS_IS_RUNNING);
+                                    snackyy(title: lang.NOTE, message: lang.ANOTHER_PROCESS_IS_RUNNING);
+                                    return;
                                   }
                                   _navigateToNamida();
                                 },

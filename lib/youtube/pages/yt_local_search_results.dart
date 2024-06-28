@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:get/get.dart';
-import 'package:newpipeextractor_dart/newpipeextractor_dart.dart';
+import 'package:youtipie/class/stream_info_item/stream_info_item.dart';
 
 import 'package:namida/controller/navigator_controller.dart';
 import 'package:namida/core/dimensions.dart';
@@ -8,6 +7,7 @@ import 'package:namida/core/extensions.dart';
 import 'package:namida/core/icon_fonts/broken_icons.dart';
 import 'package:namida/core/namida_converter_ext.dart';
 import 'package:namida/core/translations/language.dart';
+import 'package:namida/core/utils.dart';
 import 'package:namida/packages/three_arched_circle.dart';
 import 'package:namida/ui/widgets/custom_widgets.dart';
 import 'package:namida/youtube/controller/youtube_local_search_controller.dart';
@@ -24,21 +24,31 @@ class YTLocalSearchResults extends StatefulWidget {
 }
 
 class YTLocalSearchResultsState extends State<YTLocalSearchResults> {
+  final _searchListenerKey = "YTLocalSearchResultsState";
+
   @override
   void initState() {
     super.initState();
+    YTLocalSearchController.inst.addOnSearchStart(_searchListenerKey, () => _updateIsSearching(true));
+    YTLocalSearchController.inst.addOnSearchDone(_searchListenerKey, (_) => _updateIsSearching(false));
+
     YTLocalSearchController.inst.scrollController = ScrollController();
-    YTLocalSearchController.inst.search(
-      widget.initialSearch,
-      maxResults: null,
-      onStart: () => updateIsSearching(true),
-    );
+    YTLocalSearchController.inst.search(widget.initialSearch, maxResults: null);
   }
 
-  void updateIsSearching(bool searching) {
-    setState(() {
+  @override
+  void dispose() {
+    YTLocalSearchController.inst.removeOnSearchStart(_searchListenerKey);
+    YTLocalSearchController.inst.removeOnSearchDone(_searchListenerKey);
+    super.dispose();
+  }
+
+  void _updateIsSearching(bool searching) {
+    if (mounted) {
+      setState(() => _isSearching = searching);
+    } else {
       _isSearching = searching;
-    });
+    }
   }
 
   List<StreamInfoItem> get _searchResultsLocal => YTLocalSearchController.inst.searchResults;
@@ -116,7 +126,7 @@ class YTLocalSearchResultsState extends State<YTLocalSearchResults> {
                                 () => Stack(
                                   alignment: Alignment.center,
                                   children: [
-                                    if (YTLocalSearchController.inst.didLoadLookupLists.value == false)
+                                    if (YTLocalSearchController.inst.didLoadLookupLists.valueR == false)
                                       IgnorePointer(
                                         child: NamidaOpacity(
                                           opacity: 0.3,
@@ -168,14 +178,11 @@ class YTLocalSearchResultsState extends State<YTLocalSearchResults> {
                             itemCount: 10,
                             shrinkWrap: true,
                             itemBuilder: (context, index) {
-                              return const YoutubeVideoCard(
+                              return const YoutubeVideoCardDummy(
+                                shimmerEnabled: true,
                                 fontMultiplier: 0.9,
                                 thumbnailHeight: thumbnailHeight,
                                 thumbnailWidth: thumbnailWidth,
-                                isImageImportantInCache: false,
-                                video: null,
-                                playlistID: null,
-                                onTap: null,
                               );
                             },
                           ),

@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:get/get.dart';
+import 'package:namida/core/utils.dart';
 
 import 'package:namida/controller/wakelock_controller.dart';
 import 'package:namida/core/extensions.dart';
@@ -92,10 +92,20 @@ class NamidaYTMiniplayerState extends State<NamidaYTMiniplayer> with SingleTicke
   bool _isDraggingDownwards = false;
   double get _percentageMultiplier => _alternativePercentage && _isDraggingDownwards ? 0.25 : 1.0;
 
-  bool _isDragManagedInternally = true;
   void updatePercentageMultiplier(bool alt) {
     _alternativePercentage = alt;
   }
+
+  void saveDragHeightStart() {
+    _startedDragAtHeight = _dragheight;
+  }
+
+  bool _isDragManagedInternally = true;
+  void setDragExternally(bool external) {
+    _isDragManagedInternally = !external;
+  }
+
+  double? _startedDragAtHeight;
 
   @override
   void dispose() {
@@ -108,7 +118,7 @@ class NamidaYTMiniplayerState extends State<NamidaYTMiniplayer> with SingleTicke
 
   double _dragheight = 0;
 
-  EdgeInsets _padding = const EdgeInsets.only();
+  EdgeInsets _padding = EdgeInsets.zero;
 
   double get maxHeight => widget.maxHeight - _padding.bottom - _padding.top;
   double get controllerHeight => controller.value * maxHeight;
@@ -144,8 +154,8 @@ class NamidaYTMiniplayerState extends State<NamidaYTMiniplayer> with SingleTicke
   }
 
   void _resetValues() {
-    _isDragManagedInternally = false;
     _alternativePercentage = false;
+    _startedDragAtHeight = null;
   }
 
   void onVerticalDragEnd(double v) {
@@ -174,7 +184,8 @@ class NamidaYTMiniplayerState extends State<NamidaYTMiniplayer> with SingleTicke
       animateToState(true);
     } else {
       if (_alternativePercentage) {
-        widget.onAlternativePercentageExecute?.call();
+        final didDragDownwards = _startedDragAtHeight != null && _startedDragAtHeight! > _dragheight;
+        if (didDragDownwards) widget.onAlternativePercentageExecute?.call();
         animateToState(_wasExpanded);
       } else {
         animateToState(false);
@@ -185,9 +196,14 @@ class NamidaYTMiniplayerState extends State<NamidaYTMiniplayer> with SingleTicke
 
   @override
   Widget build(BuildContext context) {
-    final padding = MediaQuery.paddingOf(context);
-    _padding = padding;
-    animateToState(_wasExpanded);
+    if (_padding == EdgeInsets.zero) {
+      // -- context access makes it awful for yt miniplayer (since it has MaterialPage),
+      // -- the keyboard keeps showing/hiding
+      // -- so yeah we only check once
+      final padding = MediaQuery.paddingOf(context);
+      _padding = padding;
+      animateToState(_wasExpanded);
+    }
 
     final maxWidth = context.width;
     return AnimatedBuilder(
@@ -213,14 +229,9 @@ class NamidaYTMiniplayerState extends State<NamidaYTMiniplayer> with SingleTicke
                   alignment: Alignment.bottomCenter,
                   child: GestureDetector(
                     onTap: _dragheight == widget.minHeight ? () => animateToState(true) : null,
-                    onVerticalDragStart: (details) {
-                      _isDragManagedInternally = !_alternativePercentage;
-                    },
                     onVerticalDragUpdate: (details) => onVerticalDragUpdate(details.delta.dy),
-                    // onVerticalDragCancel: () => !_isDragManagedInternally ? null : animateToState(_wasExpanded),
                     onVerticalDragEnd: (details) {
                       if (_isDragManagedInternally) onVerticalDragEnd(details.velocity.pixelsPerSecond.dy);
-                      _isDragManagedInternally = !_alternativePercentage;
                     },
                     child: Material(
                       clipBehavior: Clip.hardEdge,

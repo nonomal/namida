@@ -1,14 +1,19 @@
 import 'package:flutter/material.dart';
-import 'package:get/get.dart';
 
+import 'package:namida/class/route.dart';
 import 'package:namida/class/track.dart';
 import 'package:namida/controller/indexer_controller.dart';
 import 'package:namida/core/enums.dart';
 import 'package:namida/core/extensions.dart';
+import 'package:namida/core/utils.dart';
 import 'package:namida/ui/widgets/custom_widgets.dart';
 import 'package:namida/ui/widgets/library/multi_artwork_container.dart';
 
-class GenreTracksPage extends StatelessWidget {
+class GenreTracksPage extends StatelessWidget with NamidaRouteWidget {
+  @override
+  RouteType get route => RouteType.SUBPAGE_genreTracks;
+
+  @override
   final String name;
   final List<Track> tracks;
   const GenreTracksPage({
@@ -22,7 +27,7 @@ class GenreTracksPage extends StatelessWidget {
     return BackgroundWrapper(
       child: Obx(
         () {
-          Indexer.inst.mainMapGenres.value; // to update after sorting
+          Indexer.inst.mainMapGenres.valueR; // to update after sorting
           return NamidaTracksList(
             queueSource: QueueSource.genre,
             queueLength: tracks.length,
@@ -33,11 +38,11 @@ class GenreTracksPage extends StatelessWidget {
               subtitle: [tracks.displayTrackKeyword, tracks.totalDurationFormatted].join(' - '),
               heroTag: 'genre_$name',
               imageWidget: MultiArtworkContainer(
-                size: Get.width * 0.35,
+                size: namida.width * 0.35,
                 heroTag: 'genre_$name',
                 tracks: tracks.toImageTracks(),
               ),
-              tracks: tracks,
+              tracksFn: () => tracks,
             ),
           );
         },

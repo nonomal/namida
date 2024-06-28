@@ -2,7 +2,7 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:isolate';
 
-import 'package:get/get.dart';
+import 'package:namida/core/utils.dart';
 import 'package:intl/intl.dart';
 import 'package:playlist_manager/playlist_manager.dart';
 
@@ -75,6 +75,10 @@ class SearchSortController {
 
   RxMap<String, Playlist> get playlistsMap => PlaylistController.inst.playlistsMap;
 
+  RxBaseCore<Map<MediaType, bool>> get runningSearches => _runningSearches;
+
+  final _runningSearches = <MediaType, bool>{}.obs;
+
   void searchAll(String text) {
     lastSearchText = text;
     final enabledSearches = settings.activeSearchMediaTypes;
@@ -136,18 +140,21 @@ class SearchSortController {
   };
 
   List<Comparable Function(Track tr)> getMediaTracksSortingComparables(MediaType media) {
-    final sorts = settings.mediaItemsTrackSorting[media] ?? <SortType>[SortType.title];
+    final sorts = settings.mediaItemsTrackSorting.value[media] ?? <SortType>[SortType.title];
     final l = <Comparable Function(Track e)>[];
-    sorts.loop((e, index) {
+    sorts.loop((e) {
       if (_mediaTracksSortingComparables[e] != null) l.add(_mediaTracksSortingComparables[e]!);
     });
     return l;
   }
 
+  bool? _preparedResources;
   Future<void> prepareResources() async {
+    if (_preparedResources == true) return;
+    _preparedResources = true;
     final enabledSearchesList = settings.activeSearchMediaTypes;
     final enabledSearches = <MediaType, bool>{};
-    enabledSearchesList.loop((f, _) => enabledSearches[f] = true);
+    enabledSearchesList.loop((f) => enabledSearches[f] = true);
 
     final mainMapArtists = Indexer.inst.mainMapArtists.value.keys;
     final mainMapAA = Indexer.inst.mainMapAlbumArtists.value.keys;
@@ -169,6 +176,7 @@ class SearchSortController {
   }
 
   void disposeResources() {
+    _preparedResources = false;
     SearchPortsProvider.inst.disposeAll();
   }
 
@@ -176,6 +184,7 @@ class SearchSortController {
     return await SearchPortsProvider.inst.preparePorts(
       type: MediaType.track,
       onResult: (result) {
+        _runningSearches[MediaType.track] = false;
         final r = result as (List<Track>, bool, String);
         final isTemp = r.$2;
         final fetchedQuery = r.$3;
@@ -189,36 +198,44 @@ class SearchSortController {
         }
       },
       isolateFunction: (itemsSendPort) async {
-        final params = {
-          'tracks': Indexer.inst.allTracksMappedByPath.values
-              .map((e) => {
-                    'title': e.title,
-                    'artist': e.originalArtist,
-                    'album': e.album,
-                    'albumArtist': e.albumArtist,
-                    'genre': e.originalGenre,
-                    'composer': e.composer,
-                    'year': e.year,
-                    'comment': e.comment,
-                    'path': e.path,
-                  })
-              .toList(),
-          'artistsSplitConfig': ArtistsSplitConfig.settings().toMap(),
-          'genresSplitConfig': GenresSplitConfig.settings().toMap(),
-          'filters': settings.trackSearchFilter.cast<TrackSearchFilter>(),
-          'cleanup': _shouldCleanup,
-          'sendPort': itemsSendPort,
-        };
-
-        await Isolate.spawn(_searchTracksIsolate, params);
+        final params = generateTrackSearchIsolateParams(itemsSendPort);
+        await Isolate.spawn(searchTracksIsolate, params);
       },
     );
+  }
+
+  Map<String, dynamic> generateTrackSearchIsolateParams(SendPort sendPort, {bool sendPrepared = false}) {
+    final params = {
+      'tracks': Indexer.inst.allTracksMappedByPath.value.values
+          .map((e) => {
+                'title': e.title,
+                'artist': e.originalArtist,
+                'album': e.album,
+                'albumArtist': e.albumArtist,
+                'genre': e.originalGenre,
+                'composer': e.composer,
+                'year': e.year,
+                'comment': e.comment,
+                'path': e.path,
+              })
+          .toList(),
+      'artistsSplitConfig': ArtistsSplitConfig.settings().toMap(),
+      'genresSplitConfig': GenresSplitConfig.settings().toMap(),
+      // ignore: invalid_use_of_protected_member
+      'filters': settings.trackSearchFilter.value,
+      'cleanup': _shouldCleanup,
+      'sendPrepared': sendPrepared,
+      'sendPort': sendPort,
+    };
+    return params;
   }
 
   Future<SendPort> _preparePlaylistPorts() async {
     return await SearchPortsProvider.inst.preparePorts(
       type: MediaType.playlist,
       onResult: (result) {
+        _runningSearches[MediaType.playlist] = false;
+
         final r = result as (List<String>, bool, String);
         final isTemp = r.$2;
         final fetchedQuery = r.$3;
@@ -230,14 +247,14 @@ class SearchSortController {
       },
       isolateFunction: (itemsSendPort) async {
         final params = {
-          'playlists': playlistsMap.values.map((e) => e.toJson((item) => item.toJson())).toList(),
+          'playlists': playlistsMap.value.values.map((e) => e.toJson((item) => item.toJson())).toList(),
           'translations': {
             'k_PLAYLIST_NAME_AUTO_GENERATED': lang.AUTO_GENERATED,
             'k_PLAYLIST_NAME_FAV': lang.FAVOURITES,
             'k_PLAYLIST_NAME_HISTORY': lang.HISTORY,
             'k_PLAYLIST_NAME_MOST_PLAYED': lang.MOST_PLAYED,
           },
-          'filters': settings.playlistSearchFilter.cast<String>(),
+          'filters': settings.playlistSearchFilter.value,
           'cleanup': _shouldCleanup,
           'sendPort': itemsSendPort,
         };
@@ -251,6 +268,7 @@ class SearchSortController {
     return await SearchPortsProvider.inst.preparePorts(
       type: type,
       onResult: (result) {
+        _runningSearches[type] = false;
         final r = result as (List<String>, bool, String);
         final isTemp = r.$2;
         final fetchedQuery = r.$3;
@@ -258,7 +276,7 @@ class SearchSortController {
           if (fetchedQuery == lastSearchText) _searchMapTemp[type]?.value = r.$1;
         } else {
           final typeNomalize = type == MediaType.albumArtist || type == MediaType.composer ? MediaType.artist : type;
-          if (fetchedQuery == typeNomalize.toLibraryTab()?.textSearchController?.text) _searchMap[typeNomalize]?.value = r.$1;
+          if (fetchedQuery == typeNomalize.toLibraryTab().textSearchController?.text) _searchMap[typeNomalize]?.value = r.$1;
         }
       },
       isolateFunction: (itemsSendPort) async {
@@ -280,13 +298,11 @@ class SearchSortController {
         trackSearchTemp.clear();
       } else {
         LibraryTab.tracks.textSearchController?.clear();
-        trackSearchList
-          ..clear()
-          ..addAll(tracksInfoList);
+        trackSearchList.assignAll(tracksInfoList.value);
       }
       return;
     }
-
+    _runningSearches[MediaType.track] = true;
     final sp = await _prepareTracksPorts();
     sp.send({
       'text': text,
@@ -294,12 +310,13 @@ class SearchSortController {
     });
   }
 
-  static void _searchTracksIsolate(Map params) {
+  static void searchTracksIsolate(Map params) {
     final tracks = params['tracks'] as List<Map>;
     final artistsSplitConfig = ArtistsSplitConfig.fromMap(params['artistsSplitConfig']);
     final genresSplitConfig = GenresSplitConfig.fromMap(params['genresSplitConfig']);
     final tsf = params['filters'] as List<TrackSearchFilter>;
     final cleanup = params['cleanup'] as bool;
+    final sendPrepared = params['sendPrepared'] as bool?;
     final sendPort = params['sendPort'] as SendPort;
 
     final receivePort = ReceivePort();
@@ -307,7 +324,7 @@ class SearchSortController {
     sendPort.send(receivePort.sendPort);
 
     final tsfMap = <TrackSearchFilter, bool>{};
-    tsf.loop((f, _) => tsfMap[f] = true);
+    tsf.loop((f) => tsfMap[f] = true);
 
     final stitle = tsfMap[TrackSearchFilter.title] ?? true;
     final sfilename = tsfMap[TrackSearchFilter.filename] ?? true;
@@ -387,7 +404,7 @@ class SearchSortController {
       }
 
       final result = <Track>[];
-      tracksExtended.loop((trExt, index) {
+      tracksExtended.loop((trExt) {
         if ((stitle && isMatch(trExt.splitTitle)) ||
             (sfilename && isMatch(trExt.splitFilename)) ||
             (salbum && isMatch(trExt.splitAlbum)) ||
@@ -403,6 +420,7 @@ class SearchSortController {
 
       sendPort.send((result, temp, text));
     });
+    if (sendPrepared == true) sendPort.send(null);
   }
 
   void _searchMediaType({required MediaType type, required String text, bool temp = false}) async {
@@ -429,12 +447,13 @@ class SearchSortController {
         _searchMapTemp[type]?.clear();
       } else {
         final typeNomalize = type == MediaType.albumArtist || type == MediaType.composer ? MediaType.artist : type;
-        typeNomalize.toLibraryTab()?.textSearchController?.clear();
+        typeNomalize.toLibraryTab().textSearchController?.clear();
         _searchMap[typeNomalize]?.value = keys.toList();
       }
       return;
     }
 
+    _runningSearches[type] = true;
     final sp = await _prepareMediaPorts(keys, type);
     sp.send({
       'text': text,
@@ -452,6 +471,7 @@ class SearchSortController {
       }
       return;
     }
+    _runningSearches[MediaType.playlist] = true;
     final sp = await _preparePlaylistPorts();
     sp.send({
       'text': text,
@@ -502,7 +522,7 @@ class SearchSortController {
     final textCleanedForSearch = _functionOfCleanup(cleanup);
 
     final psfMap = <String, bool>{};
-    psf.loop((f, _) => psfMap[f] = true);
+    psf.loop((f) => psfMap[f] = true);
 
     final sTitle = psfMap['name'] ?? true;
     final sCreationDate = psfMap['creationDate'] ?? false;
@@ -524,7 +544,7 @@ class SearchSortController {
       final lctext = textCleanedForSearch(text);
 
       final results = <String>[];
-      playlists.loop((itemInfo, _) {
+      playlists.loop((itemInfo) {
         final item = itemInfo.pl;
         final playlistName = item.name;
 
@@ -578,7 +598,7 @@ class SearchSortController {
     _sortTracksRaw(
       sortBy: sortBy ?? settings.tracksSort.value,
       reverse: reverse ?? settings.tracksSortReversed.value,
-      list: tracksInfoList,
+      list: tracksInfoList.value,
       onDone: (sortType, isReverse) {
         settings.save(tracksSort: sortType, tracksSortReversed: isReverse);
         _searchTracks(LibraryTab.tracks.textSearchController?.text ?? '');
@@ -600,7 +620,7 @@ class SearchSortController {
     _sortTracksRaw(
       sortBy: sortBy,
       reverse: reverse,
-      list: trackSearchTemp,
+      list: trackSearchTemp.value,
       onDone: (sortType, isReverse) {
         if (!isAuto) {
           settings.save(tracksSortSearch: sortType, tracksSortSearchReversed: isReverse);
@@ -702,7 +722,7 @@ class SearchSortController {
         sortThis((e) => HistoryController.inst.topTracksMapListens[e]?.lastOrNull ?? 0);
         break;
 
-      default:
+      case null:
         null;
     }
     onDone(sortBy, reverse);
@@ -750,9 +770,7 @@ class SearchSortController {
         null;
     }
 
-    finalMap.value
-      ..clear()
-      ..addEntries(albumsList);
+    finalMap.value.assignAllEntries(albumsList);
 
     settings.save(albumSort: sortBy, albumSortReversed: reverse);
 
@@ -821,9 +839,7 @@ class SearchSortController {
       default:
         null;
     }
-    finalMap.value
-      ..clear()
-      ..addEntries(artistsList);
+    finalMap.value.assignAllEntries(artistsList);
 
     settings.save(artistSort: sortBy, artistSortReversed: reverse);
 
@@ -874,9 +890,7 @@ class SearchSortController {
         null;
     }
 
-    finalMap.value
-      ..clear()
-      ..addEntries(genresList);
+    finalMap.value.assignAllEntries(genresList);
 
     settings.save(genreSort: sortBy, genreSortReversed: reverse);
     _searchMediaType(type: MediaType.genre, text: LibraryTab.genres.textSearchController?.text ?? '');
@@ -914,9 +928,7 @@ class SearchSortController {
         null;
     }
 
-    playlistsMap
-      ..clear()
-      ..addEntries(playlistList);
+    playlistsMap.assignAllEntries(playlistList);
 
     settings.save(playlistSort: sortBy, playlistSortReversed: reverse);
 
@@ -948,17 +960,17 @@ class SearchSortController {
 
       final results = <String>[];
       if (keyIsPath) {
-        keys.loop((path, _) {
+        keys.loop((path) {
           String pathN = path;
           while (pathN.isNotEmpty && pathN[pathN.length - 1] == Platform.pathSeparator) {
             pathN = pathN.substring(0, pathN.length);
           }
-          if (cleanupFunction(pathN.split(Platform.pathSeparator).last).contains(cleanupFunction(text))) {
+          if (cleanupFunction(pathN.splitLast(Platform.pathSeparator)).contains(cleanupFunction(text))) {
             results.add(pathN);
           }
         });
       } else {
-        keys.loop((name, _) {
+        keys.loop((name) {
           if (cleanupFunction(name).contains(cleanupFunction(text))) {
             results.add(name);
           }

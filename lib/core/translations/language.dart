@@ -1,7 +1,9 @@
+// ignore_for_file: non_constant_identifier_names
+
 import 'dart:convert';
 
 import 'package:flutter/services.dart';
-import 'package:get/get.dart';
+import 'package:namida/core/utils.dart';
 
 import 'package:namida/class/lang.dart';
 import 'package:namida/controller/settings_controller.dart';
@@ -11,9 +13,11 @@ import 'package:namida/core/namida_converter_ext.dart';
 import 'package:namida/core/translations/keys.dart';
 import 'package:namida/main.dart';
 
+part 'static_strings.dart';
+
 Language get lang => Language.inst;
 
-class Language extends LanguageKeys {
+class Language extends LanguageKeys with _StaticStrings {
   static Language get inst => _instance;
   static final Language _instance = Language._internal();
   Language._internal();
@@ -21,7 +25,7 @@ class Language extends LanguageKeys {
   static final Rx<NamidaLanguage> _currentLanguage = kDefaultLang.obs;
 
   /// Currently Selected & Set Language.
-  NamidaLanguage get currentLanguage => _currentLanguage.value;
+  RxBaseCore<NamidaLanguage> get currentLanguage => _currentLanguage;
 
   /// All Available Languages fetched from `'/assets/language/translations/'`
   static var availableLanguages = <NamidaLanguage>[];

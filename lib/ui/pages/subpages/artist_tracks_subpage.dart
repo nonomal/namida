@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 
-import 'package:get/get.dart';
-
+import 'package:namida/class/route.dart';
 import 'package:namida/class/track.dart';
 import 'package:namida/controller/indexer_controller.dart';
 import 'package:namida/core/dimensions.dart';
@@ -10,12 +9,24 @@ import 'package:namida/core/extensions.dart';
 import 'package:namida/core/icon_fonts/broken_icons.dart';
 import 'package:namida/core/namida_converter_ext.dart';
 import 'package:namida/core/translations/language.dart';
+import 'package:namida/core/utils.dart';
 import 'package:namida/ui/widgets/artwork.dart';
 import 'package:namida/ui/widgets/custom_widgets.dart';
 import 'package:namida/ui/widgets/library/album_card.dart';
 
-class ArtistTracksPage extends StatelessWidget {
+class ArtistTracksPage extends StatelessWidget with NamidaRouteWidget {
+  @override
+  RouteType get route {
+    return type == MediaType.albumArtist
+        ? RouteType.SUBPAGE_albumArtistTracks
+        : type == MediaType.composer
+            ? RouteType.SUBPAGE_composerTracks
+            : RouteType.SUBPAGE_artistTracks;
+  }
+
+  @override
   final String name;
+
   final List<Track> tracks;
   final Set<String> albumIdentifiers;
   final MediaType type;
@@ -36,11 +47,11 @@ class ArtistTracksPage extends StatelessWidget {
         () {
           // to update after sorting
           type == MediaType.artist
-              ? Indexer.inst.mainMapArtists.value
+              ? Indexer.inst.mainMapArtists.valueR
               : type == MediaType.albumArtist
-                  ? Indexer.inst.mainMapAlbumArtists.value
+                  ? Indexer.inst.mainMapAlbumArtists.valueR
                   : type == MediaType.composer
-                      ? Indexer.inst.mainMapComposer.value
+                      ? Indexer.inst.mainMapComposer.valueR
                       : null;
           return NamidaTracksList(
             queueSource: QueueSource.artist,
@@ -67,7 +78,7 @@ class ArtistTracksPage extends StatelessWidget {
                         child: ArtworkWidget(
                           key: Key(tracks.pathToImage),
                           track: tracks.trackOfImage,
-                          thumbnailSize: Get.width * 0.35,
+                          thumbnailSize: namida.width * 0.35,
                           path: tracks.pathToImage,
                           forceSquared: true,
                           blur: 0,
@@ -76,7 +87,7 @@ class ArtistTracksPage extends StatelessWidget {
                       ),
                     ),
                   ),
-                  tracks: tracks,
+                  tracksFn: () => tracks,
                 ),
                 NamidaExpansionTile(
                   icon: Broken.music_dashboard,

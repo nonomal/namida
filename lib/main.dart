@@ -9,15 +9,13 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_displaymode/flutter_displaymode.dart';
-import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_native_splash/flutter_native_splash.dart';
 import 'package:flutter_sharing_intent/flutter_sharing_intent.dart';
 import 'package:flutter_sharing_intent/model/sharing_file.dart';
-import 'package:flutter_volume_controller/flutter_volume_controller.dart';
-import 'package:get/get.dart';
+import 'package:flutter_volume_controller/flutter_volume_controller.dart' show FlutterVolumeController;
 import 'package:jiffy/jiffy.dart';
-import 'package:namida/controller/tagger_controller.dart';
-import 'package:path_provider/path_provider.dart';
+import 'package:path_provider/path_provider.dart' as pp;
 import 'package:permission_handler/permission_handler.dart';
 
 import 'package:namida/controller/backup_controller.dart';
@@ -30,12 +28,14 @@ import 'package:namida/controller/logs_controller.dart';
 import 'package:namida/controller/namida_channel.dart';
 import 'package:namida/controller/namida_channel_storage.dart';
 import 'package:namida/controller/navigator_controller.dart';
+import 'package:namida/controller/notification_controller.dart';
 import 'package:namida/controller/player_controller.dart';
 import 'package:namida/controller/playlist_controller.dart';
 import 'package:namida/controller/queue_controller.dart';
 import 'package:namida/controller/scroll_search_controller.dart';
 import 'package:namida/controller/settings_controller.dart';
 import 'package:namida/controller/storage_cache_manager.dart';
+import 'package:namida/controller/tagger_controller.dart';
 import 'package:namida/controller/video_controller.dart';
 import 'package:namida/core/constants.dart';
 import 'package:namida/core/enums.dart';
@@ -43,12 +43,13 @@ import 'package:namida/core/extensions.dart';
 import 'package:namida/core/namida_converter_ext.dart';
 import 'package:namida/core/themes.dart';
 import 'package:namida/core/translations/language.dart';
+import 'package:namida/core/utils.dart';
 import 'package:namida/main_page_wrapper.dart';
 import 'package:namida/packages/scroll_physics_modified.dart';
-import 'package:namida/ui/widgets/custom_widgets.dart';
 import 'package:namida/ui/widgets/video_widget.dart';
 import 'package:namida/youtube/controller/youtube_controller.dart';
 import 'package:namida/youtube/controller/youtube_history_controller.dart';
+import 'package:namida/youtube/controller/youtube_info_controller.dart';
 import 'package:namida/youtube/controller/youtube_playlist_controller.dart';
 import 'package:namida/youtube/controller/youtube_subscriptions_controller.dart';
 
@@ -61,7 +62,6 @@ void main() {
 
 void mainInitialization() async {
   WidgetsFlutterBinding.ensureInitialized();
-  Paint.enableDithering = true; // for smooth gradient effect.
 
   // -- x this makes some issues with GestureDetector
   // GestureBinding.instance.resamplingEnabled = true; // for 120hz displays, should make scrolling smoother.
@@ -103,7 +103,7 @@ void mainInitialization() async {
   if (paths.isEmpty) paths.add('/storage/emulated/0');
 
   // -- creating directories
-  AppDirs.values.loop((p, _) => Directory(p).createSync(recursive: true));
+  AppDirs.values.loop((p) => Directory(p).createSync(recursive: true));
 
   kStoragePaths.addAll(paths);
 
@@ -130,7 +130,7 @@ void mainInitialization() async {
   NamidaChannel.inst.setCanEnterPip(settings.enablePip.value);
 
   /// updates values on startup
-  Indexer.inst.updateImageSizeInStorage();
+  Indexer.inst.calculateAllImageSizesInStorage();
   Indexer.inst.updateColorPalettesSizeInStorage();
   Indexer.inst.updateVideosSizeInStorage();
   if (!shouldShowOnBoarding && settings.refreshOnStartup.value) {
@@ -142,6 +142,8 @@ void mainInitialization() async {
 
   const StorageCacheManager().trimExtraFiles();
 
+  YoutubeInfoController.initialize();
+
   QueueController.inst.prepareAllQueuesFile();
 
   await Player.inst.initializePlayer();
@@ -150,7 +152,7 @@ void mainInitialization() async {
 
   FlutterNativeSplash.remove();
 
-  HistoryController.inst.prepareHistoryFile();
+  HistoryController.inst.prepareHistoryFile().then((_) => Indexer.inst.sortMediaTracksSubListsAfterHistoryPrepared());
   YoutubeHistoryController.inst.prepareHistoryFile();
   await Future.wait([
     PlaylistController.inst.prepareDefaultPlaylistsFile(),
@@ -162,21 +164,20 @@ void mainInitialization() async {
 
   YoutubePlaylistController.inst.prepareAllPlaylists();
 
-  YoutubeController.inst.loadInfoToMemory();
-  YoutubeController.inst.fillBackupInfoMap(); // for history videos info.
+  YoutubeInfoController.utils.fillBackupInfoMap(); // for history videos info.
 
   await _initializeIntenties();
 
   await Future.wait([
     SystemChrome.setPreferredOrientations(kDefaultOrientations),
     NamidaNavigator.inst.setDefaultSystemUI(),
-    FlutterDisplayMode.setHighRefreshRate(),
+    FlutterDisplayMode.setHighRefreshRate().catchError((_) {}),
   ]);
 
   NamidaNavigator.inst.setDefaultSystemUIOverlayStyle();
 
   ScrollSearchController.inst.initialize();
-  FlutterLocalNotificationsPlugin().cancelAll();
+  NotificationService.cancelAll();
   FlutterVolumeController.updateShowSystemUI(false);
   CurrentColor.inst.initialize();
 
@@ -191,7 +192,7 @@ void mainInitialization() async {
 void _cleanOldLogs(Map params) {
   final dirPath = params['dirPath'] as String;
   final fileSuffix = params['fileSuffix'] as String?;
-  Directory(dirPath).listSync().loop((e, _) {
+  Directory(dirPath).listSync().loop((e) {
     if (e is File) {
       final filename = e.path.getFilename;
       if (filename.startsWith('logs_') && fileSuffix != null && !filename.endsWith("$fileSuffix.txt")) {
@@ -220,16 +221,21 @@ void _initErrorInterpreters() {
     return true;
   };
 
-  FlutterError.onError = (details) {
-    final msg = details.toDiagnosticsNode().toDescription();
-    logger.error(msg, e: details.exception, st: details.stack);
-  };
+  FlutterError.onError = kDebugMode
+      ? (details) {
+          final msg = details.toString();
+          logger.error(msg, e: details.exception, st: details.stack);
+        }
+      : (details) {
+          final msg = details.toDiagnosticsNode().toDescription();
+          logger.error(msg, e: details.exception, st: details.stack);
+        };
 }
 
 void _initLifeCycle() {
   NamidaChannel.inst.addOnDestroy('main', () async {
     final mode = settings.player.killAfterDismissingApp.value;
-    if (mode == KillAppMode.always || (mode == KillAppMode.ifNotPlaying && !Player.inst.isPlaying)) {
+    if (mode == KillAppMode.always || (mode == KillAppMode.ifNotPlaying && !Player.inst.isPlaying.value)) {
       await Player.inst.pause();
       await Player.inst.dispose();
     }
@@ -242,7 +248,7 @@ void _initLifeCycle() {
 
 Future<void> _initializeIntenties() async {
   Future<void> clearIntentCachedFiles() async {
-    final cacheDir = await getTemporaryDirectory();
+    final cacheDir = await pp.getTemporaryDirectory();
     await for (final cf in cacheDir.list()) {
       if (cf is File) {
         cf.tryDeleting();
@@ -265,7 +271,7 @@ Future<void> _initializeIntenties() async {
       if (files.isNotEmpty) {
         final paths = <String>[];
         final m3uPaths = <String>{};
-        files.loop((f, _) {
+        files.loop((f) {
           final realPath = f.realPath;
           if (realPath != null) {
             final path = realPath.replaceAll('\\', '');
@@ -275,8 +281,8 @@ Future<void> _initializeIntenties() async {
               paths.add(path);
             }
           } else {
-            f.value?.split('\n').loop((e, index) {
-              e.split('https://').loop((line, index) {
+            f.value?.split('\n').loop((e) {
+              e.split('https://').loop((line) {
                 if (line.isNotEmpty) paths.add("https://$line");
               });
             });
@@ -292,16 +298,16 @@ Future<void> _initializeIntenties() async {
             final id = e.getYoutubeID;
             return id == '' ? null : id;
           }).whereType<String>();
-          final ytPlaylists = paths.map((e) {
-            final match = e.isEmpty ? null : NamidaLinkRegex.youtubePlaylistsLinkRegex.firstMatch(e)?[0];
-            return match;
+          final ytPlaylistsIds = paths.map((e) {
+            final matchPlId = e.isEmpty ? null : NamidaLinkUtils.extractPlaylistId(e);
+            return matchPlId;
           }).whereType<String>();
           if (youtubeIds.isNotEmpty) {
             await _waitForFirstBuildContext.future;
             settings.onYoutubeLinkOpen.value.execute(youtubeIds);
-          } else if (ytPlaylists.isNotEmpty) {
-            for (final pl in ytPlaylists) {
-              await OnYoutubeLinkOpenAction.alwaysAsk.executePlaylist(pl, context: rootContext);
+          } else if (ytPlaylistsIds.isNotEmpty) {
+            for (final plid in ytPlaylistsIds) {
+              await OnYoutubeLinkOpenAction.alwaysAsk.executePlaylist(playlistId: plid);
             }
           } else {
             final existing = paths.where((element) => File(element).existsSync()); // this for sussy links
@@ -374,12 +380,9 @@ Future<bool> requestIgnoreBatteryOptimizations() async {
     displaySeconds: 5,
     top: false,
     isError: true,
-    button: NamidaButton(
-      text: lang.DONT_ASK_AGAIN,
-      onPressed: () {
-        Get.closeCurrentSnackbar();
-        settings.save(canAskForBatteryOptimizations: false);
-      },
+    button: (
+      lang.DONT_ASK_AGAIN,
+      () => settings.save(canAskForBatteryOptimizations: false),
     ),
   );
   await Future.delayed(const Duration(seconds: 1));
@@ -387,14 +390,14 @@ Future<bool> requestIgnoreBatteryOptimizations() async {
   return p.isGranted;
 }
 
-Future<bool> requestManageStoragePermission() async {
+Future<bool> requestManageStoragePermission({bool request = true}) async {
   Future<void> createDir() async => await Directory(settings.defaultBackupLocation.value).create(recursive: true);
   if (NamidaDeviceInfo.sdkVersion < 30) {
     await createDir();
     return true;
   }
 
-  if (!await Permission.manageExternalStorage.isGranted) {
+  if (request && !await Permission.manageExternalStorage.isGranted) {
     await Permission.manageExternalStorage.request();
   }
 
@@ -411,7 +414,7 @@ Future<void> setJiffyLocale(String code) async {
     await Jiffy.setLocale(code);
   } catch (e) {
     try {
-      await Jiffy.setLocale(code.split('_').first);
+      await Jiffy.setLocale(code.splitFirst('_'));
     } catch (_) {}
   }
 }
@@ -424,66 +427,87 @@ class Namida extends StatelessWidget {
   final bool shouldShowOnBoarding;
   const Namida({super.key, required this.shouldShowOnBoarding});
 
+  Widget buildMainApp(Widget widget, Brightness? platformBrightness) => ScrollConfiguration(
+        behavior: const ScrollBehaviorModified(),
+        child: ObxO(
+          rx: settings.selectedLanguage,
+          builder: (selectedLanguage) {
+            final codes = selectedLanguage.code.split('_');
+            return Localizations(
+              locale: Locale(codes.first, codes.last),
+              delegates: const [
+                DefaultWidgetsLocalizations.delegate,
+                DefaultMaterialLocalizations.delegate,
+                GlobalMaterialLocalizations.delegate,
+                GlobalWidgetsLocalizations.delegate,
+              ],
+              child: Obx(
+                () {
+                  final mode = settings.themeMode.valueR;
+                  final useDarkTheme = mode == ThemeMode.dark || (mode == ThemeMode.system && platformBrightness == Brightness.dark);
+                  final isLight = !useDarkTheme;
+                  final theme = AppThemes.inst.getAppTheme(CurrentColor.inst.currentColorScheme, isLight);
+                  NamidaNavigator.inst.setSystemUIOverlayStyleCustom(isLight);
+                  return Theme(
+                    data: theme,
+                    child: widget,
+                  );
+                },
+              ),
+            );
+          },
+        ),
+      );
+
   @override
   Widget build(BuildContext context) {
     // -- no need to listen, widget is rebuilt on applifecycle
-    final showPipOnly = NamidaChannel.inst.isInPip.value && Player.inst.videoPlayerInfo != null;
+    final showPipOnly = NamidaChannel.inst.isInPip.value;
     return Stack(
       alignment: Alignment.bottomLeft,
       children: [
         Visibility(
           maintainState: true,
           visible: !showPipOnly,
-          child: Obx(
-            () {
-              final codes = settings.selectedLanguage.value.code.split('_');
-              return Localizations(
-                locale: Locale(codes.first, codes.last),
-                delegates: const [
-                  DefaultWidgetsLocalizations.delegate,
-                  DefaultMaterialLocalizations.delegate,
-                ],
-                child: GetMaterialApp(
-                  key: const Key('namida_app'),
-                  debugShowCheckedModeBanner: false,
-                  title: 'Namida',
-                  // restorationScopeId: 'Namida',
-                  builder: (context, widget) {
-                    return ScrollConfiguration(
-                      behavior: const ScrollBehaviorModified(),
-                      child: Obx(
-                        () {
-                          final mode = settings.themeMode.value;
-                          final useDarkTheme = mode == ThemeMode.dark || (mode == ThemeMode.system && MediaQuery.platformBrightnessOf(context) == Brightness.dark);
-                          final isLight = !useDarkTheme;
-                          final theme = AppThemes.inst.getAppTheme(CurrentColor.inst.currentColorScheme, isLight);
-                          SystemChrome.setSystemUIOverlayStyle(
-                            SystemUiOverlayStyle(
-                              systemNavigationBarContrastEnforced: false,
-                              systemNavigationBarColor: const Color(0x00000000),
-                              systemNavigationBarDividerColor: const Color(0x00000000),
-                              systemNavigationBarIconBrightness: isLight ? Brightness.dark : Brightness.light,
-                            ),
-                          );
-                          return AnimatedTheme(
-                            duration: const Duration(milliseconds: kThemeAnimationDurationMS),
-                            data: theme,
-                            child: widget!,
-                          );
-                        },
-                      ),
-                    );
+          child: ObxO(
+            rx: settings.fontScaleFactor,
+            builder: (fontScaleFactor) => MediaQuery(
+              data: MediaQuery.of(context).copyWith(textScaler: TextScaler.linear(fontScaleFactor)),
+              child: MaterialApp(
+                color: kDefaultIconLightColor,
+                key: const Key('namida_app'),
+                debugShowCheckedModeBanner: false,
+                navigatorKey: namida.rootNavigatorKey,
+                title: 'Namida',
+                // restorationScopeId: 'Namida',
+                builder: (context, widget) {
+                  Brightness? platformBrightness;
+                  // overlay entries get rebuilt on any insertion/removal, so we create app here.
+
+                  Widget mainApp = buildMainApp(widget!, platformBrightness);
+
+                  return Overlay(
+                    initialEntries: [
+                      OverlayEntry(builder: (context) {
+                        final newPlatformBrightness = MediaQuery.platformBrightnessOf(context);
+                        if (newPlatformBrightness != platformBrightness) {
+                          platformBrightness = newPlatformBrightness;
+                          mainApp = buildMainApp(widget, platformBrightness);
+                        }
+                        return mainApp;
+                      }),
+                    ],
+                  );
+                },
+                home: MainPageWrapper(
+                  shouldShowOnBoarding: shouldShowOnBoarding,
+                  onContextAvailable: (ctx) {
+                    _initialContext = ctx;
+                    _waitForFirstBuildContext.isCompleted ? null : _waitForFirstBuildContext.complete(true);
                   },
-                  home: MainPageWrapper(
-                    shouldShowOnBoarding: shouldShowOnBoarding,
-                    onContextAvailable: (ctx) {
-                      _initialContext = ctx;
-                      _waitForFirstBuildContext.isCompleted ? null : _waitForFirstBuildContext.complete(true);
-                    },
-                  ),
                 ),
-              );
-            },
+              ),
+            ),
           ),
         ),
 

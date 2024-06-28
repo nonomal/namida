@@ -1,8 +1,9 @@
 import 'dart:io';
+import 'dart:isolate';
 
 import 'package:flutter/material.dart';
-import 'package:get/get.dart';
 
+import 'package:namida/base/ports_provider.dart';
 import 'package:namida/class/color_m.dart';
 import 'package:namida/class/track.dart';
 import 'package:namida/controller/current_color.dart';
@@ -11,13 +12,16 @@ import 'package:namida/controller/history_controller.dart';
 import 'package:namida/controller/indexer_controller.dart';
 import 'package:namida/controller/namida_channel.dart';
 import 'package:namida/controller/navigator_controller.dart';
+import 'package:namida/controller/search_sort_controller.dart';
 import 'package:namida/controller/settings_controller.dart';
 import 'package:namida/core/constants.dart';
+import 'package:namida/core/dimensions.dart';
 import 'package:namida/core/enums.dart';
 import 'package:namida/core/extensions.dart';
 import 'package:namida/core/icon_fonts/broken_icons.dart';
 import 'package:namida/core/namida_converter_ext.dart';
 import 'package:namida/core/translations/language.dart';
+import 'package:namida/core/utils.dart';
 import 'package:namida/ui/dialogs/track_clear_dialog.dart';
 import 'package:namida/ui/widgets/animated_widgets.dart';
 import 'package:namida/ui/widgets/custom_widgets.dart';
@@ -36,13 +40,13 @@ void showTrackAdvancedDialog({
   final canShowClearDialog = tracks.hasAnythingCached;
 
   final Map<TrackSource, int> sourcesMap = {};
-  tracks.loop((e, index) {
+  tracks.loop((e) {
     final twd = e.trackWithDate;
     if (twd != null) {
       sourcesMap.update(twd.source, (value) => value + 1, ifAbsent: () => 1);
     }
   });
-  final RxBool willUpdateArtwork = false.obs;
+  final willUpdateArtwork = false.obs;
 
   final trackColor = await CurrentColor.inst.getTrackColors(tracks.first.track, delightnedAndAlpha: false);
 
@@ -124,7 +128,7 @@ void showTrackAdvancedDialog({
                       NamidaButton(
                         text: lang.CONFIRM,
                         onPressed: () async {
-                          final success = await NamidaChannel.inst.setMusicAs(path: tracks.first.track.path, types: selected);
+                          final success = await NamidaChannel.inst.setMusicAs(path: tracks.first.track.path, types: selected.value);
                           if (success) NamidaNavigator.inst.closeDialog();
                         },
                       ),
@@ -149,20 +153,20 @@ void showTrackAdvancedDialog({
             ),
           Obx(
             () {
-              final shouldShow = shouldShowReIndexProgress.value;
-              final errors = reIndexedTracksFailed.value;
+              final shouldShow = shouldShowReIndexProgress.valueR;
+              final errors = reIndexedTracksFailed.valueR;
               final secondLine = errors > 0 ? '\n${lang.ERROR}: $errors' : '';
               return CustomListTile(
-                enabled: shouldReIndexEnabled.value,
+                enabled: shouldReIndexEnabled.valueR,
                 passedColor: colorScheme,
                 title: lang.RE_INDEX,
                 icon: Broken.direct_inbox,
-                subtitle: shouldShow ? "${reIndexedTracksSuccessful.value}/${tracksUniqued.length}$secondLine" : null,
+                subtitle: shouldShow ? "${reIndexedTracksSuccessful.valueR}/${tracksUniqued.length}$secondLine" : null,
                 trailingRaw: NamidaInkWell(
                   padding: const EdgeInsets.symmetric(vertical: 4.0, horizontal: 12.0),
                   bgColor: theme.cardColor,
-                  onTap: () => willUpdateArtwork.value = !willUpdateArtwork.value,
-                  child: Obx(() => Text('${lang.ARTWORK}  ${willUpdateArtwork.value ? '✓' : 'x'}')),
+                  onTap: () => willUpdateArtwork.toggle(),
+                  child: Obx(() => Text('${lang.ARTWORK}  ${willUpdateArtwork.valueR ? '✓' : 'x'}')),
                 ),
                 onTap: () async {
                   await Indexer.inst.reindexTracks(
@@ -281,7 +285,7 @@ void _showTrackColorPaletteDialog({
     NamidaNavigator.inst.navigateDialog(
       colorScheme: colorScheme,
       dialogBuilder: (theme) => NamidaColorPickerDialog(
-        initialColor: allPaletteColor.lastOrNull ?? Colors.black,
+        initialColor: allPaletteColor.value.lastOrNull ?? Colors.black,
         doneText: lang.ADD,
         onColorChanged: (value) => color = value,
         onDonePressed: () {
@@ -299,7 +303,7 @@ void _showTrackColorPaletteDialog({
   final finalColorToBeUsed = trackColor.color.obs;
 
   Widget getText(String text, {TextStyle? style}) {
-    return Text(text, style: style ?? Get.textTheme.displaySmall);
+    return Text(text, style: style ?? namida.textTheme.displaySmall);
   }
 
   Widget getColorWidget(Color? color, [Widget? child]) => CircleAvatar(
@@ -330,7 +334,7 @@ void _showTrackColorPaletteDialog({
       alignment: Alignment.centerLeft,
       padding: const EdgeInsets.all(6.0),
       decoration: BoxDecoration(
-        color: (Get.isDarkMode ? Colors.black : Colors.white).withAlpha(160),
+        color: (namida.isDarkMode ? Colors.black : Colors.white).withAlpha(160),
         border: Border.all(color: theme.shadowColor),
         borderRadius: BorderRadius.circular(12.0.multipliedRadius),
       ),
@@ -382,7 +386,7 @@ void _showTrackColorPaletteDialog({
         normalTitleStyle: true,
         title: lang.COLOR_PALETTE,
         leftAction: NamidaIconButton(
-          tooltip: lang.RESTORE_DEFAULTS,
+          tooltip: () => lang.RESTORE_DEFAULTS,
           onPressed: onRestoreDefaults,
           icon: Broken.refresh,
         ),
@@ -390,7 +394,7 @@ void _showTrackColorPaletteDialog({
           const CancelButton(),
           NamidaButton(
             text: lang.CONFIRM,
-            onPressed: () => onFinalColor(allPaletteColor, finalColorToBeUsed.value),
+            onPressed: () => onFinalColor(allPaletteColor.value, finalColorToBeUsed.value),
           ),
         ],
         child: Column(
@@ -409,7 +413,7 @@ void _showTrackColorPaletteDialog({
                         getText(lang.REMOVED),
                         const SizedBox(height: 8.0),
                         getPalettesWidget(
-                          palette: removedColors,
+                          palette: removedColors.valueR,
                           onColorTap: (color) {},
                           onColorLongPress: (color) {
                             allPaletteColor.add(color);
@@ -429,7 +433,7 @@ void _showTrackColorPaletteDialog({
             const SizedBox(height: 8.0),
             Obx(
               () => getPalettesWidget(
-                palette: allPaletteColor,
+                palette: allPaletteColor.valueR,
                 onColorTap: (color) => selectedColors.addOrRemove(color),
                 onColorLongPress: (color) {
                   allPaletteColor.remove(color);
@@ -465,15 +469,15 @@ void _showTrackColorPaletteDialog({
                     title: lang.PALETTE_MIX,
                     colors: trackColor.palette,
                   ),
-                  if (didChangeOriginalPalette.value)
+                  if (didChangeOriginalPalette.valueR)
                     mixWidget(
                       title: lang.PALETTE_NEW_MIX,
-                      colors: allPaletteColor,
+                      colors: allPaletteColor.valueR,
                     ),
                   if (selectedColors.isNotEmpty)
                     mixWidget(
                       title: lang.PALETTE_SELECTED_MIX,
-                      colors: selectedColors,
+                      colors: selectedColors.valueR,
                     ),
                 ],
               ),
@@ -484,14 +488,15 @@ void _showTrackColorPaletteDialog({
             ),
             Row(
               children: [
-                getText('${lang.USED} : ', style: Get.textTheme.displayMedium),
+                getText('${lang.USED} : ', style: namida.textTheme.displayMedium),
                 const SizedBox(width: 12.0),
                 Expanded(
-                  child: Obx(
-                    () => AnimatedSizedBox(
+                  child: ObxO(
+                    rx: finalColorToBeUsed,
+                    builder: (finalColorToBeUsed) => AnimatedSizedBox(
                       duration: const Duration(milliseconds: 200),
                       decoration: BoxDecoration(
-                        color: finalColorToBeUsed.value,
+                        color: finalColorToBeUsed,
                         borderRadius: BorderRadius.circular(8.0.multipliedRadius),
                       ),
                       width: double.infinity,
@@ -514,8 +519,10 @@ void showLibraryTracksChooseDialog({
   String trackName = '',
   Color? colorScheme,
 }) async {
-  final allTracksList = List<Track>.from(allTracksInLibrary).obs;
+  final allTracksListBase = List<Track>.from(allTracksInLibrary);
+  final allTracksList = allTracksListBase.obs;
   final selectedTrack = Rxn<Track>();
+  final isSearching = false.obs;
   void onTrackTap(Track tr) {
     if (selectedTrack.value == tr) {
       selectedTrack.value = null;
@@ -525,14 +532,24 @@ void showLibraryTracksChooseDialog({
   }
 
   final searchController = TextEditingController();
+  final scrollController = ScrollController();
   final focusNode = FocusNode();
+  final searchManager = _TracksSearchTemp(
+    (tracks) {
+      allTracksList.value = tracks;
+      isSearching.value = false;
+    },
+  );
 
   await NamidaNavigator.inst.navigateDialog(
     onDisposing: () {
       allTracksList.close();
       selectedTrack.close();
+      isSearching.close();
       searchController.dispose();
+      scrollController.dispose();
       focusNode.dispose();
+      searchManager.dispose();
     },
     colorScheme: colorScheme,
     dialogBuilder: (theme) => CustomBlurryDialog(
@@ -542,17 +559,18 @@ void showLibraryTracksChooseDialog({
       insetPadding: const EdgeInsets.all(32.0),
       actions: [
         const CancelButton(),
-        Obx(
-          () => NamidaButton(
-            enabled: selectedTrack.value != null,
+        ObxO(
+          rx: selectedTrack,
+          builder: (selectedTr) => NamidaButton(
+            enabled: selectedTr != null,
             text: lang.CONFIRM,
             onPressed: () => onChoose(selectedTrack.value!),
           ),
         )
       ],
       child: SizedBox(
-        width: Get.width,
-        height: Get.height * 0.6,
+        width: namida.width,
+        height: namida.height * 0.7,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -567,59 +585,77 @@ void showLibraryTracksChooseDialog({
                       textFieldController: searchController,
                       textFieldHintText: lang.SEARCH,
                       onTextFieldValueChanged: (value) {
-                        final matched = allTracksInLibrary.where((element) {
-                          final titleMatch = element.title.cleanUpForComparison.contains(value);
-                          final artistMatch = element.originalArtist.cleanUpForComparison.contains(value);
-                          final albumMatch = element.album.cleanUpForComparison.contains(value);
-                          return titleMatch || artistMatch || albumMatch;
-                        });
-                        allTracksList.value = matched.toList();
+                        if (value.isEmpty) {
+                          allTracksList.value = allTracksListBase;
+                        } else {
+                          isSearching.value = true;
+                          searchManager.search(value);
+                        }
                       },
                     ),
                   ),
                   const SizedBox(width: 8.0),
-                  NamidaIconButton(
-                    icon: Broken.close_circle,
-                    onPressed: () {
-                      allTracksList
-                        ..clear()
-                        ..addAll(allTracksInLibrary);
-                      searchController.clear();
-                    },
+                  Stack(
+                    alignment: Alignment.center,
+                    children: [
+                      NamidaIconButton(
+                        icon: Broken.close_circle,
+                        onPressed: () {
+                          allTracksList.value = allTracksListBase;
+                          searchController.clear();
+                        },
+                      ),
+                      ObxO(
+                        rx: isSearching,
+                        builder: (isSearching) => isSearching
+                            ? const CircularProgressIndicator.adaptive(
+                                strokeWidth: 2.0,
+                                strokeCap: StrokeCap.round,
+                              )
+                            : const SizedBox(),
+                      ),
+                    ],
                   )
                 ],
               ),
             ),
             const SizedBox(height: 8.0),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16.0),
-              child: Text(
-                trackName,
-                style: Get.textTheme.displayMedium,
+            if (trackName != '')
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16.0),
+                child: Text(
+                  trackName,
+                  style: namida.textTheme.displayMedium,
+                ),
               ),
-            ),
-            const SizedBox(height: 8.0),
+            if (trackName != '') const SizedBox(height: 8.0),
             Expanded(
-              child: Obx(
-                () => ListView.builder(
-                  padding: EdgeInsets.zero,
-                  itemCount: allTracksList.length,
-                  itemBuilder: (context, i) {
-                    final tr = allTracksList[i];
-                    return Obx(
-                      () => TrackTile(
+              child: NamidaScrollbar(
+                controller: scrollController,
+                child: Obx(
+                  () => ListView.builder(
+                    controller: scrollController,
+                    padding: EdgeInsets.zero,
+                    itemCount: allTracksList.length,
+                    itemExtent: Dimensions.inst.trackTileItemExtent,
+                    itemBuilder: (context, i) {
+                      final tr = allTracksList.value[i];
+                      return TrackTile(
                         trackOrTwd: tr,
                         index: i,
                         queueSource: QueueSource.playlist,
                         onTap: () => onTrackTap(tr),
                         onRightAreaTap: () => onTrackTap(tr),
-                        trailingWidget: NamidaCheckMark(
-                          size: 22.0,
-                          active: selectedTrack.value == tr,
+                        trailingWidget: ObxO(
+                          rx: selectedTrack,
+                          builder: (selectedTrack) => NamidaCheckMark(
+                            size: 22.0,
+                            active: selectedTrack == tr,
+                          ),
                         ),
-                      ),
-                    );
-                  },
+                      );
+                    },
+                  ),
                 ),
               ),
             ),
@@ -628,4 +664,29 @@ void showLibraryTracksChooseDialog({
       ),
     ),
   );
+}
+
+class _TracksSearchTemp with PortsProvider<Map> {
+  final void Function(List<Track> tracks) _onResult;
+  _TracksSearchTemp(this._onResult);
+
+  void search(String text) async {
+    await initialize();
+    final p = {'text': text, 'temp': true};
+    await sendPort(p);
+  }
+
+  @override
+  void onResult(dynamic result) {
+    final r = result as (List<Track>, bool, String);
+    _onResult(r.$1);
+  }
+
+  @override
+  IsolateFunctionReturnBuild<Map> isolateFunction(SendPort port) {
+    final params = SearchSortController.inst.generateTrackSearchIsolateParams(port, sendPrepared: true);
+    return IsolateFunctionReturnBuild(SearchSortController.searchTracksIsolate, params);
+  }
+
+  Future<void> dispose() async => await disposePort();
 }

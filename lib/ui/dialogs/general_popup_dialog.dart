@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
-import 'package:get/get.dart';
 import 'package:share_plus/share_plus.dart';
 
 import 'package:namida/class/folder.dart';
@@ -13,7 +12,7 @@ import 'package:namida/controller/edit_delete_controller.dart';
 import 'package:namida/controller/file_browser.dart';
 import 'package:namida/controller/generators_controller.dart';
 import 'package:namida/controller/indexer_controller.dart';
-import 'package:namida/controller/lyrics_controller.dart';
+import 'package:namida/controller/lyrics_search_utils/lrc_search_utils_selectable.dart';
 import 'package:namida/controller/navigator_controller.dart';
 import 'package:namida/controller/player_controller.dart';
 import 'package:namida/controller/playlist_controller.dart';
@@ -27,6 +26,7 @@ import 'package:namida/core/icon_fonts/broken_icons.dart';
 import 'package:namida/core/namida_converter_ext.dart';
 import 'package:namida/core/themes.dart';
 import 'package:namida/core/translations/language.dart';
+import 'package:namida/core/utils.dart';
 import 'package:namida/main.dart';
 import 'package:namida/ui/dialogs/add_to_playlist_dialog.dart';
 import 'package:namida/ui/dialogs/edit_tags_dialog.dart';
@@ -62,6 +62,7 @@ Future<void> showGeneralPopupDialog(
   (String, String)? albumToAddFrom,
   String? heroTag,
   String? additionalHero,
+  IconData trailingIcon = Broken.arrow_right_3,
 }) async {
   final isSingle = tracks.length == 1;
   forceSingleArtwork ??= isSingle;
@@ -69,11 +70,11 @@ Future<void> showGeneralPopupDialog(
   final tracksExisting = <Track>[];
   if (isSingle || errorPlayingTrack != null) {
     // -- fill using real-time checks if there was an error.
-    tracks.loop((t, index) {
+    tracks.loop((t) {
       if (File(t.path).existsSync()) tracksExisting.add(t);
     });
   } else {
-    tracks.loop((t, index) {
+    tracks.loop((t) {
       final existingTrack = t.path.toTrackOrNull();
       if (existingTrack != null) tracksExisting.add(existingTrack);
     });
@@ -85,13 +86,13 @@ Future<void> showGeneralPopupDialog(
           ? tracks[tracks.indexOfImage]
           : tracks.first;
 
-  final colorDelightened = CurrentColor.inst.color.obs;
-  final iconColor = Color.alphaBlend(colorDelightened.value.withAlpha(120), Get.textTheme.displayMedium!.color!).obs;
+  final colorDelightened = CurrentColor.inst.color.obso;
+  final iconColor = Color.alphaBlend(colorDelightened.value.withAlpha(120), namida.textTheme.displayMedium!.color!).obso;
   if (extractColor && trackToExtractColorFrom != null) {
     CurrentColor.inst.getTrackDelightnedColor(trackToExtractColorFrom, useIsolate: true).executeWithMinDelay().then((c) {
       if (c == colorDelightened.value) return;
       colorDelightened.value = c;
-      iconColor.value = Color.alphaBlend(c.withAlpha(120), Get.textTheme.displayMedium!.color!);
+      iconColor.value = Color.alphaBlend(c.withAlpha(120), namida.textTheme.displayMedium!.color!);
     });
   }
 
@@ -105,17 +106,17 @@ Future<void> showGeneralPopupDialog(
 
   final Iterable<YoutubeID> availableYoutubeIDs = tracks.map((e) => YoutubeID(id: e.youtubeID, playlistID: null)).where((element) => element.id != '');
 
-  final numberOfRepeats = 1.obs;
-  final isLoadingFilesToShare = false.obs;
+  final numberOfRepeats = 1.obso;
+  final isLoadingFilesToShare = false.obso;
 
   bool shoulShowPlaylistUtils() => tracksWithDates.length > 1 && playlistName != null && !PlaylistController.inst.isOneOfDefaultPlaylists(playlistName);
   bool shoulShowRemoveFromPlaylist() => tracksWithDates.isNotEmpty && playlistName != null && playlistName != k_PLAYLIST_NAME_MOST_PLAYED;
 
-  Widget bigIcon(IconData icon, String tooltipMessage, void Function()? onTap, {String subtitle = '', Widget? iconWidget}) {
+  Widget bigIcon(IconData icon, String Function() tooltipMessage, void Function()? onTap, {String subtitle = '', Widget? iconWidget}) {
     return NamidaInkWell(
       onTap: onTap,
       borderRadius: 8.0,
-      child: Tooltip(
+      child: NamidaTooltip(
         message: tooltipMessage,
         preferBelow: false,
         child: Padding(
@@ -123,19 +124,18 @@ Future<void> showGeneralPopupDialog(
           child: Column(
             children: [
               iconWidget ??
-                  StreamBuilder(
-                    initialData: iconColor.value,
-                    stream: iconColor.stream,
-                    builder: (context, snapshot) => Icon(
+                  ObxO(
+                    rx: iconColor,
+                    builder: (color) => Icon(
                       icon,
-                      color: snapshot.data,
+                      color: color,
                     ),
                   ),
               if (subtitle != '') ...[
                 const SizedBox(height: 2.0),
                 Text(
                   subtitle,
-                  style: Get.textTheme.displaySmall?.copyWith(fontSize: 12.0.multipliedFontScale),
+                  style: namida.textTheme.displaySmall?.copyWith(fontSize: 12.0),
                   maxLines: 1,
                 )
               ]
@@ -149,11 +149,10 @@ Future<void> showGeneralPopupDialog(
   Future<void> openDialog(Widget widget, {void Function()? onDisposing}) async {
     await NamidaNavigator.inst.navigateDialog(
       onDisposing: onDisposing,
-      dialog: StreamBuilder(
-        initialData: colorDelightened.value,
-        stream: colorDelightened.stream,
-        builder: (context, snapshot) => AnimatedTheme(
-          data: AppThemes.inst.getAppTheme(snapshot.data, null, true),
+      dialog: ObxO(
+        rx: colorDelightened,
+        builder: (color) => AnimatedTheme(
+          data: AppThemes.inst.getAppTheme(color, null, true),
           child: widget,
         ),
       ),
@@ -182,7 +181,7 @@ Future<void> showGeneralPopupDialog(
             onPressed: () async {
               List<String> moodsPre = controller.text.split(',');
               List<String> moodsFinal = [];
-              moodsPre.loop((m, index) {
+              moodsPre.loop((m) {
                 if (!m.contains(',') && m != ' ' && m.isNotEmpty) {
                   moodsFinal.add(m.trimAll());
                 }
@@ -199,7 +198,7 @@ Future<void> showGeneralPopupDialog(
           children: [
             Text(
               subtitle,
-              style: Get.textTheme.displaySmall,
+              style: namida.textTheme.displaySmall,
             ),
             const SizedBox(
               height: 20.0,
@@ -346,12 +345,9 @@ Future<void> showGeneralPopupDialog(
       title: lang.UNDO_CHANGES,
       message: lang.UNDO_CHANGES_DELETED_PLAYLIST,
       displaySeconds: 3,
-      button: TextButton(
-        onPressed: () async {
-          await PlaylistController.inst.reAddPlaylist(pl, pl.modifiedDate);
-          Get.closeAllSnackbars();
-        },
-        child: Text(lang.UNDO),
+      button: (
+        lang.UNDO,
+        () async => await PlaylistController.inst.reAddPlaylist(pl, pl.modifiedDate),
       ),
     );
   }
@@ -417,7 +413,7 @@ Future<void> showGeneralPopupDialog(
       children: [
         Text(
           lang.HIGH_MATCHES,
-          style: Get.textTheme.displayMedium,
+          style: namida.textTheme.displayMedium,
         ),
         const SizedBox(height: 8.0),
         ...highMatchesFiles.map(
@@ -455,9 +451,8 @@ Future<void> showGeneralPopupDialog(
 
     /// Searching
     final txtc = TextEditingController();
-    final RxList<String> filteredPaths = <String>[].obs;
-    filteredPaths.addAll(paths);
-    final RxBool shouldCleanUp = true.obs;
+    final filteredPaths = List<String>.from(paths).obso;
+    final shouldCleanUp = true.obso;
 
     await openDialog(
       onDisposing: () {
@@ -478,8 +473,8 @@ Future<void> showGeneralPopupDialog(
           ),
         ],
         child: SizedBox(
-          width: Get.width,
-          height: Get.height * 0.5,
+          width: namida.width,
+          height: namida.height * 0.5,
           child: Column(
             children: [
               Row(
@@ -497,10 +492,11 @@ Future<void> showGeneralPopupDialog(
                       },
                     ),
                   ),
-                  Obx(
-                    () => NamidaIconButton(
-                      tooltip: shouldCleanUp.value ? lang.DISABLE_SEARCH_CLEANUP : lang.ENABLE_SEARCH_CLEANUP,
-                      icon: shouldCleanUp.value ? Broken.shield_cross : Broken.shield_search,
+                  ObxO(
+                    rx: shouldCleanUp,
+                    builder: (cleanup) => NamidaIconButton(
+                      tooltip: () => shouldCleanUp.value ? lang.DISABLE_SEARCH_CLEANUP : lang.ENABLE_SEARCH_CLEANUP,
+                      icon: cleanup ? Broken.shield_cross : Broken.shield_search,
                       onPressed: () => shouldCleanUp.value = !shouldCleanUp.value,
                     ),
                   )
@@ -508,11 +504,12 @@ Future<void> showGeneralPopupDialog(
               ),
               const SizedBox(height: 8.0),
               Expanded(
-                child: Obx(
-                  () => NamidaListView(
+                child: ObxO(
+                  rx: filteredPaths,
+                  builder: (filtered) => NamidaListView(
                     header: highMatchesFiles.isNotEmpty ? highMatchesWidget(highMatchesFiles) : null,
                     itemBuilder: (context, i) {
-                      final p = filteredPaths[i];
+                      final p = filtered[i];
                       return SmallListTile(
                         key: ValueKey(i),
                         borderRadius: 12.0,
@@ -521,8 +518,8 @@ Future<void> showGeneralPopupDialog(
                         onTap: () => updatePathDialog(p),
                       );
                     },
-                    itemCount: filteredPaths.length,
-                    itemExtents: null,
+                    itemCount: filtered.length,
+                    itemExtent: null,
                   ),
                 ),
               ),
@@ -542,9 +539,10 @@ Future<void> showGeneralPopupDialog(
     NamidaLinkUtils.openLink(link);
   }
 
-  final advancedStuffListTile = Obx(
-    () => SmallListTile(
-      color: colorDelightened.value,
+  final advancedStuffListTile = ObxO(
+    rx: colorDelightened,
+    builder: (colorDelightened) => SmallListTile(
+      color: colorDelightened,
       compact: false,
       title: lang.ADVANCED,
       icon: Broken.code_circle,
@@ -552,7 +550,7 @@ Future<void> showGeneralPopupDialog(
         cancelSkipTimer();
         showTrackAdvancedDialog(
           tracks: tracksWithDates.isNotEmpty ? tracksWithDates : tracks,
-          colorScheme: colorDelightened.value,
+          colorScheme: colorDelightened,
           source: source,
           albumsUniqued: availableAlbums,
         );
@@ -561,9 +559,10 @@ Future<void> showGeneralPopupDialog(
   );
 
   final Widget? removeFromPlaylistListTile = shoulShowRemoveFromPlaylist()
-      ? Obx(
-          () => SmallListTile(
-            color: colorDelightened.value,
+      ? ObxO(
+          rx: colorDelightened,
+          builder: (colorDelightened) => SmallListTile(
+            color: colorDelightened,
             compact: true,
             title: lang.REMOVE_FROM_PLAYLIST,
             subtitle: playlistName!.translatePlaylistName(),
@@ -583,14 +582,14 @@ Future<void> showGeneralPopupDialog(
           child: Row(
             children: [
               const SizedBox(width: 24.0),
-              Expanded(child: bigIcon(Broken.smileys, lang.SET_MOODS, setPlaylistMoods)),
+              Expanded(child: bigIcon(Broken.smileys, () => lang.SET_MOODS, setPlaylistMoods)),
               const SizedBox(width: 8.0),
-              Expanded(child: bigIcon(Broken.edit_2, lang.RENAME_PLAYLIST, renamePlaylist)),
+              Expanded(child: bigIcon(Broken.edit_2, () => lang.RENAME_PLAYLIST, renamePlaylist)),
               const SizedBox(width: 8.0),
               Expanded(
                 child: bigIcon(
                   Broken.edit_2,
-                  lang.REMOVE_DUPLICATES,
+                  () => lang.REMOVE_DUPLICATES,
                   removePlaylistDuplicates,
                   iconWidget: const StackedIcon(
                     baseIcon: Broken.copy,
@@ -599,10 +598,10 @@ Future<void> showGeneralPopupDialog(
                 ),
               ),
               const SizedBox(width: 8.0),
-              Expanded(child: bigIcon(Broken.pen_remove, lang.DELETE_PLAYLIST, deletePlaylist)),
+              Expanded(child: bigIcon(Broken.pen_remove, () => lang.DELETE_PLAYLIST, deletePlaylist)),
               if (PlaylistController.inst.getPlaylist(playlistName ?? '')?.m3uPath == null) ...[
                 const SizedBox(width: 8.0),
-                Expanded(child: bigIcon(Broken.directbox_send, lang.EXPORT_AS_M3U, exportPlaylist)),
+                Expanded(child: bigIcon(Broken.directbox_send, () => lang.EXPORT_AS_M3U, exportPlaylist)),
               ],
               const SizedBox(width: 24.0),
             ],
@@ -610,9 +609,10 @@ Future<void> showGeneralPopupDialog(
         )
       : null;
   final Widget? removeQueueTile = queue != null
-      ? Obx(
-          () => SmallListTile(
-            color: colorDelightened.value,
+      ? ObxO(
+          rx: colorDelightened,
+          builder: (colorDelightened) => SmallListTile(
+            color: colorDelightened,
             compact: false,
             title: lang.REMOVE_QUEUE,
             icon: Broken.pen_remove,
@@ -637,12 +637,11 @@ Future<void> showGeneralPopupDialog(
     durationInMs: 400,
     scale: 0.92,
     onDismissing: cancelSkipTimer,
-    dialog: StreamBuilder(
-      initialData: colorDelightened.value,
-      stream: colorDelightened.stream,
-      builder: (context, snapshot) {
-        final theme = AppThemes.inst.getAppTheme(snapshot.data, null, false);
-        final iconColor = Color.alphaBlend(colorDelightened.value.withAlpha(120), theme.textTheme.displayMedium!.color!);
+    dialog: ObxO(
+      rx: colorDelightened,
+      builder: (colorDelightened) {
+        final theme = AppThemes.inst.getAppTheme(colorDelightened, null, false);
+        final iconColor = Color.alphaBlend(colorDelightened.withAlpha(120), theme.textTheme.displayMedium!.color!);
         return AnimatedTheme(
           data: theme,
           child: Dialog(
@@ -661,7 +660,7 @@ Future<void> showGeneralPopupDialog(
                             false,
                             comingFromQueue: comingFromQueue,
                             index: index,
-                            colorScheme: colorDelightened.value,
+                            colorScheme: colorDelightened,
                             queueSource: source,
                             additionalHero: additionalHero,
                           )
@@ -706,8 +705,8 @@ Future<void> showGeneralPopupDialog(
                                     overflow: TextOverflow.ellipsis,
                                     maxLines: 1,
                                     style: theme.textTheme.displayLarge?.copyWith(
-                                      fontSize: 17.0.multipliedFontScale,
-                                      color: Color.alphaBlend(colorDelightened.value.withAlpha(40), theme.textTheme.displayMedium!.color!),
+                                      fontSize: 17.0,
+                                      color: Color.alphaBlend(colorDelightened.withAlpha(40), theme.textTheme.displayMedium!.color!),
                                     ),
                                   ),
                                 const SizedBox(
@@ -719,8 +718,8 @@ Future<void> showGeneralPopupDialog(
                                     overflow: TextOverflow.ellipsis,
                                     maxLines: 1,
                                     style: theme.textTheme.displayMedium?.copyWith(
-                                      fontSize: 14.0.multipliedFontScale,
-                                      color: Color.alphaBlend(colorDelightened.value.withAlpha(80), theme.textTheme.displayMedium!.color!),
+                                      fontSize: 14.0,
+                                      color: Color.alphaBlend(colorDelightened.withAlpha(80), theme.textTheme.displayMedium!.color!),
                                     ),
                                   ),
                                 if (thirdLineText.isNotEmpty) ...[
@@ -732,23 +731,17 @@ Future<void> showGeneralPopupDialog(
                                     overflow: TextOverflow.ellipsis,
                                     maxLines: 1,
                                     style: theme.textTheme.displaySmall?.copyWith(
-                                      fontSize: 12.5.multipliedFontScale,
-                                      color: Color.alphaBlend(colorDelightened.value.withAlpha(40), theme.textTheme.displayMedium!.color!),
+                                      fontSize: 12.5,
+                                      color: Color.alphaBlend(colorDelightened.withAlpha(40), theme.textTheme.displayMedium!.color!),
                                     ),
                                   ),
                                 ]
                               ],
                             ),
                           ),
-                          const SizedBox(
-                            width: 16.0,
-                          ),
-                          const Icon(
-                            Broken.arrow_right_3,
-                          ),
-                          const SizedBox(
-                            width: 16.0,
-                          ),
+                          const SizedBox(width: 16.0),
+                          Icon(trailingIcon),
+                          const SizedBox(width: 16.0),
                         ],
                       ),
                     ),
@@ -787,18 +780,19 @@ Future<void> showGeneralPopupDialog(
                               SmallListTile(
                                 title: lang.UPDATE,
                                 subtitle: tracks.first.path,
-                                color: colorDelightened.value,
+                                color: colorDelightened,
                                 compact: true,
                                 icon: Broken.document_upload,
                                 onTap: () async {
                                   cancelSkipTimer();
                                   NamidaNavigator.inst.closeDialog();
-                                  if (Indexer.inst.allAudioFiles.isEmpty) {
+                                  if (Indexer.inst.allAudioFiles.value.isEmpty) {
                                     await Indexer.inst.getAudioFiles();
                                   }
 
                                   /// firstly checks if a file exists in current library
-                                  final firstHighMatchesFiles = NamidaGenerator.getHighMatcheFilesFromFilename(Indexer.inst.allAudioFiles, tracks.first.path.getFilename).toSet();
+                                  final firstHighMatchesFiles =
+                                      NamidaGenerator.getHighMatcheFilesFromFilename(Indexer.inst.allAudioFiles.value, tracks.first.path.getFilename).toSet();
                                   if (firstHighMatchesFiles.isNotEmpty) {
                                     await openDialog(
                                       CustomBlurryDialog(
@@ -822,29 +816,27 @@ Future<void> showGeneralPopupDialog(
                                 },
                               ),
                               if (errorPlayingTrack != null)
-                                Obx(
-                                  () {
-                                    final remainingSecondsToSkip = Player.inst.playErrorRemainingSecondsToSkip;
-                                    return SmallListTile(
-                                      title: lang.SKIP,
-                                      subtitle: remainingSecondsToSkip <= 0 ? null : '$remainingSecondsToSkip ${lang.SECONDS}',
-                                      color: colorDelightened.value,
-                                      compact: true,
-                                      icon: Broken.next,
-                                      trailing: remainingSecondsToSkip <= 0
-                                          ? null
-                                          : NamidaIconButton(
-                                              icon: Broken.close_circle,
-                                              iconColor: Get.context?.defaultIconColor(colorDelightened.value, theme.textTheme.displayMedium?.color),
-                                              onPressed: cancelSkipTimer,
-                                            ),
-                                      onTap: () {
-                                        cancelSkipTimer();
-                                        NamidaNavigator.inst.closeDialog();
-                                        Player.inst.next();
-                                      },
-                                    );
-                                  },
+                                ObxO(
+                                  rx: Player.inst.playErrorRemainingSecondsToSkip,
+                                  builder: (remainingSecondsToSkip) => SmallListTile(
+                                    title: lang.SKIP,
+                                    subtitle: remainingSecondsToSkip <= 0 ? null : '$remainingSecondsToSkip ${lang.SECONDS}',
+                                    color: colorDelightened,
+                                    compact: true,
+                                    icon: Broken.next,
+                                    trailing: remainingSecondsToSkip <= 0
+                                        ? null
+                                        : NamidaIconButton(
+                                            icon: Broken.close_circle,
+                                            iconColor: namida.context?.defaultIconColor(colorDelightened, theme.textTheme.displayMedium?.color),
+                                            onPressed: cancelSkipTimer,
+                                          ),
+                                    onTap: () {
+                                      cancelSkipTimer();
+                                      NamidaNavigator.inst.closeDialog();
+                                      Player.inst.next();
+                                    },
+                                  ),
                                 ),
                             ],
                             advancedStuffListTile,
@@ -862,7 +854,7 @@ Future<void> showGeneralPopupDialog(
                           children: [
                             if (availableAlbums.length == 1 && albumToAddFrom == null)
                               SmallListTile(
-                                color: colorDelightened.value,
+                                color: colorDelightened,
                                 compact: true,
                                 title: lang.GO_TO_ALBUM,
                                 subtitle: availableAlbums.first.$1,
@@ -880,7 +872,7 @@ Future<void> showGeneralPopupDialog(
                               ),
                             if (availableAlbums.length == 1 && albumToAddFrom != null)
                               SmallListTile(
-                                color: colorDelightened.value,
+                                color: colorDelightened,
                                 compact: true,
                                 title: lang.ADD_MORE_FROM_TO_QUEUE.replaceFirst('_MEDIA_', '"${albumToAddFrom.$1}"'),
                                 icon: Broken.music_dashboard,
@@ -901,22 +893,17 @@ Future<void> showGeneralPopupDialog(
                                 icon: Broken.music_dashboard,
                                 iconColor: iconColor,
                                 titleText: lang.GO_TO_ALBUM,
-                                textColorScheme: colorDelightened.value,
+                                textColorScheme: colorDelightened,
                                 childrenPadding: const EdgeInsets.only(left: 20.0, right: 20.0, bottom: 12.0, top: 0),
                                 children: [
                                   Wrap(
                                     alignment: WrapAlignment.start,
                                     children: [
                                       ...availableAlbums.map(
-                                        (e) => Padding(
-                                          padding: const EdgeInsets.all(2.0).add(const EdgeInsets.only(right: 2.0)),
-                                          child: NamidaInkWell(
-                                              borderRadius: 0.0,
-                                              onTap: () => NamidaOnTaps.inst.onAlbumTap(e.$2),
-                                              child: Text(
-                                                e.$1,
-                                                style: theme.textTheme.displaySmall?.copyWith(decoration: TextDecoration.underline),
-                                              )),
+                                        (e) => _SmallUnderlinedChip(
+                                          text: e.$1,
+                                          textTheme: theme.textTheme,
+                                          onTap: () => () => NamidaOnTaps.inst.onAlbumTap(e.$2),
                                         ),
                                       ),
                                     ],
@@ -925,7 +912,7 @@ Future<void> showGeneralPopupDialog(
                               ),
                             if (artistToAddFrom != null)
                               SmallListTile(
-                                color: colorDelightened.value,
+                                color: colorDelightened,
                                 compact: true,
                                 title: lang.ADD_MORE_FROM_TO_QUEUE.replaceFirst('_MEDIA_', '"$artistToAddFrom"'),
                                 icon: Broken.microphone,
@@ -943,7 +930,7 @@ Future<void> showGeneralPopupDialog(
                               ),
                             if (artistToAddFrom == null && availableArtists.length == 1)
                               SmallListTile(
-                                color: colorDelightened.value,
+                                color: colorDelightened,
                                 compact: true,
                                 title: lang.GO_TO_ARTIST,
                                 subtitle: availableArtists.first,
@@ -964,26 +951,17 @@ Future<void> showGeneralPopupDialog(
                                 icon: Broken.profile_2user,
                                 iconColor: iconColor,
                                 titleText: lang.GO_TO_ARTIST,
-                                textColorScheme: colorDelightened.value,
+                                textColorScheme: colorDelightened,
                                 childrenPadding: const EdgeInsets.only(left: 20.0, right: 20.0, bottom: 12.0, top: 0),
                                 children: [
                                   Wrap(
                                     alignment: WrapAlignment.start,
                                     children: [
                                       ...availableArtists.map(
-                                        (e) => Padding(
-                                          padding: const EdgeInsets.all(2.0).add(const EdgeInsets.only(right: 2.0)),
-                                          child: NamidaInkWell(
-                                            borderRadius: 0.0,
-                                            onTap: () => NamidaOnTaps.inst.onArtistTap(e, MediaType.artist),
-                                            child: Text(
-                                              e,
-                                              style: theme.textTheme.displaySmall?.copyWith(
-                                                decoration: TextDecoration.underline,
-                                                color: Color.alphaBlend(colorDelightened.value.withAlpha(40), theme.textTheme.displayMedium!.color!),
-                                              ),
-                                            ),
-                                          ),
+                                        (e) => _SmallUnderlinedChip(
+                                          text: e,
+                                          textTheme: theme.textTheme,
+                                          onTap: () => NamidaOnTaps.inst.onArtistTap(e, MediaType.artist),
                                         ),
                                       ),
                                     ],
@@ -994,7 +972,7 @@ Future<void> showGeneralPopupDialog(
                             /// Folders
                             if (availableFolders.length == 1)
                               SmallListTile(
-                                color: colorDelightened.value,
+                                color: colorDelightened,
                                 compact: true,
                                 title: lang.GO_TO_FOLDER,
                                 subtitle: availableFolders.first.folderName,
@@ -1007,7 +985,7 @@ Future<void> showGeneralPopupDialog(
                                 trailing: IconButton(
                                   tooltip: lang.ADD_MORE_FROM_THIS_FOLDER,
                                   onPressed: () {
-                                    final tracks = availableFolders.first.tracks;
+                                    final tracks = availableFolders.first.tracks();
                                     Player.inst.addToQueue(tracks, insertNext: true, insertionType: QueueInsertionType.moreFolder);
                                   },
                                   icon: const Icon(Broken.add),
@@ -1015,11 +993,14 @@ Future<void> showGeneralPopupDialog(
                               ),
 
                             SmallListTile(
-                              color: colorDelightened.value,
+                              color: colorDelightened,
                               compact: false,
                               title: lang.SHARE,
                               icon: Broken.share,
-                              trailing: Obx(() => isLoadingFilesToShare.value ? const LoadingIndicator() : const SizedBox()),
+                              trailing: ObxO(
+                                rx: isLoadingFilesToShare,
+                                builder: (loading) => loading ? const LoadingIndicator() : const SizedBox(),
+                              ),
                               onTap: () async {
                                 isLoadingFilesToShare.value = true;
                                 await Share.shareXFiles(tracksExisting.mapped((e) => XFile(e.path)));
@@ -1028,25 +1009,25 @@ Future<void> showGeneralPopupDialog(
                               },
                             ),
 
-                            isSingle && tracks.first == Player.inst.nowPlayingTrack
+                            isSingle && tracks.first == Player.inst.currentItem.value
                                 ? NamidaOpacity(
-                                    opacity: Player.inst.sleepAfterTracks == 1 ? 0.6 : 1.0,
+                                    opacity: Player.inst.sleepTimerConfig.value.sleepAfterItems == 1 ? 0.6 : 1.0,
                                     child: IgnorePointer(
-                                      ignoring: Player.inst.sleepAfterTracks == 1,
+                                      ignoring: Player.inst.sleepTimerConfig.value.sleepAfterItems == 1,
                                       child: SmallListTile(
-                                        color: colorDelightened.value,
+                                        color: colorDelightened,
                                         compact: false,
                                         title: lang.STOP_AFTER_THIS_TRACK,
                                         icon: Broken.pause,
                                         onTap: () {
                                           NamidaNavigator.inst.closeDialog();
-                                          Player.inst.updateSleepTimerValues(enableSleepAfterTracks: true, sleepAfterTracks: 1);
+                                          Player.inst.updateSleepTimerValues(enableSleepAfterItems: true, sleepAfterItems: 1);
                                         },
                                       ),
                                     ),
                                   )
                                 : SmallListTile(
-                                    color: colorDelightened.value,
+                                    color: colorDelightened,
                                     compact: false,
                                     title: isSingle ? lang.PLAY : lang.PLAY_ALL,
                                     icon: Broken.play,
@@ -1058,7 +1039,7 @@ Future<void> showGeneralPopupDialog(
 
                             if (!isSingle)
                               SmallListTile(
-                                color: colorDelightened.value,
+                                color: colorDelightened,
                                 compact: false,
                                 title: lang.SHUFFLE,
                                 icon: Broken.shuffle,
@@ -1069,7 +1050,7 @@ Future<void> showGeneralPopupDialog(
                               ),
 
                             SmallListTile(
-                              color: colorDelightened.value,
+                              color: colorDelightened,
                               compact: false,
                               title: lang.ADD_TO_PLAYLIST,
                               icon: Broken.music_library_2,
@@ -1079,18 +1060,18 @@ Future<void> showGeneralPopupDialog(
                               },
                             ),
                             SmallListTile(
-                              color: colorDelightened.value,
+                              color: colorDelightened,
                               compact: false,
                               title: lang.EDIT_TAGS,
                               icon: Broken.edit,
                               onTap: () {
                                 NamidaNavigator.inst.closeDialog();
-                                showEditTracksTagsDialog(tracks, colorDelightened.value);
+                                showEditTracksTagsDialog(tracks, colorDelightened);
                               },
                               trailing: isSingle
                                   ? IconButton(
                                       tooltip: lang.LYRICS,
-                                      icon: Lyrics.inst.hasLyrics(tracks.first)
+                                      icon: LrcSearchUtilsSelectable(tracks.first.toTrackExt(), tracks.first).hasLyrics()
                                           ? StackedIcon(
                                               baseIcon: Broken.document,
                                               secondaryIcon: Broken.tick_circle,
@@ -1104,7 +1085,7 @@ Future<void> showGeneralPopupDialog(
                                               color: iconColor,
                                             ),
                                       iconSize: 20.0,
-                                      onPressed: () => showLRCSetDialog(tracks.first, colorDelightened.value),
+                                      onPressed: () => showLRCSetDialog(tracks.first, colorDelightened),
                                     )
                                   : null,
                             ),
@@ -1113,7 +1094,7 @@ Future<void> showGeneralPopupDialog(
 
                             if (availableYoutubeIDs.isNotEmpty)
                               SmallListTile(
-                                color: colorDelightened.value,
+                                color: colorDelightened,
                                 compact: true,
                                 title: lang.OPEN_IN_YOUTUBE_VIEW,
                                 icon: Broken.video,
@@ -1125,13 +1106,13 @@ Future<void> showGeneralPopupDialog(
 
                             if (removeQueueTile != null) removeQueueTile,
 
-                            if (Player.inst.currentQueue.isNotEmpty && Player.inst.latestInsertedIndex != Player.inst.currentIndex)
+                            if (Player.inst.currentItem.value is Selectable && Player.inst.latestInsertedIndex != Player.inst.currentIndex.value)
                               () {
-                                final playAfterTrack = Player.inst.currentQueue.elementAt(Player.inst.latestInsertedIndex).track;
+                                final playAfterTrack = (Player.inst.currentQueue.value[Player.inst.latestInsertedIndex] as Selectable).track;
                                 return SmallListTile(
-                                  color: colorDelightened.value,
+                                  color: colorDelightened,
                                   compact: true,
-                                  title: '${lang.PLAY_AFTER}: ${(Player.inst.latestInsertedIndex - Player.inst.currentIndex).displayTrackKeyword}',
+                                  title: '${lang.PLAY_AFTER}: ${(Player.inst.latestInsertedIndex - Player.inst.currentIndex.value).displayTrackKeyword}',
                                   subtitle: [playAfterTrack.artistsList.firstOrNull, playAfterTrack.title].joinText(separator: ' - '),
                                   icon: Broken.hierarchy_square,
                                   onTap: () {
@@ -1141,17 +1122,18 @@ Future<void> showGeneralPopupDialog(
                                 );
                               }(),
 
-                            if (isSingle && tracks.first == Player.inst.nowPlayingTrack)
-                              Obx(
-                                () => SmallListTile(
-                                  color: colorDelightened.value,
+                            if (isSingle && tracks.first == Player.inst.currentTrack?.track)
+                              ObxO(
+                                rx: numberOfRepeats,
+                                builder: (repeats) => SmallListTile(
+                                  color: colorDelightened,
                                   compact: true,
-                                  title: lang.REPEAT_FOR_N_TIMES.replaceFirst('_NUM_', numberOfRepeats.value.toString()),
+                                  title: lang.REPEAT_FOR_N_TIMES.replaceFirst('_NUM_', repeats.toString()),
                                   icon: Broken.cd,
                                   onTap: () {
                                     NamidaNavigator.inst.closeDialog();
                                     settings.player.save(repeatMode: RepeatMode.forNtimes);
-                                    Player.inst.updateNumberOfRepeats(numberOfRepeats.value);
+                                    Player.inst.updateNumberOfRepeats(repeats);
                                   },
                                   trailing: Row(
                                     mainAxisSize: MainAxisSize.min,
@@ -1183,17 +1165,17 @@ Future<void> showGeneralPopupDialog(
                               Row(
                                 children: [
                                   const SizedBox(width: 24.0),
-                                  Expanded(child: bigIcon(Broken.smileys, lang.SET_MOODS, setTrackMoods)),
+                                  Expanded(child: bigIcon(Broken.smileys, () => lang.SET_MOODS, setTrackMoods)),
                                   const SizedBox(width: 8.0),
-                                  Expanded(child: bigIcon(Broken.ticket_discount, lang.SET_TAGS, setTrackTags)),
+                                  Expanded(child: bigIcon(Broken.ticket_discount, () => lang.SET_TAGS, setTrackTags)),
                                   const SizedBox(width: 8.0),
                                   Expanded(
                                     child: Obx(
                                       () => bigIcon(
                                         Broken.grammerly,
-                                        lang.SET_RATING,
+                                        () => lang.SET_RATING,
                                         setTrackRating,
-                                        subtitle: stats == null || stats.value.rating == 0 ? '' : ' ${stats.value.rating}%',
+                                        subtitle: stats == null || stats.valueR.rating == 0 ? '' : ' ${stats.valueR.rating}%',
                                       ),
                                     ),
                                   ),
@@ -1202,8 +1184,8 @@ Future<void> showGeneralPopupDialog(
                                     Expanded(
                                       child: bigIcon(
                                         Broken.edit_2,
-                                        lang.SET_YOUTUBE_LINK,
-                                        () => showSetYTLinkCommentDialog(tracks, colorDelightened.value),
+                                        () => lang.SET_YOUTUBE_LINK,
+                                        () => showSetYTLinkCommentDialog(tracks, colorDelightened),
                                         iconWidget: StackedIcon(
                                           baseIcon: Broken.edit_2,
                                           secondaryIcon: Broken.video_square,
@@ -1216,7 +1198,7 @@ Future<void> showGeneralPopupDialog(
                                     Expanded(
                                       child: bigIcon(
                                         Broken.login_1,
-                                        lang.OPEN_YOUTUBE_LINK,
+                                        () => lang.OPEN_YOUTUBE_LINK,
                                         openYoutubeLink,
                                       ),
                                     ),
@@ -1237,7 +1219,7 @@ Future<void> showGeneralPopupDialog(
                               children: [
                                 Expanded(
                                   child: SmallListTile(
-                                    color: colorDelightened.value,
+                                    color: colorDelightened,
                                     compact: false,
                                     title: lang.PLAY_NEXT,
                                     icon: Broken.next,
@@ -1254,7 +1236,7 @@ Future<void> showGeneralPopupDialog(
                                 ),
                                 Expanded(
                                   child: SmallListTile(
-                                    color: colorDelightened.value,
+                                    color: colorDelightened,
                                     compact: false,
                                     title: lang.PLAY_LAST,
                                     icon: Broken.play_cricle,
@@ -1276,4 +1258,37 @@ Future<void> showGeneralPopupDialog(
       },
     ),
   );
+}
+
+class _SmallUnderlinedChip extends StatelessWidget {
+  final String text;
+  final VoidCallback onTap;
+  final TextTheme textTheme;
+
+  const _SmallUnderlinedChip({
+    required this.text,
+    required this.onTap,
+    required this.textTheme,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 1.0),
+      child: NamidaInkWell(
+        borderRadius: 6.0,
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 3.0, horizontal: 3.0),
+          child: Text(
+            text,
+            style: textTheme.displaySmall?.copyWith(
+              decoration: TextDecoration.underline,
+              fontSize: 13.5,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 }

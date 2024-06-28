@@ -3,7 +3,6 @@ import 'dart:io';
 
 import 'package:checkmark/checkmark.dart';
 import 'package:flutter/material.dart';
-import 'package:get/get.dart' hide Response;
 import 'package:jiffy/jiffy.dart';
 
 import 'package:namida/class/track.dart';
@@ -15,10 +14,11 @@ import 'package:namida/core/constants.dart';
 import 'package:namida/core/extensions.dart';
 import 'package:namida/core/icon_fonts/broken_icons.dart';
 import 'package:namida/core/translations/language.dart';
+import 'package:namida/core/utils.dart';
 import 'package:namida/ui/widgets/artwork.dart';
 import 'package:namida/ui/widgets/custom_widgets.dart';
-import 'package:namida/youtube/controller/youtube_controller.dart';
 import 'package:namida/youtube/controller/youtube_history_controller.dart';
+import 'package:namida/youtube/controller/youtube_info_controller.dart';
 
 enum _CacheSorting { size, listenCount, accessTime }
 
@@ -28,6 +28,7 @@ class StorageCacheManager {
   Future<void> trimExtraFiles() async {
     await Future.wait([
       _ImageTrimmer()._trimExcessImageCache(),
+      _ImageTrimmer()._trimExcessImageCacheTemp(),
       _AudioTrimmer()._trimExcessAudioCache(),
     ]);
   }
@@ -110,13 +111,13 @@ class StorageCacheManager {
 
     final localIdTrackMap = <String, Track>{};
     if (includeLocalTracksListens) {
-      allTracksInLibrary.loop((tr, _) => localIdTrackMap[tr.youtubeID] = tr);
+      allTracksInLibrary.loop((tr) => localIdTrackMap[tr.youtubeID] = tr);
     }
 
     final sizesMap = <String, int>{};
     final accessTimeMap = <String, (int, String)>{};
 
-    allFiles.loop((e, _) {
+    allFiles.loop((e) {
       final path = itemToPath(e);
       final stats = File(path).statSync();
       final accessed = stats.accessed.millisecondsSinceEpoch;
@@ -157,10 +158,10 @@ class StorageCacheManager {
       return NamidaInkWell(
         animationDurationMS: 100,
         borderRadius: 8.0,
-        bgColor: Get.theme.cardTheme.color,
+        bgColor: namida.theme.cardTheme.color,
         padding: const EdgeInsets.all(8.0),
         decoration: BoxDecoration(
-          border: enabled(sort) ? Border.all(color: Get.theme.colorScheme.primary) : null,
+          border: enabled(sort) ? Border.all(color: namida.theme.colorScheme.primary) : null,
           borderRadius: BorderRadius.circular(8.0.multipliedRadius),
         ),
         onTap: () => sortBy(sort),
@@ -170,7 +171,7 @@ class StorageCacheManager {
             const SizedBox(width: 4.0),
             Text(
               title,
-              style: Get.textTheme.displayMedium,
+              style: namida.textTheme.displayMedium,
             ),
             const SizedBox(width: 4.0),
             const Icon(Broken.arrow_down_2, size: 14.0),
@@ -201,12 +202,12 @@ class StorageCacheManager {
           /// Clear after choosing
           Obx(
             () => NamidaButton(
-              enabled: itemsToDeleteSize.value > 0 || itemsToDelete.isNotEmpty,
-              text: "${lang.DELETE.toUpperCase()} (${itemsToDeleteSize.value.fileSizeFormatted})",
+              enabled: itemsToDeleteSize.valueR > 0 || itemsToDelete.valueR.isNotEmpty,
+              text: "${lang.DELETE.toUpperCase()} (${itemsToDeleteSize.valueR.fileSizeFormatted})",
               onPressed: () async {
                 final hasTemp = deleteTempFiles.value && tempFilesSizeFinal.value > 0;
                 final finalItemsToDeleteOnlySize = itemsToDeleteSize.value - (hasTemp ? tempFilesSizeFinal.value : 0);
-                final firstLine = itemsToDelete.isNotEmpty || finalItemsToDeleteOnlySize > 0 ? confirmDialogText(itemsToDelete.length, finalItemsToDeleteOnlySize) : '';
+                final firstLine = itemsToDelete.value.isNotEmpty || finalItemsToDeleteOnlySize > 0 ? confirmDialogText(itemsToDelete.value.length, finalItemsToDeleteOnlySize) : '';
                 final tempFilesLine = hasTemp ? "${lang.DELETE_TEMP_FILES} (${tempFilesSizeFinal.value.fileSizeFormatted})?" : '';
                 NamidaNavigator.inst.navigateDialog(
                   dialog: CustomBlurryDialog(
@@ -220,7 +221,7 @@ class StorageCacheManager {
                         text: lang.DELETE.toUpperCase(),
                         onPressed: () async {
                           NamidaNavigator.inst.closeDialog(2);
-                          onConfirm(itemsToDelete);
+                          onConfirm(itemsToDelete.value);
                           onDeleteTempFiles();
                         },
                       ),
@@ -233,16 +234,17 @@ class StorageCacheManager {
           ),
         ],
         child: SizedBox(
-          width: Get.width,
-          height: Get.height * 0.65,
+          width: namida.width,
+          height: namida.height * 0.65,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               const SizedBox(height: 12.0),
               SingleChildScrollView(
                 scrollDirection: Axis.horizontal,
-                child: Obx(
-                  () => Row(
+                child: ObxO(
+                  rx: currentSort,
+                  builder: (currentSort) => Row(
                     mainAxisAlignment: MainAxisAlignment.end,
                     children: [
                       const SizedBox(width: 24.0),
@@ -250,21 +252,21 @@ class StorageCacheManager {
                         sort: _CacheSorting.size,
                         title: lang.SIZE,
                         icon: Broken.size,
-                        enabled: (sort) => sort == currentSort.value,
+                        enabled: (sort) => sort == currentSort,
                       ),
                       const SizedBox(width: 12.0),
                       getChipButton(
                         sort: _CacheSorting.accessTime,
                         title: lang.OLDEST_WATCH,
                         icon: Broken.sort,
-                        enabled: (sort) => sort == currentSort.value,
+                        enabled: (sort) => sort == currentSort,
                       ),
                       const SizedBox(width: 12.0),
                       getChipButton(
                         sort: _CacheSorting.listenCount,
                         title: lang.TOTAL_LISTENS,
                         icon: Broken.math,
-                        enabled: (sort) => sort == currentSort.value,
+                        enabled: (sort) => sort == currentSort,
                       ),
                       const SizedBox(width: 24.0),
                     ],
@@ -278,11 +280,11 @@ class StorageCacheManager {
                     () => ListView.builder(
                       controller: sc,
                       padding: EdgeInsets.zero,
-                      itemCount: allFiles.length,
+                      itemCount: allFiles.valueR.length,
                       itemBuilder: (context, index) {
-                        final item = allFiles[index];
+                        final item = allFiles.value[index];
                         final id = itemToYtId(item);
-                        final title = id == null ? null : YoutubeController.inst.getVideoName(id);
+                        final title = id == null ? null : YoutubeInfoController.utils.getVideoName(id);
                         final listens = getTotalListensForIDLength(id);
                         final itemSize = sizesMap[itemToPath(item)] ?? 0;
                         return NamidaInkWell(
@@ -341,13 +343,14 @@ class StorageCacheManager {
                                 child: SizedBox(
                                   height: 16.0,
                                   width: 16.0,
-                                  child: Obx(
-                                    () => CheckMark(
+                                  child: ObxO(
+                                    rx: itemsToDelete,
+                                    builder: (toDelete) => CheckMark(
                                       strokeWidth: 2,
                                       activeColor: context.theme.listTileTheme.iconColor!,
                                       inactiveColor: context.theme.listTileTheme.iconColor!,
                                       duration: const Duration(milliseconds: 400),
-                                      active: itemsToDelete.contains(item),
+                                      active: toDelete.contains(item),
                                     ),
                                   ),
                                 ),
@@ -360,38 +363,45 @@ class StorageCacheManager {
                   ),
                 ),
               ),
-              Obx(
-                () => tempFilesSizeFinal.value > 0
+              ObxO(
+                rx: tempFilesSizeFinal,
+                builder: (tempfs) => tempfs > 0
                     ? Padding(
                         padding: const EdgeInsets.only(left: 8.0, top: 8.0, right: 8.0),
-                        child: AnimatedOpacity(
-                          duration: const Duration(milliseconds: 200),
-                          opacity: deleteTempFiles.value ? 1.0 : 0.6,
-                          child: NamidaInkWell(
-                            borderRadius: 6.0,
-                            bgColor: Get.theme.cardColor,
-                            padding: const EdgeInsets.symmetric(vertical: 4.0, horizontal: 6.0),
-                            onTap: () {
-                              deleteTempFiles.value = !deleteTempFiles.value;
-                              if (deleteTempFiles.value) {
-                                itemsToDeleteSize.value += tempFilesSizeFinal.value;
-                              } else {
-                                itemsToDeleteSize.value -= tempFilesSizeFinal.value;
-                              }
-                            },
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                NamidaCheckMark(
-                                  size: 12.0,
-                                  active: deleteTempFiles.value,
-                                ),
-                                const SizedBox(width: 8.0),
-                                Text(
-                                  '${lang.DELETE_TEMP_FILES} (${tempFilesSizeFinal.value.fileSizeFormatted})',
-                                  style: Get.textTheme.displaySmall,
-                                ),
-                              ],
+                        child: ObxO(
+                          rx: deleteTempFiles,
+                          builder: (deleteTempf) => AnimatedOpacity(
+                            duration: const Duration(milliseconds: 200),
+                            opacity: deleteTempFiles.value ? 1.0 : 0.6,
+                            child: NamidaInkWell(
+                              borderRadius: 6.0,
+                              bgColor: namida.theme.cardColor,
+                              padding: const EdgeInsets.symmetric(vertical: 4.0, horizontal: 6.0),
+                              onTap: () {
+                                deleteTempFiles.toggle();
+                                if (deleteTempFiles.value) {
+                                  itemsToDeleteSize.value += tempFilesSizeFinal.value;
+                                } else {
+                                  itemsToDeleteSize.value -= tempFilesSizeFinal.value;
+                                }
+                              },
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  NamidaCheckMark(
+                                    size: 12.0,
+                                    active: deleteTempf,
+                                  ),
+                                  const SizedBox(width: 8.0),
+                                  ObxO(
+                                    rx: tempFilesSizeFinal,
+                                    builder: (tempf) => Text(
+                                      '${lang.DELETE_TEMP_FILES} (${tempf.fileSizeFormatted})',
+                                      style: namida.textTheme.displaySmall,
+                                    ),
+                                  ),
+                                ],
+                              ),
                             ),
                           ),
                         ),
@@ -415,15 +425,15 @@ class _VideoTrimmer {
     final filesMap = <File, int>{};
     void checkFile(FileSystemEntity e) {
       if (e is File) {
-        final filename = e.path.split(Platform.pathSeparator).last;
+        final filename = e.path.splitLast(Platform.pathSeparator);
         if (filename.startsWith(id)) {
           filesMap[e] = e.statSync().size;
         }
       }
     }
 
-    Directory(tempDir).listSyncSafe().loop((e, _) => checkFile(e));
-    Directory(normalDir).listSyncSafe().loop((e, _) {
+    Directory(tempDir).listSyncSafe().loop((e) => checkFile(e));
+    Directory(normalDir).listSyncSafe().loop((e) {
       if (e.path.endsWith('.download')) {
         checkFile(e);
       }
@@ -435,10 +445,10 @@ class _VideoTrimmer {
     int size = 0;
     final tempDir = dirsPath['temp'] as String;
     final normalDir = dirsPath['normal'] as String;
-    Directory(tempDir).listSyncSafe().loop((e, _) {
+    Directory(tempDir).listSyncSafe().loop((e) {
       size += e.statSync().size;
     });
-    Directory(normalDir).listSyncSafe().loop((e, _) {
+    Directory(normalDir).listSyncSafe().loop((e) {
       if (e.path.endsWith('.download')) {
         size += e.statSync().size;
       }
@@ -449,14 +459,14 @@ class _VideoTrimmer {
   static void _deleteTempFilesIsolate(Map dirsPath) {
     final tempDir = dirsPath['temp'] as String;
     final normalDir = dirsPath['normal'] as String;
-    Directory(tempDir).listSyncSafe().loop((e, _) {
+    Directory(tempDir).listSyncSafe().loop((e) {
       if (e is File) {
         try {
           e.deleteSync();
         } catch (_) {}
       }
     });
-    Directory(normalDir).listSyncSafe().loop((e, _) {
+    Directory(normalDir).listSyncSafe().loop((e) {
       if (e.path.endsWith('.download')) {
         if (e is File) {
           try {
@@ -486,7 +496,13 @@ class _AudioTrimmer {
     final dirPath = map['dirPath'] as String;
 
     final audios = Directory(dirPath).listSyncSafe();
-    audios.sortBy((e) => e.statSync().accessed);
+    audios.sortBy((e) {
+      try {
+        return e.statSync().accessed;
+      } catch (_) {
+        return 0;
+      }
+    });
     return _Trimmer._trimExcessCache(audios, maxBytes);
   }
 
@@ -496,10 +512,10 @@ class _AudioTrimmer {
 
     final filesMap = <File, int>{};
 
-    Directory(dirPath).listSyncSafe().loop((e, _) {
+    Directory(dirPath).listSyncSafe().loop((e) {
       if (e.path.endsWith('.part')) {
         if (e is File) {
-          final filename = e.path.split(Platform.pathSeparator).last;
+          final filename = e.path.splitLast(Platform.pathSeparator);
           if (filename.startsWith(id)) {
             filesMap[e] = e.statSync().size;
           }
@@ -533,8 +549,63 @@ class _ImageTrimmer {
     final imagesChannels = Directory(dirPathChannel).listSyncSafe();
     final images = [...imagesVideos, ...imagesChannels];
 
-    images.sortBy((e) => e.statSync().accessed);
+    images.sortBy((e) {
+      try {
+        return e.statSync().accessed;
+      } catch (_) {
+        return 0;
+      }
+    });
     return _Trimmer._trimExcessCache(images, maxBytes);
+  }
+
+  Future<void> _trimExcessImageCacheTemp() async {
+    final dirPath = "${AppDirs.YT_THUMBNAILS}/temp";
+    if (!await Directory(dirPath).exists()) return;
+    return await _trimExcessImageCacheTempIsolate.thready(dirPath);
+  }
+
+  static void _trimExcessImageCacheTempIsolate(String dirPath) {
+    final images = Directory(dirPath).listSyncSafe();
+    int excess = images.length - 2000; // keeping it at max 2000 good files.
+    if (excess <= 0) return;
+
+    final partialFiles = <File>[];
+    final maxAccessed = DateTime.now();
+    images.sortBy((e) {
+      if (e is File) {
+        if (e.path.endsWith('.temp')) {
+          partialFiles.add(e);
+          return maxAccessed; // to put at the end
+        } else {
+          try {
+            return e.statSync().accessed;
+          } catch (_) {}
+        }
+      }
+      return 0;
+    });
+    for (int i = 0; i < partialFiles.length; i++) {
+      try {
+        partialFiles[i].deleteSync();
+      } catch (_) {}
+    }
+
+    // -- since we deleted partial files, we recalculate the excess
+    excess -= partialFiles.length;
+    if (excess <= 0) return;
+
+    for (int i = 0; i < excess; i++) {
+      final element = images[i];
+      if (element is File) {
+        try {
+          element.deleteSync();
+          continue;
+        } catch (_) {}
+      }
+      // if not continued safely, i-- indicating that we still need to delete more
+      i--;
+    }
   }
 }
 
@@ -543,7 +614,7 @@ class _Trimmer {
     int totalDeletedBytes = 0;
     int totalBytes = 0;
     final sizesMap = <String, int>{};
-    files.loop((f, _) {
+    files.loop((f) {
       final size = f.statSync().size;
       sizesMap[f.path] = size;
       totalBytes += size;

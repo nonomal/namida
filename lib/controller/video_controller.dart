@@ -1,11 +1,9 @@
-// ignore_for_file: library_private_types_in_public_api, depend_on_referenced_packages
-
 import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
-import 'package:get/get.dart' hide Response;
-import 'package:newpipeextractor_dart/newpipeextractor_dart.dart';
+import 'package:youtipie/class/streams/video_stream.dart';
+import 'package:youtipie/class/streams/video_streams_result.dart';
 
 import 'package:namida/class/media_info.dart';
 import 'package:namida/class/track.dart';
@@ -21,9 +19,11 @@ import 'package:namida/core/constants.dart';
 import 'package:namida/core/enums.dart';
 import 'package:namida/core/extensions.dart';
 import 'package:namida/core/functions.dart';
+import 'package:namida/core/utils.dart';
 import 'package:namida/ui/widgets/custom_widgets.dart';
 import 'package:namida/ui/widgets/video_widget.dart';
 import 'package:namida/youtube/controller/youtube_controller.dart';
+import 'package:namida/youtube/controller/youtube_info_controller.dart';
 
 class NamidaVideoWidget extends StatelessWidget {
   final bool enableControls;
@@ -125,9 +125,9 @@ class VideoController {
   void updateShouldShowControls(double animationValue) {
     final isExpanded = animationValue >= 0.95;
     if (isExpanded) {
-      // YoutubeController.inst.startDimTimer(); // bad experience honestly
+      // YoutubeMiniplayerUiController.inst.startDimTimer(); // bad experience honestly
     } else {
-      // YoutubeController.inst.cancelDimTimer();
+      // YoutubeMiniplayerUiController.inst.cancelDimTimer();
       videoControlsKey.currentState?.setControlsVisibily(false);
     }
   }
@@ -136,7 +136,7 @@ class VideoController {
     required bool isLocal,
     bool? setOrientations,
   }) async {
-    final aspect = Player.inst.videoPlayerInfo?.aspectRatio;
+    final aspect = Player.inst.videoPlayerInfo.value?.aspectRatio;
     await NamidaNavigator.inst.toggleFullScreen(
       NamidaVideoControls(
         key: VideoController.inst.videoControlsKeyFullScreen,
@@ -160,8 +160,8 @@ class VideoController {
   final localVideoExtractTotal = 0.obs;
 
   final currentVideo = Rxn<NamidaVideo>();
-  final currentPossibleVideos = <NamidaVideo>[].obs;
-  final currentYTQualities = <VideoOnlyStream>[].obs;
+  final currentPossibleLocalVideos = <NamidaVideo>[].obs;
+  final currentYTStreams = Rxn<VideoStreamsResult>();
   final currentDownloadedBytes = Rxn<int>();
 
   /// Indicates that [updateCurrentVideo] didn't find any matching video.
@@ -211,7 +211,7 @@ class VideoController {
   List<NamidaVideo> getCurrentVideosInCache() {
     final videos = <NamidaVideo>[];
     for (final vl in _videoCacheIDMap.values) {
-      vl.loop((v, _) {
+      vl.loop((v) {
         if (File(v.path).existsSync()) {
           videos.add(v);
         }
@@ -231,16 +231,16 @@ class VideoController {
     });
   }
 
-  Future<NamidaVideo?> updateCurrentVideo(Track track, {bool returnEarly = false}) async {
+  Future<NamidaVideo?> updateCurrentVideo(Track? track, {bool returnEarly = false}) async {
     isNoVideosAvailable.value = false;
     currentDownloadedBytes.value = null;
     currentVideo.value = null;
-    currentYTQualities.clear();
-    if (track == kDummyTrack) return null;
+    currentYTStreams.value = null;
+    if (track == null || track == kDummyTrack) return null;
     if (!settings.enableVideoPlayback.value) return null;
 
     final possibleVideos = await _getPossibleVideosFromTrack(track);
-    currentPossibleVideos.value = possibleVideos;
+    currentPossibleLocalVideos.value = possibleVideos;
 
     final trackYTID = track.youtubeID;
     if (possibleVideos.isEmpty && trackYTID == '') isNoVideosAvailable.value = true;
@@ -299,18 +299,17 @@ class VideoController {
     required Track track,
   }) async {
     assert(video != null || cacheIdAndPath != null);
+    if (!_canExecuteForCurrentTrackOnly(track)) return;
 
-    await _executeForCurrentTrackOnly(track, () async {
-      final v = cacheIdAndPath != null ? _videoCacheIDMap[cacheIdAndPath.$1]?.firstWhereEff((e) => e.path == cacheIdAndPath.$2) : video;
-      if (v != null) {
-        currentVideo.value = v;
-        await Player.inst.setVideo(
-          source: v.path,
-          loopingAnimation: canLoopVideo(v, track.duration),
-          isFile: true,
-        );
-      }
-    });
+    final v = cacheIdAndPath != null ? _videoCacheIDMap[cacheIdAndPath.$1]?.firstWhereEff((e) => e.path == cacheIdAndPath.$2) : video;
+    if (v != null) {
+      currentVideo.value = v;
+      await Player.inst.setVideo(
+        source: v.path,
+        loopingAnimation: canLoopVideo(v, track.duration),
+        isFile: true,
+      );
+    }
   }
 
   /// loop only if video duration is less than [p] of audio.
@@ -324,7 +323,7 @@ class VideoController {
 
     // only modify if not playing yt/local video, since [enableVideoPlayback] is
     // limited to local music.
-    if (Player.inst.currentQueue.isEmpty) return;
+    if (Player.inst.currentItem.value is! Selectable) return;
 
     if (currentValue) {
       // should close/hide
@@ -332,7 +331,7 @@ class VideoController {
       YoutubeController.inst.dispose();
       await Player.inst.disposeVideo();
     } else {
-      await updateCurrentVideo(Player.inst.nowPlayingTrack);
+      await updateCurrentVideo(Player.inst.currentTrack?.track);
     }
   }
 
@@ -342,35 +341,32 @@ class VideoController {
     _downloadTimer = null;
   }
 
-  FutureOr<void> _executeForCurrentTrackOnly(Track initialTrack, FutureOr<void> Function() execute) async {
-    if (initialTrack.path != Player.inst.nowPlayingTrack.path) return;
-    try {
-      await execute();
-    } catch (e) {
-      printy(e, isError: true);
-    }
+  bool _canExecuteForCurrentTrackOnly(Track? initialTrack) {
+    if (initialTrack == null) return false;
+    final current = Player.inst.currentTrack;
+    if (current == null) return false;
+    return initialTrack.path == current.track.path;
   }
 
   Future<void> fetchYTQualities(Track track) async {
-    final available = await YoutubeController.inst.getAvailableVideoStreamsOnly(track.youtubeID);
-    _executeForCurrentTrackOnly(track, () {
-      currentYTQualities.clear();
-      currentYTQualities.addAll(available);
-    });
+    final streamsResult = await YoutubeInfoController.video.fetchVideoStreams(track.youtubeID, forceRequest: false);
+    if (_canExecuteForCurrentTrackOnly(track)) currentYTStreams.value = streamsResult;
   }
 
   Future<NamidaVideo?> getVideoFromYoutubeAndUpdate(
     String? id, {
+    VideoStreamsResult? mainStreams,
     VideoStream? stream,
   }) async {
-    final tr = Player.inst.nowPlayingTrack;
-    final dv = await fetchVideoFromYoutube(id, stream: stream);
+    final tr = Player.inst.currentTrack?.track;
+    if (tr == null) return null;
+    final dv = await fetchVideoFromYoutube(id, stream: stream, mainStreams: mainStreams);
     if (!settings.enableVideoPlayback.value) return null;
-    _executeForCurrentTrackOnly(tr, () {
+    if (_canExecuteForCurrentTrackOnly(tr)) {
       currentVideo.value = dv;
-      currentYTQualities.refresh();
-      if (dv != null) currentPossibleVideos.addNoDuplicates(dv);
-      currentPossibleVideos.sortByReverseAlt(
+      currentYTStreams.refresh();
+      if (dv != null) currentPossibleLocalVideos.addNoDuplicates(dv);
+      currentPossibleLocalVideos.sortByReverseAlt(
         (e) {
           if (e.resolution != 0) return e.resolution;
           if (e.height != 0) return e.height;
@@ -378,70 +374,89 @@ class VideoController {
         },
         (e) => e.frameratePrecise,
       );
-    });
+    }
     return dv;
   }
 
   Future<NamidaVideo?> fetchVideoFromYoutube(
     String? id, {
+    VideoStreamsResult? mainStreams,
     VideoStream? stream,
   }) async {
-    if (id == null || id == '') return null;
     _downloadTimerCancel();
+    if (id == null || id == '') return null;
     currentDownloadedBytes.value = null;
+
+    final initialTrack = Player.inst.currentTrack?.track;
 
     int downloaded = 0;
     void updateCurrentBytes() {
+      if (!_canExecuteForCurrentTrackOnly(initialTrack)) return;
+
       if (downloaded > 0) currentDownloadedBytes.value = downloaded;
       printy('Video Download: ${currentDownloadedBytes.value?.fileSizeFormatted}');
     }
 
-    _downloadTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      updateCurrentBytes();
-    });
+    _downloadTimer = Timer.periodic(const Duration(seconds: 1), (_) => updateCurrentBytes());
 
-    final initialTrack = Player.inst.nowPlayingTrack;
-    void updateValuesCT(void Function() execute) => _executeForCurrentTrackOnly(initialTrack, execute);
+    VideoStream? streamToUse = stream;
+    if (stream == null || mainStreams?.hasExpired() != false) {
+      // expired null or true
+      mainStreams = await YoutubeInfoController.video.fetchVideoStreams(id);
+      if (mainStreams != null) {
+        final newStreamToUse = mainStreams.videoStreams.firstWhereEff((e) => e.itag == stream?.itag) ?? YoutubeController.inst.getPreferredStreamQuality(mainStreams.videoStreams);
+        streamToUse = newStreamToUse;
+      }
+    }
+
+    if (streamToUse == null) {
+      if (_canExecuteForCurrentTrackOnly(initialTrack)) {
+        currentDownloadedBytes.value = null;
+        _downloadTimerCancel();
+      }
+      return null;
+    }
 
     final downloadedVideo = await YoutubeController.inst.downloadYoutubeVideo(
       canStartDownloading: () => settings.enableVideoPlayback.value,
       id: id,
-      stream: stream,
+      stream: streamToUse,
+      creationDate: mainStreams?.info?.uploadDate.date ?? mainStreams?.info?.publishDate.date,
       onAvailableQualities: (availableStreams) {},
       onChoosingQuality: (choosenStream) {
-        updateValuesCT(() {
+        if (_canExecuteForCurrentTrackOnly(initialTrack)) {
           currentVideo.value = NamidaVideo(
             path: '',
             ytID: id,
-            height: choosenStream.height ?? 0,
-            width: choosenStream.width ?? 0,
-            sizeInBytes: choosenStream.sizeInBytes ?? 0,
-            frameratePrecise: choosenStream.fps?.toDouble() ?? 0.0,
+            height: choosenStream.height,
+            width: choosenStream.width,
+            sizeInBytes: choosenStream.sizeInBytes,
+            frameratePrecise: choosenStream.fps.toDouble(),
             creationTimeMS: 0,
-            durationMS: choosenStream.durationMS ?? 0,
-            bitrate: choosenStream.bitrate ?? 0,
+            durationMS: choosenStream.duration.inMilliseconds,
+            bitrate: choosenStream.bitrate,
           );
-        });
+        }
       },
       onInitialFileSize: (initialFileSize) {
-        updateValuesCT(() {
-          downloaded = initialFileSize;
-          updateCurrentBytes();
-        });
+        downloaded = initialFileSize;
+        updateCurrentBytes();
       },
       downloadingStream: (downloadedBytesLength) {
-        updateValuesCT(() {
-          downloaded += downloadedBytesLength;
-        });
+        downloaded += downloadedBytesLength;
       },
     );
+
     updateCurrentBytes();
+
     if (downloadedVideo != null) {
       _videoCacheIDMap.addNoDuplicatesForce(downloadedVideo.ytID ?? '', downloadedVideo);
       await _saveCachedVideosFile();
     }
-    currentDownloadedBytes.value = null;
-    _downloadTimerCancel();
+    if (_canExecuteForCurrentTrackOnly(initialTrack)) {
+      currentDownloadedBytes.value = null;
+      _downloadTimerCancel();
+    }
     return downloadedVideo;
   }
 
@@ -521,9 +536,8 @@ class VideoController {
         try {
           final v = await NamidaFFMPEG.inst.extractMetadata(l);
           if (v != null) {
-            ThumbnailManager.inst.saveThumbnailToStorage(
+            ThumbnailManager.inst.extractVideoThumbnailAndSave(
               videoPath: l,
-              bytes: null,
               isLocal: true,
               idOrFileNameWOExt: l.getFilenameWOExt,
               isExtracted: true,
@@ -560,22 +574,22 @@ class VideoController {
     final cacheVideosInfoFile = await file.readAsJson() as List?;
     final vl = cacheVideosInfoFile?.mapped((e) => NamidaVideo.fromJson(e));
     _videoCacheIDMap.clear();
-    vl?.loop((e, index) => _videoCacheIDMap.addForce(e.ytID ?? '', e));
+    vl?.loop((e) => _videoCacheIDMap.addForce(e.ytID ?? '', e));
 
     Future<void> fetchCachedVideos() async {
       final cachedVideos = await _checkIfVideosInMapValid(_videoCacheIDMap);
       printy('videos cached: ${cachedVideos.length}');
       _videoCacheIDMap.clear();
-      cachedVideos.entries.toList().loop((videoEntry, _) {
-        videoEntry.value.loop((e, _) {
+      cachedVideos.entries.toList().loop((videoEntry) {
+        videoEntry.value.loop((e) {
           _videoCacheIDMap.addForce(videoEntry.key, e);
         });
       });
 
       final newCachedVideos = await _checkForNewVideosInCache(cachedVideos);
       printy('videos cached new: ${newCachedVideos.length}');
-      newCachedVideos.entries.toList().loop((videoEntry, _) {
-        videoEntry.value.loop((e, _) {
+      newCachedVideos.entries.toList().loop((videoEntry) {
+        videoEntry.value.loop((e) {
           _videoCacheIDMap.addForce(videoEntry.key, e);
         });
       });
@@ -589,7 +603,7 @@ class VideoController {
       scanLocalVideos(fillPathsOnly: true, extractIfFileNotFound: false), // this will get paths only and disables extracting whole local videos on startup
     ]);
 
-    if (!Player.inst.videoInitialized) await updateCurrentVideo(Player.inst.nowPlayingTrack);
+    if (Player.inst.videoPlayerInfo.value?.isInitialized != true) await updateCurrentVideo(Player.inst.currentTrack?.track);
   }
 
   Future<void> scanLocalVideos({
@@ -622,7 +636,7 @@ class VideoController {
       },
     );
     printy('videos local: ${localVideos.length}');
-    localVideos.loop((e, index) {
+    localVideos.loop((e) {
       _videoPathsMap[e.path] = e;
     });
     resetCounters();
@@ -632,7 +646,7 @@ class VideoController {
   Future<bool> _saveCachedVideosFile() async {
     final file = File(AppPaths.VIDEOS_CACHE);
     final mapValuesTotal = <Map<String, dynamic>>[];
-    _videoCacheIDMap.values.toList().loop((e, index) {
+    _videoCacheIDMap.values.toList().loop((e) {
       mapValuesTotal.addAll(e.map((e) => e.toJson()));
     });
     final resultFile = await file.writeAsJson(mapValuesTotal);
@@ -669,10 +683,10 @@ class VideoController {
 
     final videosInMap = idsMap.entries.toList();
 
-    videosInMap.loop((ve, _) {
+    videosInMap.loop((ve) {
       final id = ve.key;
       final vl = ve.value;
-      vl.loop((v, _) {
+      vl.loop((v) {
         final file = File(v.path);
         // --- File Exists, will be added either instantly, or by fetching new metadata.
         if (file.existsSync()) {
@@ -778,9 +792,8 @@ class VideoController {
         try {
           final v = await NamidaFFMPEG.inst.extractMetadata(path);
           if (v != null) {
-            ThumbnailManager.inst.saveThumbnailToStorage(
+            ThumbnailManager.inst.extractVideoThumbnailAndSave(
               videoPath: path,
-              bytes: null,
               isLocal: true,
               idOrFileNameWOExt: path.getFilenameWOExt,
               isExtracted: true,
@@ -812,8 +825,7 @@ class VideoController {
     required String? id,
     required String path,
   }) async {
-    ThumbnailManager.inst.saveThumbnailToStorage(
-      bytes: null,
+    ThumbnailManager.inst.extractVideoThumbnailAndSave(
       videoPath: path,
       isLocal: id == null,
       idOrFileNameWOExt: id ?? path.getFilenameWOExt,
@@ -858,7 +870,7 @@ class VideoController {
 
     final parameters = {
       'allAvailableDirectories': allAvailableDirectories,
-      'directoriesToExclude': settings.directoriesToExclude.toList(),
+      'directoriesToExclude': settings.directoriesToExclude.value,
       'extensions': kVideoFilesExtensions,
     };
 

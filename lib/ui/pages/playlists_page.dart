@@ -1,9 +1,8 @@
 import 'package:flutter/material.dart';
-
 import 'package:flutter_staggered_animations/flutter_staggered_animations.dart';
-import 'package:get/get.dart';
 
 import 'package:namida/base/pull_to_refresh.dart';
+import 'package:namida/class/route.dart';
 import 'package:namida/class/track.dart';
 import 'package:namida/controller/history_controller.dart';
 import 'package:namida/controller/navigator_controller.dart';
@@ -20,9 +19,10 @@ import 'package:namida/core/functions.dart';
 import 'package:namida/core/icon_fonts/broken_icons.dart';
 import 'package:namida/core/namida_converter_ext.dart';
 import 'package:namida/core/translations/language.dart';
+import 'package:namida/core/utils.dart';
+import 'package:namida/ui/dialogs/common_dialogs.dart';
 import 'package:namida/ui/pages/queues_page.dart';
 import 'package:namida/ui/widgets/custom_widgets.dart';
-import 'package:namida/ui/dialogs/common_dialogs.dart';
 import 'package:namida/ui/widgets/expandable_box.dart';
 import 'package:namida/ui/widgets/library/multi_artwork_card.dart';
 import 'package:namida/ui/widgets/library/playlist_tile.dart';
@@ -33,7 +33,10 @@ import 'package:namida/ui/widgets/sort_by_button.dart';
 /// 2. Hide Grid Widget.
 /// 3. Disable bottom padding.
 /// 4. Disable Scroll Controller.
-class PlaylistsPage extends StatefulWidget {
+class PlaylistsPage extends StatefulWidget with NamidaRouteWidget {
+  @override
+  RouteType get route => RouteType.PAGE_playlists;
+
   final List<Track>? tracksToAdd;
   final int countPerRow;
   final bool animateTiles;
@@ -56,7 +59,8 @@ class _PlaylistsPageState extends State<PlaylistsPage> with TickerProviderStateM
 
   @override
   Widget build(BuildContext context) {
-    final isInsideDialog = widget.tracksToAdd != null;
+    final tracksToAdd = widget.tracksToAdd;
+    final isInsideDialog = tracksToAdd != null;
     final scrollController = isInsideDialog ? null : LibraryTab.playlists.scrollController;
     final defaultCardHorizontalPadding = context.width * 0.045;
     final defaultCardHorizontalPaddingCenter = context.width * 0.035;
@@ -86,24 +90,24 @@ class _PlaylistsPageState extends State<PlaylistsPage> with TickerProviderStateM
                     gridWidget: isInsideDialog
                         ? null
                         : ChangeGridCountWidget(
-                            currentCount: settings.playlistGridCount.value,
+                            currentCount: settings.playlistGridCount.valueR,
                             onTap: () {
                               final newCount = ScrollSearchController.inst.animateChangingGridSize(LibraryTab.playlists, widget.countPerRow);
                               settings.save(playlistGridCount: newCount);
                             },
                           ),
-                    isBarVisible: LibraryTab.playlists.isBarVisible,
-                    showSearchBox: LibraryTab.playlists.isSearchBoxVisible,
+                    isBarVisible: LibraryTab.playlists.isBarVisible.valueR,
+                    showSearchBox: LibraryTab.playlists.isSearchBoxVisible.valueR,
                     leftText: SearchSortController.inst.playlistSearchList.length.displayPlaylistKeyword,
                     onFilterIconTap: () => ScrollSearchController.inst.switchSearchBoxVisibilty(LibraryTab.playlists),
                     onCloseButtonPressed: () => ScrollSearchController.inst.clearSearchTextField(LibraryTab.playlists),
                     sortByMenuWidget: SortByMenu(
-                      title: settings.playlistSort.value.toText(),
+                      title: settings.playlistSort.valueR.toText(),
                       popupMenuChild: () => const SortByMenuPlaylist(),
-                      isCurrentlyReversed: settings.playlistSortReversed.value,
+                      isCurrentlyReversed: settings.playlistSortReversed.valueR,
                       onReverseIconTap: () => SearchSortController.inst.sortMedia(MediaType.playlist, reverse: !settings.playlistSortReversed.value),
                     ),
-                    textField: CustomTextFiled(
+                    textField: () => CustomTextFiled(
                       textFieldController: LibraryTab.playlists.textSearchController,
                       textFieldHintText: lang.FILTER_PLAYLISTS,
                       onTextFieldValueChanged: (value) => SearchSortController.inst.searchMedia(value, MediaType.playlist),
@@ -164,14 +168,15 @@ class _PlaylistsPageState extends State<PlaylistsPage> with TickerProviderStateM
                                           Expanded(
                                             child: NamidaHero(
                                               tag: 'DPC_history',
-                                              child: Obx(
-                                                () => DefaultPlaylistCard(
+                                              child: ObxO(
+                                                rx: HistoryController.inst.totalHistoryItemsCount,
+                                                builder: (count) => DefaultPlaylistCard(
                                                   colorScheme: Colors.grey,
                                                   icon: Broken.refresh,
                                                   title: lang.HISTORY,
-                                                  displayLoadingIndicator: HistoryController.inst.isLoadingHistory,
-                                                  text: HistoryController.inst.historyTracksLength.formatDecimal(),
-                                                  onTap: () => NamidaOnTaps.inst.onHistoryPlaylistTap(),
+                                                  displayLoadingIndicator: count == -1,
+                                                  text: count.formatDecimal(),
+                                                  onTap: NamidaOnTaps.inst.onHistoryPlaylistTap,
                                                 ),
                                               ),
                                             ),
@@ -185,7 +190,7 @@ class _PlaylistsPageState extends State<PlaylistsPage> with TickerProviderStateM
                                                   colorScheme: Colors.green,
                                                   icon: Broken.award,
                                                   title: lang.MOST_PLAYED,
-                                                  displayLoadingIndicator: HistoryController.inst.isLoadingHistory,
+                                                  displayLoadingIndicator: HistoryController.inst.isLoadingHistoryR,
                                                   text: HistoryController.inst.topTracksMapListens.length.formatDecimal(),
                                                   onTap: () => NamidaOnTaps.inst.onMostPlayedPlaylistTap(),
                                                 ),
@@ -207,7 +212,7 @@ class _PlaylistsPageState extends State<PlaylistsPage> with TickerProviderStateM
                                                   colorScheme: Colors.red,
                                                   icon: Broken.heart,
                                                   title: lang.FAVOURITES,
-                                                  text: PlaylistController.inst.favouritesPlaylist.value.tracks.length.formatDecimal(),
+                                                  text: PlaylistController.inst.favouritesPlaylist.valueR.tracks.length.formatDecimal(),
                                                   onTap: () => NamidaOnTaps.inst.onNormalPlaylistTap(k_PLAYLIST_NAME_FAV),
                                                 ),
                                               ),
@@ -223,7 +228,7 @@ class _PlaylistsPageState extends State<PlaylistsPage> with TickerProviderStateM
                                                   icon: Broken.driver,
                                                   title: lang.QUEUES,
                                                   displayLoadingIndicator: QueueController.inst.isLoadingQueues,
-                                                  text: QueueController.inst.queuesMap.value.length.formatDecimal(),
+                                                  text: QueueController.inst.queuesMap.valueR.length.formatDecimal(),
                                                   onTap: () => NamidaNavigator.inst.navigateTo(const QueuesPage()),
                                                 ),
                                               ),
@@ -238,6 +243,24 @@ class _PlaylistsPageState extends State<PlaylistsPage> with TickerProviderStateM
                                 ),
                               ),
                             const SliverPadding(padding: EdgeInsets.only(top: 10.0)),
+                            if (isInsideDialog)
+                              SliverToBoxAdapter(
+                                child: PlaylistTile(
+                                  playlistName: k_PLAYLIST_NAME_FAV,
+                                  onTap: () => PlaylistController.inst.addTracksToPlaylist(
+                                    PlaylistController.inst.favouritesPlaylist.value,
+                                    tracksToAdd,
+                                    duplicationActions: [
+                                      PlaylistAddDuplicateAction.addAllAndRemoveOldOnes,
+                                      PlaylistAddDuplicateAction.addOnlyMissing,
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            if (isInsideDialog)
+                              const SliverToBoxAdapter(
+                                child: NamidaContainerDivider(margin: EdgeInsets.symmetric(horizontal: 10.0, vertical: 6.0)),
+                              ),
                             if (widget.countPerRow == 1)
                               SliverFixedExtentList.builder(
                                 itemCount: SearchSortController.inst.playlistSearchList.length,
@@ -250,14 +273,14 @@ class _PlaylistsPageState extends State<PlaylistsPage> with TickerProviderStateM
                                     shouldAnimate: _shouldAnimate,
                                     child: PlaylistTile(
                                       playlistName: key,
-                                      onTap: widget.tracksToAdd != null
-                                          ? () => PlaylistController.inst.addTracksToPlaylist(playlist, widget.tracksToAdd!)
+                                      onTap: tracksToAdd != null
+                                          ? () => PlaylistController.inst.addTracksToPlaylist(playlist, tracksToAdd)
                                           : () => NamidaOnTaps.inst.onNormalPlaylistTap(key),
                                     ),
                                   );
                                 },
-                              ),
-                            if (widget.countPerRow > 1)
+                              )
+                            else if (widget.countPerRow > 1)
                               SliverGrid.builder(
                                 gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
                                   crossAxisCount: widget.countPerRow,
@@ -285,8 +308,8 @@ class _PlaylistsPageState extends State<PlaylistsPage> with TickerProviderStateM
                                           Positioned(
                                             bottom: 8.0,
                                             right: 8.0,
-                                            child: Tooltip(
-                                              message: "${lang.M3U_PLAYLIST}\n${playlist.m3uPath?.formatPath()}",
+                                            child: NamidaTooltip(
+                                              message: () => "${lang.M3U_PLAYLIST}\n${playlist.m3uPath?.formatPath()}",
                                               child: const Icon(Broken.music_filter, size: 18.0),
                                             ),
                                           ),

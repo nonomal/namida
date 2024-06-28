@@ -3,10 +3,10 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_colorpicker/flutter_colorpicker.dart';
-import 'package:get/get.dart';
 
 import 'package:namida/base/setting_subpage_provider.dart';
 import 'package:namida/class/lang.dart';
+import 'package:namida/class/track.dart';
 import 'package:namida/controller/current_color.dart';
 import 'package:namida/controller/file_browser.dart';
 import 'package:namida/controller/navigator_controller.dart';
@@ -19,8 +19,10 @@ import 'package:namida/core/icon_fonts/broken_icons.dart';
 import 'package:namida/core/namida_converter_ext.dart';
 import 'package:namida/core/themes.dart';
 import 'package:namida/core/translations/language.dart';
+import 'package:namida/core/utils.dart';
 import 'package:namida/ui/widgets/custom_widgets.dart';
 import 'package:namida/ui/widgets/settings_card.dart';
+import 'package:namida/youtube/class/youtube_id.dart';
 
 enum _ThemeSettingsKeys {
   themeMode,
@@ -52,10 +54,11 @@ class ThemeSetting extends SettingSubpageProvider {
       };
 
   void _refreshColorCurrentPlayingItem() {
-    if (Player.inst.nowPlayingVideoID != null) {
-      CurrentColor.inst.updatePlayerColorFromYoutubeID(Player.inst.nowPlayingVideoID!);
-    } else {
-      CurrentColor.inst.updatePlayerColorFromTrack(Player.inst.nowPlayingTWD, null);
+    final currentItem = Player.inst.currentItem.value;
+    if (currentItem is YoutubeID) {
+      CurrentColor.inst.updatePlayerColorFromYoutubeID(currentItem);
+    } else if (currentItem is Selectable) {
+      CurrentColor.inst.updatePlayerColorFromTrack(currentItem, null);
     }
   }
 
@@ -74,14 +77,15 @@ class ThemeSetting extends SettingSubpageProvider {
   Widget getLanguageTile(BuildContext context) {
     return getItemWrapper(
       key: _ThemeSettingsKeys.language,
-      child: Obx(
-        () => CustomListTile(
+      child: ObxO(
+        rx: lang.currentLanguage,
+        builder: (currentLanguage) => CustomListTile(
           bgColor: getBgColor(_ThemeSettingsKeys.language),
           icon: Broken.language_square,
           title: lang.LANGUAGE,
-          subtitle: lang.currentLanguage.name,
+          subtitle: currentLanguage.name,
           onTap: () {
-            final Rx<NamidaLanguage> selectedLang = lang.currentLanguage.obs;
+            final Rx<NamidaLanguage> selectedLang = lang.currentLanguage.value.obs;
             NamidaNavigator.inst.navigateDialog(
               onDisposing: () {
                 selectedLang.close();
@@ -118,8 +122,8 @@ class ThemeSetting extends SettingSubpageProvider {
                   )
                 ],
                 child: SizedBox(
-                  height: Get.height * 0.5,
-                  width: Get.width,
+                  height: namida.height * 0.5,
+                  width: namida.width,
                   child: SingleChildScrollView(
                     child: Column(
                       children: [
@@ -135,7 +139,7 @@ class ThemeSetting extends SettingSubpageProvider {
                                     shape: BoxShape.circle,
                                     border: Border.all(
                                       width: 1.5,
-                                      color: context.theme.colorScheme.onBackground.withAlpha(100),
+                                      color: context.theme.colorScheme.onSurface.withAlpha(100),
                                     ),
                                   ),
                                   child: Text(
@@ -143,8 +147,8 @@ class ThemeSetting extends SettingSubpageProvider {
                                     style: const TextStyle(fontSize: 13.0),
                                   ),
                                 ),
-                                titleWidget: RichText(
-                                  text: TextSpan(
+                                titleWidget: Text.rich(
+                                  TextSpan(
                                     text: e.name,
                                     style: context.textTheme.displayMedium,
                                     children: [
@@ -155,7 +159,7 @@ class ThemeSetting extends SettingSubpageProvider {
                                     ],
                                   ),
                                 ),
-                                active: e == selectedLang.value,
+                                active: e == selectedLang.valueR,
                                 onTap: () => selectedLang.value = e,
                               ),
                             ),
@@ -201,8 +205,8 @@ class ThemeSetting extends SettingSubpageProvider {
                   icon: Broken.colorfilter,
                   title: lang.AUTO_COLORING,
                   subtitle: lang.AUTO_COLORING_SUBTITLE,
-                  value: settings.autoColor.value,
-                  onChanged: (isTrue) async {
+                  value: settings.autoColor.valueR,
+                  onChanged: (isTrue) {
                     settings.save(autoColor: !isTrue);
                     if (isTrue) {
                       CurrentColor.inst.updatePlayerColorFromColor(playerStaticColor);
@@ -220,11 +224,11 @@ class ThemeSetting extends SettingSubpageProvider {
                 child: Obx(
                   () => CustomSwitchListTile(
                     bgColor: getBgColor(_ThemeSettingsKeys.wallpaperColors),
-                    enabled: settings.autoColor.value,
+                    enabled: settings.autoColor.valueR,
                     icon: Broken.gallery_import,
                     title: lang.PICK_COLORS_FROM_DEVICE_WALLPAPER,
-                    value: settings.pickColorsFromDeviceWallpaper.value,
-                    onChanged: (isTrue) async {
+                    value: settings.pickColorsFromDeviceWallpaper.valueR,
+                    onChanged: (isTrue) {
                       settings.save(pickColorsFromDeviceWallpaper: !isTrue);
                       _refreshColorCurrentPlayingItem();
                     },
@@ -239,8 +243,8 @@ class ThemeSetting extends SettingSubpageProvider {
                   icon: Broken.slider_horizontal,
                   title: lang.FORCE_MINIPLAYER_FOLLOW_TRACK_COLORS,
                   subtitle: '${lang.IGNORES}: ${lang.AUTO_COLORING}, ${lang.PICK_COLORS_FROM_DEVICE_WALLPAPER} & ${lang.DEFAULT_COLOR}',
-                  value: settings.forceMiniplayerTrackColor.value,
-                  onChanged: (isTrue) async {
+                  value: settings.forceMiniplayerTrackColor.valueR,
+                  onChanged: (isTrue) {
                     settings.save(forceMiniplayerTrackColor: !isTrue);
                     _refreshColorCurrentPlayingItem();
                   },
@@ -249,16 +253,17 @@ class ThemeSetting extends SettingSubpageProvider {
             ),
             getItemWrapper(
               key: _ThemeSettingsKeys.pitchBlack,
-              child: Obx(
-                () => CustomSwitchListTile(
+              child: ObxO(
+                rx: settings.pitchBlack,
+                builder: (pitchBlack) => CustomSwitchListTile(
                   bgColor: getBgColor(_ThemeSettingsKeys.pitchBlack),
                   icon: Broken.mirror,
                   title: lang.USE_PITCH_BLACK,
                   subtitle: lang.USE_PITCH_BLACK_SUBTITLE,
-                  value: settings.pitchBlack.value,
-                  onChanged: (isTrue) async {
+                  value: pitchBlack,
+                  onChanged: (isTrue) {
                     settings.save(pitchBlack: !isTrue);
-                    _refreshColorCurrentPlayingItem();
+                    if (context.isDarkMode) _refreshColorCurrentPlayingItem();
                   },
                 ),
               ),
@@ -351,14 +356,14 @@ class ThemeSetting extends SettingSubpageProvider {
 
   void _updateColorLight(Color color) {
     settings.save(staticColor: color.value);
-    if (!Get.isDarkMode) {
+    if (!namida.isDarkMode) {
       CurrentColor.inst.updatePlayerColorFromColor(color, false);
     }
   }
 
   void _updateColorDark(Color color) {
     settings.save(staticColorDark: color.value);
-    if (Get.isDarkMode) {
+    if (namida.isDarkMode) {
       CurrentColor.inst.updatePlayerColorFromColor(color, false);
     }
   }
@@ -380,7 +385,7 @@ class ToggleThemeModeContainer extends StatelessWidget {
     final double containerWidth = width ?? context.width / 2.8;
     return Obx(
       () {
-        final currentTheme = settings.themeMode.value;
+        final currentTheme = settings.themeMode.valueR;
         return Container(
           decoration: BoxDecoration(
             color: Color.alphaBlend(context.theme.listTileTheme.textColor!.withAlpha(200), Colors.white.withAlpha(160)),
@@ -404,7 +409,7 @@ class ToggleThemeModeContainer extends StatelessWidget {
                   child: Container(
                     width: containerWidth / 3.3,
                     decoration: BoxDecoration(
-                      color: context.theme.colorScheme.background.withAlpha(180),
+                      color: context.theme.colorScheme.surface.withAlpha(180),
                       borderRadius: BorderRadius.circular(8.0.multipliedRadius),
                       // boxShadow: [
                       //   BoxShadow(color: Colors.black.withAlpha(100), spreadRadius: 1, blurRadius: 4, offset: Offset(0, 2)),
@@ -423,7 +428,7 @@ class ToggleThemeModeContainer extends StatelessWidget {
                         onTap: () => onThemeChangeTap(e),
                         child: Icon(
                           e.toIcon(),
-                          color: currentTheme == e ? context.theme.listTileTheme.iconColor : context.theme.colorScheme.background.withAlpha(180),
+                          color: currentTheme == e ? context.theme.listTileTheme.iconColor : context.theme.colorScheme.surface.withAlpha(180),
                         ),
                       ),
                     ),

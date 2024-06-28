@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:get/get.dart';
+import 'package:namida/core/utils.dart';
 
 import 'package:namida/base/setting_subpage_provider.dart';
 import 'package:namida/controller/navigator_controller.dart';
@@ -25,14 +25,14 @@ extension _SettSearcherUtils on SettingSubpageEnum {
           title: lang.THEME_SETTINGS,
           subtitle: lang.THEME_SETTINGS_SUBTITLE,
           icon: Broken.brush_2,
-          page: ThemeSetting(initialItem: initialItem),
+          page: () => ThemeSetting(initialItem: initialItem),
         );
       case SettingSubpageEnum.indexer:
         return CustomCollapsedListTile(
           title: lang.INDEXER,
           subtitle: lang.INDEXER_SUBTITLE,
           icon: Broken.component,
-          page: IndexerSettings(initialItem: initialItem),
+          page: () => IndexerSettings(initialItem: initialItem),
         );
 
       case SettingSubpageEnum.playback:
@@ -40,14 +40,14 @@ extension _SettSearcherUtils on SettingSubpageEnum {
           title: lang.PLAYBACK_SETTING,
           subtitle: lang.PLAYBACK_SETTING_SUBTITLE,
           icon: Broken.play_cricle,
-          page: PlaybackSettings(initialItem: initialItem),
+          page: () => PlaybackSettings(initialItem: initialItem),
         );
       case SettingSubpageEnum.customization:
         return CustomCollapsedListTile(
           title: lang.CUSTOMIZATIONS,
           subtitle: lang.CUSTOMIZATIONS_SUBTITLE,
           icon: Broken.brush_1,
-          page: CustomizationSettings(initialItem: initialItem),
+          page: () => CustomizationSettings(initialItem: initialItem),
         );
 
       case SettingSubpageEnum.youtube:
@@ -55,7 +55,7 @@ extension _SettSearcherUtils on SettingSubpageEnum {
           title: lang.YOUTUBE,
           subtitle: lang.YOUTUBE_SETTINGS_SUBTITLE,
           icon: Broken.video,
-          page: YoutubeSettings(initialItem: initialItem),
+          page: () => YoutubeSettings(initialItem: initialItem),
         );
 
       case SettingSubpageEnum.extra:
@@ -63,14 +63,14 @@ extension _SettSearcherUtils on SettingSubpageEnum {
           title: lang.EXTRAS,
           subtitle: lang.EXTRAS_SUBTITLE,
           icon: Broken.command_square,
-          page: ExtrasSettings(initialItem: initialItem),
+          page: () => ExtrasSettings(initialItem: initialItem),
         );
       case SettingSubpageEnum.backupRestore:
         return CustomCollapsedListTile(
           title: lang.BACKUP_AND_RESTORE,
           subtitle: lang.BACKUP_AND_RESTORE_SUBTITLE,
           icon: Broken.refresh_circle,
-          page: BackupAndRestore(initialItem: initialItem),
+          page: () => BackupAndRestore(initialItem: initialItem),
         );
 
       case SettingSubpageEnum.advanced:
@@ -78,7 +78,7 @@ extension _SettSearcherUtils on SettingSubpageEnum {
           title: lang.ADVANCED_SETTINGS,
           subtitle: lang.ADVANCED_SETTINGS_SUBTITLE,
           icon: Broken.hierarchy_3,
-          page: AdvancedSettings(initialItem: initialItem),
+          page: () => AdvancedSettings(initialItem: initialItem),
         );
       default:
         return null;
@@ -107,7 +107,7 @@ class SettingsSearchController {
   final searchResults = <SettingSubpageEnum, List<SettingSearchResultItem>>{}.obs;
   final subpagesDetails = <SettingSubpageEnum, CustomCollapsedListTile?>{};
 
-  bool get canShowSearch => _canShowSearch.value;
+  RxBaseCore<bool> get canShowSearch => _canShowSearch;
   final _canShowSearch = false.obs;
 
   void closeSearch() {
@@ -156,7 +156,7 @@ class SettingsSearchController {
 
   void onSearchChanged(String val) {
     final res = <SettingSubpageEnum, List<SettingSearchResultItem>>{};
-    _allWidgets.loop((widget, index) {
+    _allWidgets.loop((widget) {
       for (final e in widget.$2.entries) {
         final match = e.value.any((element) => element.cleanUpForComparison.contains(val.cleanUpForComparison));
         if (match) {
@@ -194,7 +194,7 @@ class SettingsSearchController {
       NamidaNavigator.inst.navigateTo(
         SettingsSubPage(
           title: details?.title ?? '',
-          child: page,
+          child: page(),
         ),
       );
     }

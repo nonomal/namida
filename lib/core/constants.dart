@@ -1,7 +1,6 @@
 // ignore_for_file: non_constant_identifier_names, constant_identifier_names
 
 import 'dart:async';
-import 'dart:collection';
 
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:flutter/services.dart';
@@ -12,6 +11,7 @@ import 'package:namida/class/lang.dart';
 import 'package:namida/class/track.dart';
 import 'package:namida/controller/indexer_controller.dart';
 import 'package:namida/controller/settings_controller.dart';
+import 'package:namida/core/extensions.dart';
 
 class NamidaDeviceInfo {
   static int sdkVersion = 21;
@@ -113,7 +113,7 @@ class NamidaLinkUtils {
       try {
         if (match.groupCount == 3) {
           dur = Duration(
-            hours: int.parse(match[1]!.split(':').first),
+            hours: int.parse(match[1]!.splitFirst(':')),
             minutes: int.parse(match[2]!),
             seconds: int.parse(match[3]!),
           );
@@ -140,6 +140,10 @@ class NamidaLinkUtils {
       } catch (_) {}
     }
     return didLaunch;
+  }
+
+  static String? extractPlaylistId(String playlistUrl) {
+    return NamidaLinkRegex.youtubePlaylistsLinkRegex.firstMatch(playlistUrl)?.group(1);
   }
 }
 
@@ -212,14 +216,19 @@ class AppDirs {
   // ================= Youtube =================
   static final YOUTUBE_MAIN_DIRECTORY = '$USER_DATA/Youtube';
 
+  static final YOUTIPIE_CACHE = '$YOUTUBE_MAIN_DIRECTORY/Youtipie/';
+  static final YOUTIPIE_DATA = '$YOUTUBE_MAIN_DIRECTORY/Youtipie_data/';
+
   static final YT_PLAYLISTS = '$YOUTUBE_MAIN_DIRECTORY/Youtube Playlists/';
   static final YT_HISTORY_PLAYLIST = '$YOUTUBE_MAIN_DIRECTORY/Youtube History/';
   static final YT_THUMBNAILS = '$YOUTUBE_MAIN_DIRECTORY/YTThumbnails/';
   static final YT_THUMBNAILS_CHANNELS = '$YOUTUBE_MAIN_DIRECTORY/YTThumbnails Channels/';
+
   static final YT_METADATA = '$YOUTUBE_MAIN_DIRECTORY/Metadata Videos/';
   static final YT_METADATA_TEMP = '$YOUTUBE_MAIN_DIRECTORY/Metadata Videos Temp/';
   static final YT_METADATA_CHANNELS = '$YOUTUBE_MAIN_DIRECTORY/Metadata Channels/';
   static final YT_METADATA_COMMENTS = '$YOUTUBE_MAIN_DIRECTORY/Metadata Comments/';
+
   static final YT_STATS = '$YOUTUBE_MAIN_DIRECTORY/Youtube Stats/';
   static final YT_PALETTES = '$YOUTUBE_MAIN_DIRECTORY/Palettes/';
   static final YT_DOWNLOAD_TASKS = '$YOUTUBE_MAIN_DIRECTORY/Download Tasks/';
@@ -260,8 +269,10 @@ class AppSocial {
   static const DONATE_KOFI = 'https://ko-fi.com/namidaco';
   static const DONATE_BUY_ME_A_COFFEE = 'https://www.buymeacoffee.com/namidaco';
   static const GITHUB = 'https://github.com/namidaco/namida';
+  static const GITHUB_SNAPSHOTS = 'https://github.com/namidaco/namida-snapshots';
   static const GITHUB_ISSUES = '$GITHUB/issues';
   static const GITHUB_RELEASES = '$GITHUB/releases/';
+  static const GITHUB_RELEASES_BETA = '$GITHUB_SNAPSHOTS/releases/';
   static const EMAIL = 'namida.coo@gmail.com';
   static const TRANSLATION_REPO = 'https://github.com/namidaco/namida-translations';
 }
@@ -278,10 +289,7 @@ const k_PLAYLIST_NAME_HISTORY = '_HISTORY_';
 const k_PLAYLIST_NAME_MOST_PLAYED = '_MOST_PLAYED_';
 const k_PLAYLIST_NAME_AUTO_GENERATED = '_AUTO_GENERATED_';
 
-List<Track> get allTracksInLibrary => UnmodifiableListView(Indexer.inst.tracksInfoList);
-
-bool get shouldAlbumBeSquared =>
-    (settings.albumGridCount.value > 1 && !settings.useAlbumStaggeredGridView.value) || (settings.albumGridCount.value == 1 && settings.forceSquaredAlbumThumbnail.value);
+List<Track> get allTracksInLibrary => Indexer.inst.tracksInfoList.value;
 
 /// Stock Video Qualities List
 final List<String> kStockVideoQualities = [
@@ -480,7 +488,7 @@ class UnknownTags {
 
 int get currentTimeMS => DateTime.now().millisecondsSinceEpoch;
 
-const kThemeAnimationDurationMS = 350;
+const kThemeAnimationDurationMS = 250;
 
 const kMaximumSleepTimerTracks = 40;
 const kMaximumSleepTimerMins = 180;

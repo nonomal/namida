@@ -1,7 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter_archive/flutter_archive.dart';
-import 'package:get/get.dart';
+import 'package:namida/core/utils.dart';
 import 'package:intl/intl.dart';
 
 import 'package:namida/controller/file_browser.dart';
@@ -16,8 +16,8 @@ import 'package:namida/core/constants.dart';
 import 'package:namida/core/extensions.dart';
 import 'package:namida/core/translations/language.dart';
 import 'package:namida/main.dart';
-import 'package:namida/youtube/controller/youtube_controller.dart';
 import 'package:namida/youtube/controller/youtube_history_controller.dart';
+import 'package:namida/youtube/controller/youtube_info_controller.dart';
 import 'package:namida/youtube/controller/youtube_playlist_controller.dart';
 
 class BackupController {
@@ -25,8 +25,8 @@ class BackupController {
   static final BackupController _instance = BackupController._internal();
   BackupController._internal();
 
-  final RxBool isCreatingBackup = false.obs;
-  final RxBool isRestoringBackup = false.obs;
+  final isCreatingBackup = false.obso;
+  final isRestoringBackup = false.obso;
 
   String get _backupDirectoryPath => settings.defaultBackupLocation.value;
   int get _defaultAutoBackupInterval => settings.autoBackupIntervalDays.value;
@@ -35,7 +35,7 @@ class BackupController {
     final interval = _defaultAutoBackupInterval;
     if (interval <= 0) return;
 
-    if (!await requestManageStoragePermission()) return;
+    if (!await requestManageStoragePermission(request: false)) return;
 
     final sortedBackupFiles = await _getBackupFilesSorted.thready(_backupDirectoryPath);
     final latestBackup = sortedBackupFiles.firstOrNull;
@@ -70,7 +70,10 @@ class BackupController {
   }
 
   Future<void> createBackupFile(List<String> backupItemsPaths, {String fileSuffix = ''}) async {
-    if (isCreatingBackup.value) return snackyy(title: lang.NOTE, message: lang.ANOTHER_PROCESS_IS_RUNNING);
+    if (isCreatingBackup.value) {
+      snackyy(title: lang.NOTE, message: lang.ANOTHER_PROCESS_IS_RUNNING);
+      return;
+    }
 
     if (!await requestManageStoragePermission()) return;
 
@@ -96,14 +99,14 @@ class BackupController {
     File? tempAllLocal;
     File? tempAllYoutube;
 
-    await backupItemsPaths.loopFuture((f, index) async {
+    for (final f in backupItemsPaths) {
       if (await FileSystemEntity.type(f) == FileSystemEntityType.file) {
         f.startsWith(AppDirs.YOUTUBE_MAIN_DIRECTORY) ? youtubeFilesOnly.add(File(f)) : localFilesOnly.add(File(f));
       }
       if (await FileSystemEntity.type(f) == FileSystemEntityType.directory) {
         dirsOnly.add(Directory(f));
       }
-    });
+    }
 
     try {
       for (final d in dirsOnly) {
@@ -155,7 +158,7 @@ class BackupController {
     final possibleFiles = dir.listSyncSafe();
 
     final List<File> matchingBackups = [];
-    possibleFiles.loop((pf, index) {
+    possibleFiles.loop((pf) {
       if (pf is File) {
         if (pf.path.getFilename.startsWith('Namida Backup - ')) {
           matchingBackups.add(pf);
@@ -174,7 +177,7 @@ class BackupController {
     final possibleFiles = dir.listSyncSafe();
 
     final statsLookup = <String, FileStat>{};
-    possibleFiles.loop((pf, index) {
+    possibleFiles.loop((pf) {
       if (pf is File) {
         final filename = pf.path.getFilename;
         if (filename.startsWith('Namida Backup - ') && filename.endsWith(" - auto.zip")) {
@@ -209,7 +212,10 @@ class BackupController {
   }
 
   Future<void> restoreBackupOnTap(bool auto) async {
-    if (isRestoringBackup.value) return snackyy(title: lang.NOTE, message: lang.ANOTHER_PROCESS_IS_RUNNING);
+    if (isRestoringBackup.value) {
+      snackyy(title: lang.NOTE, message: lang.ANOTHER_PROCESS_IS_RUNNING);
+      return;
+    }
 
     File? backupzip;
     if (auto) {
@@ -262,7 +268,7 @@ class BackupController {
       }
     }
 
-    Indexer.inst.updateImageSizeInStorage();
+    Indexer.inst.calculateAllImageSizesInStorage();
     Indexer.inst.updateColorPalettesSizeInStorage();
     Indexer.inst.updateVideosSizeInStorage();
     await _readNewFiles();
@@ -279,13 +285,13 @@ class BackupController {
     VideoController.inst.initialize();
 
     PlaylistController.inst.prepareAllPlaylists();
-    HistoryController.inst.prepareHistoryFile();
+    HistoryController.inst.prepareHistoryFile().then((_) => Indexer.inst.sortMediaTracksSubListsAfterHistoryPrepared());
     await PlaylistController.inst.prepareDefaultPlaylistsFile();
     // await QueueController.inst.prepareLatestQueue();
 
     YoutubePlaylistController.inst.prepareAllPlaylists();
     YoutubeHistoryController.inst.prepareHistoryFile();
     await YoutubePlaylistController.inst.prepareDefaultPlaylistsFile();
-    YoutubeController.inst.fillBackupInfoMap(); // for history videos info.
+    YoutubeInfoController.utils.fillBackupInfoMap(); // for history videos info.
   }
 }

@@ -4,9 +4,8 @@ import 'dart:isolate';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_staggered_animations/flutter_staggered_animations.dart';
-import 'package:get/get.dart';
+import 'package:namida/core/utils.dart';
 
-import 'package:namida/base/ports_provider.dart';
 import 'package:namida/base/pull_to_refresh.dart';
 import 'package:namida/controller/namida_channel_storage.dart';
 import 'package:namida/controller/navigator_controller.dart';
@@ -43,6 +42,7 @@ class NamidaFileBrowser {
       memeType: memeType,
       initialDirectory: initialDirectory,
       onNavigate: _onNavigate,
+      onPop: _onPop,
     );
   }
 
@@ -58,6 +58,7 @@ class NamidaFileBrowser {
       memeType: memeType,
       initialDirectory: initialDirectory,
       onNavigate: _onNavigate,
+      onPop: _onPop,
     );
   }
 
@@ -69,6 +70,7 @@ class NamidaFileBrowser {
       note: note,
       initialDirectory: initialDirectory,
       onNavigate: _onNavigate,
+      onPop: _onPop,
     );
   }
 
@@ -80,6 +82,7 @@ class NamidaFileBrowser {
       note: note,
       initialDirectory: initialDirectory,
       onNavigate: _onNavigate,
+      onPop: _onPop,
     );
   }
 
@@ -92,20 +95,19 @@ class NamidaFileBrowser {
   }
 
   static void _onNavigate(_NamidaFileBrowserBase widget) {
-    Get.to(
-      () => widget,
-      id: null,
-      preventDuplicates: false,
+    NamidaNavigator.inst.navigateToRoot(
+      widget,
       transition: Transition.native,
-      curve: Curves.easeOut,
-      duration: const Duration(milliseconds: 300),
-      opaque: true,
-      fullscreenDialog: false,
     );
+  }
+
+  static void _onPop() {
+    NamidaNavigator.inst.popRoot();
   }
 }
 
 typedef _NamidaFileBrowserNavigationCallback = void Function(_NamidaFileBrowserBase options);
+typedef _NamidaFileBrowserPopCallback = void Function();
 
 class _NamidaFileBrowserBase<T extends FileSystemEntity> extends StatefulWidget {
   final String note;
@@ -114,6 +116,7 @@ class _NamidaFileBrowserBase<T extends FileSystemEntity> extends StatefulWidget 
   final List<String> allowedExtensions;
   final String memeType;
   final bool allowMultiple;
+  final _NamidaFileBrowserPopCallback onPop;
 
   const _NamidaFileBrowserBase({
     super.key,
@@ -123,6 +126,7 @@ class _NamidaFileBrowserBase<T extends FileSystemEntity> extends StatefulWidget 
     this.allowedExtensions = const [],
     this.memeType = _defaultMemeType,
     required this.allowMultiple,
+    required this.onPop,
   });
 
   static Future<File?> pickFile({
@@ -131,6 +135,7 @@ class _NamidaFileBrowserBase<T extends FileSystemEntity> extends StatefulWidget 
     String memeType = _defaultMemeType,
     String? initialDirectory,
     required _NamidaFileBrowserNavigationCallback onNavigate,
+    required _NamidaFileBrowserPopCallback onPop,
   }) async {
     final completer = Completer<List<File>>();
     onNavigate(
@@ -141,6 +146,7 @@ class _NamidaFileBrowserBase<T extends FileSystemEntity> extends StatefulWidget 
         memeType: memeType,
         onSelect: completer,
         allowMultiple: false,
+        onPop: onPop,
       ),
     );
     final all = await completer.future;
@@ -153,6 +159,7 @@ class _NamidaFileBrowserBase<T extends FileSystemEntity> extends StatefulWidget 
     String memeType = _defaultMemeType,
     String? initialDirectory,
     required _NamidaFileBrowserNavigationCallback onNavigate,
+    required _NamidaFileBrowserPopCallback onPop,
   }) async {
     final completer = Completer<List<File>>();
     onNavigate(
@@ -163,6 +170,7 @@ class _NamidaFileBrowserBase<T extends FileSystemEntity> extends StatefulWidget 
         memeType: memeType,
         onSelect: completer,
         allowMultiple: true,
+        onPop: onPop,
       ),
     );
     return completer.future;
@@ -172,6 +180,7 @@ class _NamidaFileBrowserBase<T extends FileSystemEntity> extends StatefulWidget 
     String note = '',
     String? initialDirectory,
     required _NamidaFileBrowserNavigationCallback onNavigate,
+    required _NamidaFileBrowserPopCallback onPop,
   }) async {
     final completer = Completer<List<Directory>>();
     onNavigate(
@@ -180,16 +189,19 @@ class _NamidaFileBrowserBase<T extends FileSystemEntity> extends StatefulWidget 
         initialDirectory: initialDirectory,
         onSelect: completer,
         allowMultiple: false,
+        onPop: onPop,
       ),
     );
     final all = await completer.future;
-    return all.firstOrNull;
+    if (all.isEmpty) return null;
+    return _fixSDCardDirectory(all[0]);
   }
 
   static Future<List<Directory>> pickDirectories({
     String note = '',
     String? initialDirectory,
     required _NamidaFileBrowserNavigationCallback onNavigate,
+    required _NamidaFileBrowserPopCallback onPop,
   }) async {
     final completer = Completer<List<Directory>>();
     onNavigate(
@@ -198,16 +210,24 @@ class _NamidaFileBrowserBase<T extends FileSystemEntity> extends StatefulWidget 
         initialDirectory: initialDirectory,
         onSelect: completer,
         allowMultiple: true,
+        onPop: onPop,
       ),
     );
-    return completer.future;
+    final res = await completer.future;
+    return res.map((e) => _fixSDCardDirectory(e)).toList();
+  }
+
+  static final _sdDirRegex = RegExp(r'/tree/(\w{4}-\w{4}):');
+  static Directory _fixSDCardDirectory(Directory dir) {
+    final replaced = dir.path.replaceFirstMapped(_sdDirRegex, (match) => '/storage/${match.group(1)}/');
+    return Directory(replaced);
   }
 
   @override
   State<_NamidaFileBrowserBase> createState() => _NamidaFileBrowserState<T>();
 }
 
-class _NamidaFileBrowserState<T extends FileSystemEntity> extends State<_NamidaFileBrowserBase<T>> with TickerProviderStateMixin, PullToRefreshMixin, PortsProvider {
+class _NamidaFileBrowserState<T extends FileSystemEntity> extends State<_NamidaFileBrowserBase<T>> with TickerProviderStateMixin, PullToRefreshMixin {
   final _mainStoragePaths = <String>{};
   String _currentFolderPath = '';
   var _currentFiles = <File>[];
@@ -262,25 +282,12 @@ class _NamidaFileBrowserState<T extends FileSystemEntity> extends State<_NamidaF
   late final _scrollController = ScrollController();
   late final _pathSplitsScrollController = ScrollController();
 
-  static String _pathReverseSplitter(String path, String until) {
-    String extension = ''; // represents the latest part
-    int latestIndex = path.length - 1;
-
-    while (latestIndex > 0) {
-      final char = path[latestIndex];
-      if (char == until) break;
-      extension = char + extension;
-      latestIndex--;
-    }
-    return extension;
-  }
-
   static String _pathToName(String path) {
-    return _pathReverseSplitter(path, _pathSeparator);
+    return path.pathReverseSplitter(_pathSeparator);
   }
 
   static String _pathToExtension(String path) {
-    return _pathReverseSplitter(path, '.').toLowerCase();
+    return path.pathReverseSplitter('.').toLowerCase();
   }
 
   Isolate? _isolate;
@@ -430,7 +437,7 @@ class _NamidaFileBrowserState<T extends FileSystemEntity> extends State<_NamidaF
         int totalSize = 0;
         final subDir = <Directory>[];
         final items = dir.listSync(recursive: false);
-        items.loop((e, _) {
+        items.loop((e) {
           if (e is File) {
             totalSize += onFileAdd(dir, e);
           } else if (e is Directory) {
@@ -438,7 +445,7 @@ class _NamidaFileBrowserState<T extends FileSystemEntity> extends State<_NamidaF
             directoryForFolders.addForce(dir.path, e.path);
           }
         });
-        subDir.loop((sub, _) {
+        subDir.loop((sub) {
           totalSize += dirSafeRecursiveListSync(
             sub,
           );
@@ -473,7 +480,7 @@ class _NamidaFileBrowserState<T extends FileSystemEntity> extends State<_NamidaF
 
     for (final fileEntry in directoryForFiles.entries) {
       int totalSize = 0;
-      fileEntry.value.loop((e, _) => totalSize += infoFiles[e]?.size ?? 0);
+      fileEntry.value.loop((e) => totalSize += infoFiles[e]?.size ?? 0);
       onDirInfo(fileEntry, totalSize);
     }
     for (final dirEntry in directoryForFolders.entries) {
@@ -524,7 +531,7 @@ class _NamidaFileBrowserState<T extends FileSystemEntity> extends State<_NamidaF
   //     // -- files
   //     if (p.$2.isNotEmpty) {
   //       final newMapFiles = <String, NamidaFileStat>{};
-  //       p.$2.loop((e, index) {
+  //       p.$2.loop((e){
   //         try {
   //           if (allFilesStats[e.path] == null) {
   //             final stats = e.statSync();
@@ -544,7 +551,7 @@ class _NamidaFileBrowserState<T extends FileSystemEntity> extends State<_NamidaF
   //     // -- dirs
   //     if (p.$3.isNotEmpty) {
   //       final newMapDirs = <String, NamidaDirStat>{};
-  //       p.$3.loop((dir, index) {
+  //       p.$3.loop((dir){
   //         try {
   //           int totalSize = 0;
   //           if (allDirsStats[dir.path] == null) {
@@ -557,7 +564,7 @@ class _NamidaFileBrowserState<T extends FileSystemEntity> extends State<_NamidaF
   //             }
   //             int filesCount = 0;
   //             int foldersCount = 0;
-  //             itemsInside.loop((file, _) {
+  //             itemsInside.loop((file){
   //               if (file is File) {
   //                 // -- file stats inside each dir
   //                 final stats = file.statSync();
@@ -614,8 +621,8 @@ class _NamidaFileBrowserState<T extends FileSystemEntity> extends State<_NamidaF
     final extensions = params.allowedExtensions;
 
     if (excludeHidden && extensions.isNotEmpty) {
-      items.loop((e, _) {
-        final filename = e.path.split(_pathSeparator).last;
+      items.loop((e) {
+        final filename = e.path.splitLast(_pathSeparator);
         if (e is Directory) {
           if (!filename.startsWith('.')) onAdd(e);
         } else {
@@ -623,21 +630,21 @@ class _NamidaFileBrowserState<T extends FileSystemEntity> extends State<_NamidaF
         }
       });
     } else if (excludeHidden) {
-      items.loop((e, _) {
-        final fileorDirName = e.path.split(_pathSeparator).last;
+      items.loop((e) {
+        final fileorDirName = e.path.splitLast(_pathSeparator);
         if (!fileorDirName.startsWith('.')) onAdd(e);
       });
     } else if (extensions.isNotEmpty) {
-      items.loop((e, _) {
+      items.loop((e) {
         if (e is File) {
-          final filename = e.path.split(_pathSeparator).last;
+          final filename = e.path.splitLast(_pathSeparator);
           if (extensions.any((ext) => filename.endsWith(ext))) onAdd(e);
         } else {
           onAdd(e);
         }
       });
     } else {
-      items.loop((e, _) => onAdd(e));
+      items.loop((e) => onAdd(e));
     }
 
     files.sortBy((e) => _pathToName(e.path));
@@ -678,7 +685,6 @@ class _NamidaFileBrowserState<T extends FileSystemEntity> extends State<_NamidaF
   void dispose() {
     _stopMainIsolates();
     _stopInfoIsolates();
-    disposePort();
     _scrollController.dispose();
     _pathSplitsScrollController.dispose();
     _showHiddenFiles.close();
@@ -728,7 +734,7 @@ class _NamidaFileBrowserState<T extends FileSystemEntity> extends State<_NamidaF
 
   void _onSelectionComplete(List<T> items) {
     widget.onSelect.completeIfWasnt(items);
-    context.safePop();
+    widget.onPop();
   }
 
   final _selectedFiles = <File>[];
@@ -952,7 +958,7 @@ class _NamidaFileBrowserState<T extends FileSystemEntity> extends State<_NamidaF
                 children: [
                   IconButton(
                     onPressed: () {
-                      context.safePop(rootNavigator: true);
+                      _onSelectionComplete(<T>[]);
                     },
                     icon: const Icon(
                       Broken.arrow_left_2,
@@ -964,7 +970,7 @@ class _NamidaFileBrowserState<T extends FileSystemEntity> extends State<_NamidaF
                         ? Text(
                             widget.note.addDQuotation(),
                             style: context.textTheme.displayMedium?.copyWith(
-                              fontSize: 16.0.multipliedFontScale,
+                              fontSize: 16.0,
                             ),
                           )
                         : const SizedBox(),
@@ -1056,9 +1062,9 @@ class _NamidaFileBrowserState<T extends FileSystemEntity> extends State<_NamidaF
                     },
                     icon: Obx(
                       () => Icon(
-                        _showHiddenFiles.value ? Broken.eye : Broken.eye_slash,
+                        _showHiddenFiles.valueR ? Broken.eye : Broken.eye_slash,
                         size: 20.0,
-                        color: _showHiddenFiles.value ? null : context.defaultIconColor(),
+                        color: _showHiddenFiles.valueR ? null : context.defaultIconColor(),
                       ),
                     ),
                   ),
@@ -1139,38 +1145,39 @@ class _NamidaFileBrowserState<T extends FileSystemEntity> extends State<_NamidaF
                     const Spacer(),
                     Obx(
                       () => SortByMenu(
-                        title: _sortTypeToName[_sortType.value] ?? '',
+                        title: _sortTypeToName[_sortType.valueR] ?? '',
                         popupMenuChild: () {
                           Widget getTile(IconData icon, String title, _SortType sort) {
-                            return SmallListTile(
-                              visualDensity: const VisualDensity(horizontal: -4, vertical: -3.5),
-                              trailing: Padding(
-                                padding: const EdgeInsets.only(right: 4.0),
-                                child: Icon(icon, size: 20.0),
+                            return ObxO(
+                              rx: _sortType,
+                              builder: (currentSort) => SmallListTile(
+                                visualDensity: const VisualDensity(horizontal: -4, vertical: -3.5),
+                                trailing: Padding(
+                                  padding: const EdgeInsets.only(right: 4.0),
+                                  child: Icon(icon, size: 20.0),
+                                ),
+                                title: title,
+                                active: currentSort == sort,
+                                onTap: () => _sortItems(sort, null),
                               ),
-                              title: title,
-                              active: _sortType.value == sort,
-                              onTap: () => _sortItems(sort, null),
                             );
                           }
 
-                          return Obx(
-                            () => Column(
-                              children: [
-                                ListTileWithCheckMark(
-                                  active: _sortReversed.value,
-                                  onTap: () => _sortItems(null, !_sortReversed.value),
-                                ),
-                                const SizedBox(height: 8.0),
-                                getTile(Broken.text, lang.FILE_NAME, _SortType.name),
-                                getTile(Broken.calendar, lang.DATE, _SortType.dateModified),
-                                getTile(Broken.document_code, lang.EXTENSION, _SortType.type),
-                                getTile(Broken.math, lang.SIZE, _SortType.size),
-                              ],
-                            ),
+                          return Column(
+                            children: [
+                              ListTileWithCheckMark(
+                                activeRx: _sortReversed,
+                                onTap: () => _sortItems(null, !_sortReversed.value),
+                              ),
+                              const SizedBox(height: 8.0),
+                              getTile(Broken.text, lang.FILE_NAME, _SortType.name),
+                              getTile(Broken.calendar, lang.DATE, _SortType.dateModified),
+                              getTile(Broken.document_code, lang.EXTENSION, _SortType.type),
+                              getTile(Broken.math, lang.SIZE, _SortType.size),
+                            ],
                           );
                         },
-                        isCurrentlyReversed: _sortReversed.value,
+                        isCurrentlyReversed: _sortReversed.valueR,
                         onReverseIconTap: () => _sortItems(null, !_sortReversed.value),
                       ),
                     ),
@@ -1261,7 +1268,7 @@ class _NamidaFileBrowserState<T extends FileSystemEntity> extends State<_NamidaF
                                             final info = _currentInfoFiles[file.path];
                                             final image = _getFileImage(file);
                                             return _FileSystemChip(
-                                              position: index + _currentFolders.length,
+                                              position: index + _currentFolders.length + 1,
                                               bgColor: chipColor,
                                               onTap: () => _onFileTap(file),
                                               onLongPress: () => _onFileLongPress(file),
@@ -1304,6 +1311,7 @@ class _NamidaFileBrowserState<T extends FileSystemEntity> extends State<_NamidaF
                               )
                             : T == Directory && (_selectedFolders.isNotEmpty || !isPathRoot(_currentFolderPath))
                                 ? FloatingActionButton(
+                                    heroTag: 'file_browser_fab_hero',
                                     onPressed: () => _onSelectionComplete(
                                       _selectedFolders.isNotEmpty ? _selectedFolders as List<T> : [Directory(_currentFolderPath) as T],
                                     ),
@@ -1372,7 +1380,7 @@ class _FileSystemChip extends StatelessWidget {
                 Text(
                   title,
                   style: context.textTheme.displaySmall?.copyWith(
-                    fontSize: 13.0.multipliedFontScale,
+                    fontSize: 13.0,
                     fontWeight: FontWeight.w600,
                   ),
                 ),
@@ -1380,9 +1388,9 @@ class _FileSystemChip extends StatelessWidget {
                 Text(
                   subtitle,
                   style: context.textTheme.displaySmall?.copyWith(
-                    fontSize: 12.0.multipliedFontScale,
+                    fontSize: 12.0,
                     fontWeight: FontWeight.w400,
-                    // color: context.theme.colorScheme.onBackground.withOpacity(0.7),
+                    // color: context.theme.colorScheme.onSurface.withOpacity(0.7),
                   ),
                 ),
               ],

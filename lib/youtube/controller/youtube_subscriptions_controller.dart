@@ -1,9 +1,8 @@
 import 'dart:io';
 
-import 'package:get/get.dart';
-
 import 'package:namida/core/constants.dart';
 import 'package:namida/core/extensions.dart';
+import 'package:namida/core/utils.dart';
 import 'package:namida/youtube/class/youtube_subscription.dart';
 
 class YoutubeSubscriptionsController {
@@ -11,24 +10,29 @@ class YoutubeSubscriptionsController {
   YoutubeSubscriptionsController._internal();
 
   Iterable<String> get subscribedChannels => _availableChannels.keys.where((key) => _availableChannels[key]?.subscribed == true);
+
+  RxBaseCore<Map<String, YoutubeSubscription>> get availableChannels => _availableChannels;
   final _availableChannels = <String, YoutubeSubscription>{}.obs;
 
-  YoutubeSubscription? getChannel(String channelId) => _availableChannels[channelId];
   void setChannel(String channelId, YoutubeSubscription channel) => _availableChannels[channelId] = channel;
-  String? idOrUrlToChannelID(String? idOrURL) => idOrURL?.split('/').last;
+  String? idOrUrlToChannelID(String? idOrURL) => idOrURL?.splitLast('/');
 
-  /// Updates a channel subscription status, use null to toggle.
-  Future<void> changeChannelStatus(String channelIDOrURL, {bool? subscribe}) async {
-    final channelID = channelIDOrURL.split('/').last;
-    final valInMap = _availableChannels[channelID];
-    final newSubscribed = subscribe ?? !(valInMap?.subscribed ?? false);
-    _availableChannels[channelID] = YoutubeSubscription(
+  Future<bool> toggleChannelSubscription(String channelIDOrURL) async {
+    final channelID = channelIDOrURL.splitLast('/');
+    final valInMap = _availableChannels.value[channelID];
+    final wasSubscribed = valInMap?.subscribed == true;
+    final newSubscribed = !wasSubscribed;
+
+    _availableChannels.value[channelID] = YoutubeSubscription(
       title: valInMap?.title,
       channelID: channelID,
       subscribed: newSubscribed,
       lastFetched: valInMap?.lastFetched,
     );
+    _availableChannels.refresh();
+
     await saveFile();
+    return newSubscribed;
   }
 
   Future<void> sortByLastFetched() async {

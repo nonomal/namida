@@ -1,27 +1,58 @@
-// ignore_for_file: depend_on_referenced_packages, implementation_imports
+// ignore_for_file: implementation_imports, depend_on_referenced_packages
+
+import 'dart:convert';
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_mailer/flutter_mailer.dart';
-
 import 'package:flutter_markdown/flutter_markdown.dart';
-import 'package:get/get.dart';
+import 'package:http/http.dart' as http;
 import 'package:markdown/src/ast.dart' as md;
 import 'package:share_plus/share_plus.dart';
-import 'package:http/http.dart' as http;
 
+import 'package:namida/class/route.dart';
 import 'package:namida/core/constants.dart';
 import 'package:namida/core/dimensions.dart';
+import 'package:namida/core/enums.dart';
 import 'package:namida/core/extensions.dart';
 import 'package:namida/core/icon_fonts/broken_icons.dart';
 import 'package:namida/core/namida_converter_ext.dart';
 import 'package:namida/core/translations/language.dart';
+import 'package:namida/core/utils.dart';
 import 'package:namida/ui/widgets/custom_widgets.dart';
 import 'package:namida/ui/widgets/settings/extra_settings.dart';
 import 'package:namida/ui/widgets/settings_card.dart';
 
-class AboutPage extends StatelessWidget {
+String? _latestCheckedVersion;
+
+class AboutPage extends StatefulWidget with NamidaRouteWidget {
+  @override
+  RouteType get route => RouteType.PAGE_about;
+
   const AboutPage({super.key});
+
+  @override
+  State<AboutPage> createState() => _AboutPageState();
+}
+
+class _AboutPageState extends State<AboutPage> {
+  late final _loadingChangelog = false.obso;
+
+  @override
+  void initState() {
+    super.initState();
+    if (_latestCheckedVersion == null && NamidaDeviceInfo.version != null) {
+      _checkNewVersion(NamidaDeviceInfo.version!).then((value) {
+        if (value != null) refreshState(() => _latestCheckedVersion = value);
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    _loadingChangelog.close();
+    super.dispose();
+  }
 
   String _getDateDifferenceText() {
     final buildDate = NamidaDeviceInfo.buildDate;
@@ -36,13 +67,46 @@ class AboutPage extends StatelessWidget {
     return '';
   }
 
+  Future<String?> _checkNewVersion(String current) async {
+    try {
+      final isBeta = current.endsWith('beta');
+      final repoName = isBeta ? 'namida-snapshots' : 'namida';
+      final response = await http.get(Uri(scheme: 'https', host: 'api.github.com', path: '/repos/namidaco/$repoName/releases/latest'));
+      final resMap = jsonDecode(response.body) as Map;
+      String? latestRelease = resMap['name'] as String?;
+      if (latestRelease == null) return null;
+      if (latestRelease.startsWith('v')) latestRelease = latestRelease.substring(1);
+      if (current.startsWith('v')) current = current.substring(1);
+      return latestRelease;
+    } catch (_) {}
+    return null;
+  }
+
+  String? _prettyVersion(String? v) {
+    if (v == null) return null;
+    if (!v.startsWith('v')) v = "v$v";
+    return v;
+  }
+
   @override
   Widget build(BuildContext context) {
     final imageSize = context.width * 0.25;
     final topPadding = imageSize / 2;
     const textTopPadding = 28.0 * 2;
-    final version = NamidaDeviceInfo.version ?? '';
+    final version = _prettyVersion(NamidaDeviceInfo.version) ?? '';
     final buildDateDiff = _getDateDifferenceText();
+    final latestVersion = _prettyVersion(_latestCheckedVersion)?.splitFirst('+');
+    final isBeta = version.endsWith('beta');
+
+    final fallbackAvatar = SizedBox(
+      width: 48.0,
+      height: 48.0,
+      child: Icon(
+        Broken.user,
+        color: Colors.white.withOpacity(0.8),
+      ),
+    );
+
     return BackgroundWrapper(
       child: ListView(
         padding: kBottomPaddingInsets,
@@ -66,35 +130,25 @@ class AboutPage extends StatelessWidget {
                       child: NamidaAboutListTile(
                         visualDensity: VisualDensity.compact,
                         trailing: const Icon(Broken.code_circle),
-                        leading: () {
-                          final ic = SizedBox(
+                        leading: Container(
+                          clipBehavior: Clip.antiAlias,
+                          decoration: const BoxDecoration(
+                            shape: BoxShape.circle,
+                            color: Color.fromRGBO(25, 25, 25, 0.8),
+                          ),
+                          child: Image.network(
+                            'https://avatars.githubusercontent.com/u/85245079',
                             width: 48.0,
                             height: 48.0,
-                            child: Icon(
-                              Broken.user,
-                              color: Colors.white.withOpacity(0.8),
-                            ),
-                          );
-                          return Container(
-                            clipBehavior: Clip.antiAlias,
-                            decoration: const BoxDecoration(
-                              shape: BoxShape.circle,
-                              color: Color.fromRGBO(25, 25, 25, 0.8),
-                            ),
-                            child: Image.network(
-                              'https://avatars.githubusercontent.com/u/85245079',
-                              width: 48.0,
-                              height: 48.0,
-                              loadingBuilder: (context, child, loadingProgress) {
-                                if (loadingProgress?.cumulativeBytesLoaded == loadingProgress?.expectedTotalBytes) {
-                                  return child;
-                                }
-                                return ic;
-                              },
-                              errorBuilder: (context, error, stackTrace) => ic,
-                            ),
-                          );
-                        }(),
+                            loadingBuilder: (context, child, loadingProgress) {
+                              if (loadingProgress?.cumulativeBytesLoaded == loadingProgress?.expectedTotalBytes) {
+                                return child;
+                              }
+                              return fallbackAvatar;
+                            },
+                            errorBuilder: (context, error, stackTrace) => fallbackAvatar,
+                          ),
+                        ),
                         title: 'Developer',
                         subtitle: 'MSOB7YY',
                         link: 'https://github.com/MSOB7YY',
@@ -132,13 +186,28 @@ class AboutPage extends StatelessWidget {
                         style: context.textTheme.displayLarge,
                       ),
                       if (version != '')
-                        Text(
-                          version,
-                          style: context.textTheme.displaySmall,
-                        ),
+                        latestVersion != null && latestVersion != version
+                            ? Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Text(
+                                    version,
+                                    style: context.textTheme.displaySmall,
+                                  ),
+                                  const SizedBox(width: 4.0),
+                                  const Icon(
+                                    Broken.arrow_up_1,
+                                    size: 8.0,
+                                  ),
+                                ],
+                              )
+                            : Text(
+                                version,
+                                style: context.textTheme.displaySmall,
+                              ),
                       if (buildDateDiff != '')
                         Text(
-                          _getDateDifferenceText(),
+                          buildDateDiff,
                           style: context.textTheme.displaySmall,
                         ),
                     ],
@@ -189,22 +258,23 @@ class AboutPage extends StatelessWidget {
                   subtitle: 'Have an issue or suggestion? open an issue on GitHub',
                   link: AppSocial.GITHUB_ISSUES,
                 ),
-                ObxValue<RxBool>(
-                  (isLoading) => NamidaAboutListTile(
+                ObxO(
+                  rx: _loadingChangelog,
+                  builder: (isLoading) => NamidaAboutListTile(
                     icon: Broken.activity,
                     title: lang.CHANGELOG,
                     subtitle: 'See what\'s newly added/fixed inside Namida',
-                    trailing: isLoading.value ? const LoadingIndicator() : null,
+                    trailing: isLoading ? const LoadingIndicator() : null,
                     onTap: () async {
-                      isLoading.value = true;
+                      _loadingChangelog.value = true;
                       final stringy = await http.get(Uri.parse('https://raw.githubusercontent.com/namidaco/namida/main/CHANGELOG.md'));
-                      isLoading.value = false;
+                      _loadingChangelog.value = false;
                       await Future.delayed(Duration.zero); // delay bcz sometimes doesnt show
-                      // ignore: use_build_context_synchronously
                       showModalBottomSheet(
                         showDragHandle: true,
                         useRootNavigator: true,
                         isScrollControlled: true,
+                        // ignore: use_build_context_synchronously
                         context: context,
                         builder: (context) {
                           return SizedBox(
@@ -232,7 +302,6 @@ class AboutPage extends StatelessWidget {
                       );
                     },
                   ),
-                  false.obs,
                 ),
                 NamidaAboutListTile(
                   icon: Broken.language_circle,
@@ -302,7 +371,40 @@ class AboutPage extends StatelessWidget {
                   icon: Broken.cpu,
                   title: 'App Version',
                   subtitle: version,
-                  link: AppSocial.GITHUB_RELEASES,
+                  link: isBeta ? AppSocial.GITHUB_RELEASES_BETA : AppSocial.GITHUB_RELEASES,
+                  trailing: NamidaInkWell(
+                    borderRadius: 8.0,
+                    bgColor: context.theme.cardColor,
+                    padding: const EdgeInsets.symmetric(horizontal: 6.0, vertical: 3.0),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: latestVersion == null
+                          ? [
+                              Text(
+                                '?',
+                                style: context.textTheme.displaySmall,
+                              ),
+                            ]
+                          : latestVersion != version
+                              ? [
+                                  Text(
+                                    latestVersion,
+                                    style: context.textTheme.displaySmall,
+                                  ),
+                                  const SizedBox(width: 4.0),
+                                  const Icon(
+                                    Broken.arrow_up_1,
+                                    size: 14.0,
+                                  ),
+                                ]
+                              : [
+                                  const Icon(
+                                    Broken.tick_circle,
+                                    size: 14.0,
+                                  ),
+                                ],
+                    ),
+                  ),
                 ),
                 NamidaAboutListTile(
                   icon: Broken.clipboard_text,
@@ -310,7 +412,7 @@ class AboutPage extends StatelessWidget {
                   trailing: NamidaIconButton(
                     iconColor: context.defaultIconColor(),
                     icon: Broken.direct_send,
-                    tooltip: AppSocial.EMAIL,
+                    tooltip: () => AppSocial.EMAIL,
                     onPressed: () async {
                       final mailOptions = MailOptions(
                         body: 'pls look at this report im beggin u pls solve my issue pls i wa-',
@@ -344,18 +446,18 @@ class _NamidaMarkdownElementBuilderHeader extends MarkdownElementBuilder {
             NamidaLinkUtils.openLink(url);
           }
         },
-        bgColor: Get.theme.cardTheme.color?.withOpacity(0.8),
+        bgColor: namida.theme.cardTheme.color?.withOpacity(0.8),
         borderRadius: 18.0,
         decoration: BoxDecoration(
           border: Border.all(
             width: 1.5,
-            color: Get.theme.colorScheme.primary.withOpacity(0.5),
+            color: namida.theme.colorScheme.primary.withOpacity(0.5),
           ),
         ),
         padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 6.0),
         child: Text(
           text.text,
-          style: Get.textTheme.displayMedium,
+          style: namida.textTheme.displayMedium,
         ),
       ),
     );
@@ -376,20 +478,20 @@ class _NamidaMarkdownElementBuilderCommitLink extends MarkdownElementBuilder {
     final url = "${AppSocial.GITHUB}/commit/$longHash";
     final textWithoutCommit = longHash == null ? text.text : text.text.replaceFirst(regex, '');
     final commit = shortenLongHash(longHash);
-    return RichText(
-      text: TextSpan(
+    return Text.rich(
+      TextSpan(
         text: commit == null ? '' : "#$commit:",
-        style: Get.textTheme.displayMedium?.copyWith(
-          fontSize: 13.5.multipliedFontScale,
-          color: Get.theme.colorScheme.secondary,
+        style: namida.textTheme.displayMedium?.copyWith(
+          fontSize: 13.5,
+          color: namida.theme.colorScheme.secondary,
         ),
         recognizer: TapGestureRecognizer()..onTap = () => NamidaLinkUtils.openLink(url),
         children: [
           TextSpan(
             text: textWithoutCommit,
-            style: Get.textTheme.displaySmall?.copyWith(
+            style: namida.textTheme.displaySmall?.copyWith(
               fontWeight: FontWeight.w400,
-              fontSize: 13.0.multipliedFontScale,
+              fontSize: 13.0,
             ),
           ),
         ],

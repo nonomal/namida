@@ -2,11 +2,9 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:dio/dio.dart';
 import 'package:ffmpeg_kit_flutter_min/ffmpeg_kit.dart';
 import 'package:ffmpeg_kit_flutter_min/ffmpeg_kit_config.dart';
 import 'package:ffmpeg_kit_flutter_min/ffprobe_kit.dart';
-import 'package:get/get_rx/get_rx.dart';
 
 import 'package:namida/class/media_info.dart';
 import 'package:namida/class/track.dart';
@@ -14,6 +12,7 @@ import 'package:namida/controller/tagger_controller.dart';
 import 'package:namida/controller/thumbnail_manager.dart';
 import 'package:namida/core/constants.dart';
 import 'package:namida/core/extensions.dart';
+import 'package:namida/core/utils.dart';
 import 'package:namida/main.dart';
 
 class NamidaFFMPEG {
@@ -253,11 +252,10 @@ class NamidaFFMPEG {
   Future<void> fixYTDLPBigThumbnailSize({required List<String> directoriesPaths, bool recursive = true}) async {
     if (!await requestManageStoragePermission()) return;
 
-    final dio = Dio();
     final allFiles = <FileSystemEntity>[];
     int remainingDirsLength = directoriesPaths.length;
     final completer = Completer<void>();
-    directoriesPaths.loop((e, index) {
+    directoriesPaths.loop((e) {
       Directory(e).listAllIsolate(recursive: recursive).then(
         (value) {
           allFiles.addAll(value);
@@ -310,7 +308,6 @@ class NamidaFFMPEG {
         );
       }
     }
-    dio.close(force: true);
     currentOperations[OperationType.ytdlpThumbnailFix]!.value.currentFilePath = null;
   }
 

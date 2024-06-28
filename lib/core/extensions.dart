@@ -1,5 +1,3 @@
-// ignore_for_file: depend_on_referenced_packages
-
 import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
@@ -24,7 +22,7 @@ import 'package:namida/ui/widgets/custom_widgets.dart';
 
 export 'package:dart_extensions/dart_extensions.dart';
 
-extension TracksSelectableUtils on List<Selectable> {
+extension TracksSelectableUtils on Iterable<Selectable> {
   String get displayTrackKeyword => length.displayTrackKeyword;
 
   List<Track> toImageTracks([int? limit = 4]) {
@@ -62,15 +60,13 @@ extension TracksUtils on List<Track> {
   Set<String> toUniqueAlbums() {
     final tracks = this;
     final albums = <String>{};
-    tracks.loop((t, _) => albums.add(t.albumIdentifier));
+    tracks.loop((t) => albums.add(t.albumIdentifier));
     return albums;
   }
 
   String get totalSizeFormatted {
     int size = 0;
-    loop((t, index) {
-      size += t.size;
-    });
+    loop((t) => size += t.size);
     return size.fileSizeFormatted;
   }
 
@@ -184,9 +180,9 @@ extension DisplayKeywords on int {
 extension YearDateFormatted on int {
   String get formattedTime => getTimeFormatted(hourChar: 'h', minutesChar: 'min', separator: ' ');
 
-  String get yearFormatted => getYearFormatted(settings.dateTimeFormat.value);
+  String get yearFormatted => getYearFormatted(settings.dateTimeFormat.value); // non reactive
 
-  String get dateFormatted => formatTimeFromMSSE(settings.dateTimeFormat.value);
+  String get dateFormatted => formatTimeFromMSSE(settings.dateTimeFormat.value); // non reactive
 
   String get dateFormattedOriginal {
     final valInSetting = settings.dateTimeFormat.value;
@@ -229,12 +225,6 @@ extension BorderRadiusSetting on double {
   }
 }
 
-extension FontScaleSetting on double {
-  double get multipliedFontScale {
-    return this * settings.fontScaleFactor.value;
-  }
-}
-
 extension TrackItemSubstring on TrackTileItem {
   String get label => convertToString;
 }
@@ -259,6 +249,11 @@ extension FavouriteTrack on Track {
   bool get isFavourite {
     return PlaylistController.inst.favouritesPlaylist.value.tracks.firstWhereEff((element) => element.track == this) != null;
   }
+
+  bool get isFavouriteR {
+    // ignore: avoid_rx_value_getter_outside_obx
+    return PlaylistController.inst.favouritesPlaylist.valueR.tracks.firstWhereEff((element) => element.track == this) != null;
+  }
 }
 
 extension PLNAME on String {
@@ -279,29 +274,31 @@ extension EnumUtils<E extends Enum> on E {
 extension TRACKPLAYMODE on TrackPlayMode {
   bool get shouldBeIndex0 => this == TrackPlayMode.selectedTrack || this == TrackPlayMode.trackAlbum || this == TrackPlayMode.trackArtist || this == TrackPlayMode.trackGenre;
 
-  List<Track> getQueue(Track trackPre, {List<Track>? searchQueue}) {
-    List<Track> queue = [];
+  List<Track> generateQueue(Track trackPre, {List<Track>? searchQueue}) {
     final track = trackPre.toTrackExt();
-    queue = switch (this) {
-      TrackPlayMode.selectedTrack => [trackPre],
-      TrackPlayMode.searchResults =>
-        searchQueue ?? (SearchSortController.inst.trackSearchTemp.isNotEmpty ? SearchSortController.inst.trackSearchTemp : SearchSortController.inst.trackSearchList),
-      TrackPlayMode.trackAlbum => track.albumIdentifier.getAlbumTracks(),
-      TrackPlayMode.trackArtist => track.artistsList.first.getArtistTracks(),
-      TrackPlayMode.trackGenre => track.artistsList.first.getGenresTracks(),
-    };
+    final queue = switch (this) {
+          TrackPlayMode.selectedTrack => [trackPre],
+          TrackPlayMode.searchResults => searchQueue ??
+              (SearchSortController.inst.trackSearchTemp.value.isNotEmpty ? SearchSortController.inst.trackSearchTemp.value : SearchSortController.inst.trackSearchList.value),
+          TrackPlayMode.trackAlbum => track.albumIdentifier.getAlbumTracks(),
+          TrackPlayMode.trackArtist => track.artistsList.firstOrNull?.getArtistTracks(),
+          TrackPlayMode.trackGenre => track.artistsList.firstOrNull?.getGenresTracks(),
+        } ??
+        [trackPre];
+
+    final newQueue = List<Track>.from(queue);
     if (shouldBeIndex0) {
-      queue.remove(trackPre);
-      queue.insertSafe(0, trackPre);
+      newQueue.remove(trackPre);
+      newQueue.insertSafe(0, trackPre);
     }
-    return queue;
+    return newQueue;
   }
 }
 
 extension ConvertPathToTrack on String {
   Future<TrackExtended?> removeTrackThenExtract({bool onlyIfNewFileExists = true}) async {
     if (onlyIfNewFileExists && !await File(this).exists()) return null;
-    Indexer.inst.allTracksMappedByPath.remove(Track(this));
+    Indexer.inst.allTracksMappedByPath.value.remove(Track(this));
     return await Indexer.inst.extractTrackInfo(
       trackPath: this,
       onMinDurTrigger: () => null,
@@ -348,11 +345,12 @@ extension TitleAndArtistUtils on String {
     );
     final match2 = regexCareForSpaces.firstMatch(input);
     if (match2 != null) {
-      final artist = match2.group(1)?.trim();
-      final title = match2.group(2)?.trim();
+      String? artist = match2.group(1)?.trim();
+      String? title = match2.group(2)?.trim();
       if (artist != null && title != null) {
-        final a = artist.startsWith('「') ? artist.replaceRange(0, 1, '') : artist;
-        return (a, title);
+        if (artist.startsWith('「')) artist = artist.replaceRange(0, 1, '');
+        if (title.startsWith('"')) title = title.replaceRange(0, 1, '');
+        return (artist, title);
       }
     }
     // final regexDoesntCareAboutSpaces = RegExp(
@@ -374,7 +372,7 @@ extension TitleAndArtistUtils on String {
   String keepFeatKeywordsOnly() {
     if (this == '') return '';
     final regex = RegExp(
-      r'\s*\((?!remix|featured|ft\.|feat\.|featuring)(?!.*Remix)[^)]*\)|\s*\[(?!remix|featured|ft\.|feat\.|featuring)(?!.*Remix)[^\]]*\]',
+      r'\s*\((?!remix|featured|features|ft\.|feat\.|featuring)(?!.*Remix)[^)]*\)|\s*\[(?!remix|featured|features|ft\.|feat\.|featuring)(?!.*Remix)[^\]]*\]',
       caseSensitive: false,
     );
     String res = replaceAll(regex, '').trimAll();
@@ -516,7 +514,7 @@ int _getDirSizeIsolate(Map params) {
   final recursive = params['recursive'] as bool;
   final followLinks = params['followLinks'] as bool;
   int size = 0;
-  Directory(dirPath).listSync(recursive: recursive, followLinks: followLinks).loop((e, index) {
+  Directory(dirPath).listSync(recursive: recursive, followLinks: followLinks).loop((e) {
     size += (e is File ? File(e.path).fileSizeSync() ?? 0 : 0);
   });
   return size;
@@ -548,6 +546,52 @@ extension FileUtils on File {
       await setLastAccessed(time);
     } catch (_) {}
   }
+
+  /// [goodBytesIfCopied] is checked to delete the old file if renaming failed.
+  File? moveSync(String newPath, {bool Function(int newFileLength)? goodBytesIfCopied}) {
+    File? newFile;
+    final file = this;
+    try {
+      newFile = file.renameSync(newPath);
+    } catch (_) {
+      try {
+        newFile = file.copySync(newPath);
+        if (newFile.existsSync()) {
+          if (goodBytesIfCopied != null) {
+            if (goodBytesIfCopied(newFile.lengthSync())) {
+              file.deleteSync();
+            }
+          } else {
+            file.deleteSync();
+          }
+        }
+      } catch (_) {}
+    }
+    return newFile;
+  }
+
+  /// [goodBytesIfCopied] is checked to delete the old file if renaming failed.
+  Future<File?> move(String newPath, {FutureOr<bool> Function(int newFileLength)? goodBytesIfCopied}) async {
+    File? newFile;
+    final file = this;
+    try {
+      newFile = await file.rename(newPath);
+    } catch (_) {
+      try {
+        newFile = await file.copy(newPath);
+        if (await newFile.exists()) {
+          if (goodBytesIfCopied != null) {
+            if (await goodBytesIfCopied(await newFile.length())) {
+              await file.delete();
+            }
+          } else {
+            await file.delete();
+          }
+        }
+      } catch (_) {}
+    }
+    return newFile;
+  }
 }
 
 final _minimumDateMicro = DateTime(1970).microsecondsSinceEpoch + 1;
@@ -567,15 +611,13 @@ extension FileStatsUtils on FileStat {
   }
 }
 
-extension CompleterCompleter<T> on Completer<T>? {
-  void completeIfWasnt([FutureOr<T>? value]) async {
-    final c = this;
-    if (c?.isCompleted == false) c?.complete(value);
+extension CompleterCompleter<T> on Completer<T> {
+  void completeIfWasnt([FutureOr<T>? value]) {
+    if (isCompleted == false) complete(value);
   }
 
-  void completeErrorIfWasnt(Object error, [StackTrace? stackTrace]) async {
-    final c = this;
-    if (c?.isCompleted == false) c?.completeError(error, stackTrace);
+  void completeErrorIfWasnt(Object error, [StackTrace? stackTrace]) {
+    if (isCompleted == false) completeError(error, stackTrace);
   }
 }
 
@@ -589,23 +631,26 @@ extension ScrollerPerf on ScrollController {
     required Curve curve,
     final double jumpitator = 800.0,
   }) async {
-    final diff = offset - this.offset;
+    try {
+      final diff = offset - this.positions.last.pixels;
 
-    if (diff > jumpitator) {
-      // -- is now above the target, so we jump offset-jumpitator
-      jumpTo(offset - jumpitator);
-    } else if (diff < -jumpitator) {
-      // -- is now under the target, so we jump offset+jumpitator
-      jumpTo(offset + jumpitator);
-    }
+      if (diff > jumpitator) {
+        // -- is now above the target, so we jump offset-jumpitator
+        jumpTo(offset - jumpitator);
+      } else if (diff < -jumpitator) {
+        // -- is now under the target, so we jump offset+jumpitator
+        jumpTo(offset + jumpitator);
+      }
+    } catch (_) {}
+
     await animateTo(offset, duration: duration, curve: curve);
   }
 }
 
-extension NavigatorUtils on BuildContext? {
+extension NavigatorUtils on BuildContext {
   void safePop({bool rootNavigator = false}) {
     final context = this;
-    if (context != null && context.mounted) Navigator.of(context, rootNavigator: rootNavigator).pop();
+    if (context.mounted) Navigator.of(context, rootNavigator: rootNavigator).pop();
   }
 }
 
@@ -649,5 +694,41 @@ extension ExecuteDelayedMinUtils<T> on Future<T> {
       Future.delayed(Duration(milliseconds: delayMS)),
     ]);
     return v;
+  }
+}
+
+extension StatefulWUtils<T extends StatefulWidget> on State<T> {
+  void refreshState([void Function()? fn]) {
+    if (mounted) {
+      // ignore: invalid_use_of_protected_member
+      setState(() {
+        if (fn != null) fn();
+      });
+    } else {
+      if (fn != null) fn();
+    }
+  }
+}
+
+extension StringPathUtils on String {
+  /// keeps reverse collecting string until [until] is matched.
+  /// useful to exract extensions or filenames.
+  String pathReverseSplitter(String until) {
+    String extension = ''; // represents the latest part
+    final path = this;
+    int latestIndex = path.length - 1;
+
+    // -- skipping separator at the end.
+    while (latestIndex > 0 && path[latestIndex] == until) {
+      latestIndex--;
+    }
+
+    while (latestIndex > 0) {
+      final char = path[latestIndex];
+      if (char == until) break;
+      extension = char + extension;
+      latestIndex--;
+    }
+    return extension;
   }
 }

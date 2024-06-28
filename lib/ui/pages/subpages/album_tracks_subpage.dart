@@ -1,18 +1,25 @@
 import 'package:flutter/material.dart';
 
-import 'package:get/get.dart';
-
+import 'package:namida/class/route.dart';
 import 'package:namida/class/track.dart';
 import 'package:namida/controller/indexer_controller.dart';
 import 'package:namida/controller/settings_controller.dart';
 import 'package:namida/core/constants.dart';
+import 'package:namida/core/dimensions.dart';
 import 'package:namida/core/enums.dart';
 import 'package:namida/core/extensions.dart';
+import 'package:namida/core/utils.dart';
 import 'package:namida/ui/widgets/artwork.dart';
 import 'package:namida/ui/widgets/custom_widgets.dart';
 import 'package:namida/ui/widgets/library/multi_artwork_container.dart';
 
-class AlbumTracksPage extends StatelessWidget {
+class AlbumTracksPage extends StatelessWidget with NamidaRouteWidget {
+  @override
+  String? get name => albumIdentifier;
+
+  @override
+  RouteType get route => RouteType.SUBPAGE_albumTracks;
+
   final String albumIdentifier;
   final List<Track> tracks;
 
@@ -25,24 +32,25 @@ class AlbumTracksPage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final name = tracks.album;
+    final displayTrackNumberinAlbumPage = settings.displayTrackNumberinAlbumPage.value;
     return BackgroundWrapper(
       child: Obx(
         () {
-          Indexer.inst.mainMapAlbums.value; // to update after sorting
+          Indexer.inst.mainMapAlbums.valueR; // to update after sorting
           return NamidaTracksList(
             queueSource: QueueSource.album,
             queueLength: tracks.length,
             queue: tracks,
-            displayTrackNumber: settings.displayTrackNumberinAlbumPage.value,
+            displayTrackNumber: displayTrackNumberinAlbumPage,
             header: SubpagesTopContainer(
               title: name,
               source: QueueSource.album,
               subtitle: [tracks.displayTrackKeyword, tracks.totalDurationFormatted].join(' - '),
               thirdLineText: tracks.albumArtist,
               heroTag: 'album_$albumIdentifier',
-              imageWidget: shouldAlbumBeSquared
+              imageWidget: Dimensions.inst.shouldAlbumBeSquared // non reactive
                   ? MultiArtworkContainer(
-                      size: Get.width * 0.35,
+                      size: namida.width * 0.35,
                       heroTag: 'album_$albumIdentifier',
                       tracks: [tracks.trackOfImage ?? kDummyTrack],
                     )
@@ -54,7 +62,7 @@ class AlbumTracksPage extends StatelessWidget {
                         child: ArtworkWidget(
                           key: Key(tracks.pathToImage),
                           track: tracks.trackOfImage,
-                          thumbnailSize: Get.width * 0.35,
+                          thumbnailSize: namida.width * 0.35,
                           forceSquared: false,
                           path: tracks.pathToImage,
                           compressed: false,
@@ -62,7 +70,7 @@ class AlbumTracksPage extends StatelessWidget {
                         ),
                       ),
                     ),
-              tracks: tracks,
+              tracksFn: () => tracks,
             ),
           );
         },

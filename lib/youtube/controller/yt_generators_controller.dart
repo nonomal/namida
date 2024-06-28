@@ -1,12 +1,12 @@
 import 'dart:async';
-import 'dart:io';
 import 'dart:isolate';
 
 import 'package:flutter/services.dart';
-import 'package:get/get.dart';
 import 'package:history_manager/history_manager.dart';
-import 'package:newpipeextractor_dart/newpipeextractor_dart.dart';
-import 'package:newpipeextractor_dart/utils/stringChecker.dart';
+import 'package:youtipie/class/cache_details.dart';
+import 'package:youtipie/class/publish_time.dart';
+import 'package:youtipie/core/enum.dart';
+import 'package:youtipie/youtipie.dart';
 
 import 'package:namida/base/generator_base.dart';
 import 'package:namida/base/ports_provider.dart';
@@ -14,17 +14,17 @@ import 'package:namida/class/video.dart';
 import 'package:namida/controller/navigator_controller.dart';
 import 'package:namida/core/constants.dart';
 import 'package:namida/core/extensions.dart';
+import 'package:namida/core/utils.dart';
 import 'package:namida/youtube/class/youtube_id.dart';
-import 'package:namida/youtube/controller/youtube_controller.dart';
 import 'package:namida/youtube/controller/youtube_history_controller.dart';
+import 'package:namida/youtube/controller/youtube_info_controller.dart';
 import 'package:namida/youtube/controller/youtube_playlist_controller.dart';
 
-class NamidaYTGenerator extends NamidaGeneratorBase<YoutubeID, String> with PortsProvider {
+class NamidaYTGenerator extends NamidaGeneratorBase<YoutubeID, String> with PortsProvider<Map> {
   static final NamidaYTGenerator inst = NamidaYTGenerator._internal();
   NamidaYTGenerator._internal();
 
-  late final didPrepareResources = Rxn<bool>();
-  Completer<void>? fillingCompleter;
+  late final didPrepareResources = false.obs;
 
   late final _operationsCompleter = <_GenerateOperation, Completer<Iterable<String>>>{};
 
@@ -43,10 +43,8 @@ class NamidaYTGenerator extends NamidaGeneratorBase<YoutubeID, String> with Port
     return ids.map((e) => YoutubeID(id: e, playlistID: null));
   }
 
-  Future<Iterable<YoutubeID>> generateVideoFromSameEra(String videoId, {int daysRange = 30, String? videoToRemove}) async {
+  Future<Iterable<YoutubeID>> generateVideoFromSameEra(String videoId, DateTime date, {int daysRange = 30, String? videoToRemove}) async {
     const type = _GenerateOperation.sameReleaseDate;
-    final date = YoutubeController.inst.getVideoReleaseDate(videoId, checkFromStorage: true) ??
-        await NewPipeExtractorDart.videos.getInfo('https://www.youtube.com/watch?v=$videoId').then((value) => value?.date);
     final p = {'type': type, 'id': videoId, 'date': date, 'daysRange': daysRange, 'videoToRemove': videoToRemove};
     final ids = await _onOperationExecution(type: type, parameters: p);
     return ids.map((e) => YoutubeID(id: e, playlistID: null));
@@ -55,8 +53,7 @@ class NamidaYTGenerator extends NamidaGeneratorBase<YoutubeID, String> with Port
   Future<Iterable<String>> _onOperationExecution({required _GenerateOperation type, required Map parameters}) async {
     _operationsCompleter[type]?.completeIfWasnt([]);
     _operationsCompleter[type] = Completer();
-
-    (await port?.search.future)?.send(parameters);
+    await sendPort(parameters);
 
     return await _operationsCompleter[type]?.future ?? [];
   }
@@ -71,68 +68,61 @@ class NamidaYTGenerator extends NamidaGeneratorBase<YoutubeID, String> with Port
   void cleanResources({int afterSeconds = 5}) {
     _cancelDisposingTimer();
     _disposingTimer = Timer(Duration(seconds: afterSeconds), () async {
-      fillingCompleter.completeIfWasnt();
-      fillingCompleter = null;
       await disposePort();
-      didPrepareResources.value = null;
     });
   }
 
-  Future<void> prepareResources() async {
+  @override
+  void onPreparing(bool prepared) {
+    didPrepareResources.value = prepared;
+  }
+
+  @override
+  Future<void> initialize() async {
     _cancelDisposingTimer();
+    return super.initialize();
+  }
 
-    if (didPrepareResources.value == true || fillingCompleter?.isCompleted == true) return;
-    if (fillingCompleter != null) return fillingCompleter?.future;
+  @override
+  void onResult(dynamic result) {
+    if (result is Exception) {
+      snackyy(message: result.toString(), isError: true);
+      return;
+    }
+    result as Map;
+    final type = result['type'] as _GenerateOperation;
+    final videos = result['videos'] as Iterable<String>;
+    _operationsCompleter[type]?.completeIfWasnt(videos);
+  }
 
-    didPrepareResources.value = false;
-    fillingCompleter = Completer();
-    await preparePortRaw(
-      onResult: (result) {
-        if (result is bool) {
-          fillingCompleter.completeIfWasnt();
-          return;
-        }
-        if (result is Exception) {
-          snackyy(message: result.toString(), isError: true);
-          return;
-        }
-        result as Map;
-        final type = result['type'] as _GenerateOperation;
-        final videos = result['videos'] as Iterable<String>;
-        _operationsCompleter[type]?.completeIfWasnt(videos);
-      },
-      isolateFunction: (itemsSendPort) async {
-        final playlists = {for (final pl in YoutubePlaylistController.inst.playlistsMap.values) pl.name: pl.tracks};
-        final params = {
-          'tempStreamInfo': YoutubeController.inst.tempVideoInfosFromStreams,
-          'dirStreamInfo': AppDirs.YT_METADATA_TEMP,
-          'dirVideoInfo': AppDirs.YT_METADATA,
-          'tempBackupYTVH': YoutubeController.inst.tempBackupVideoInfo,
-          'mostplayedPlaylist': YoutubeHistoryController.inst.topTracksMapListens.keys,
-          'favouritesPlaylist': YoutubePlaylistController.inst.favouritesPlaylist.value.tracks,
-          'playlists': playlists,
-          'sendPort': itemsSendPort,
-          'token': RootIsolateToken.instance!,
-        };
-        await Isolate.spawn(_prepareResourcesAndListen, params);
-      },
-    );
-    await fillingCompleter?.future;
-    didPrepareResources.value = true;
+  @override
+  IsolateFunctionReturnBuild<Map> isolateFunction(SendPort port) {
+    final playlists = {for (final pl in YoutubePlaylistController.inst.playlistsMap.value.values) pl.name: pl.tracks};
+    final params = {
+      'databasesDir': AppDirs.YOUTIPIE_CACHE,
+      'sensitiveDataDir': AppDirs.YOUTIPIE_DATA,
+      'tempBackupYTVH': YoutubeInfoController.utils.tempBackupVideoInfo,
+      'mostplayedPlaylist': YoutubeHistoryController.inst.topTracksMapListens.keys,
+      'favouritesPlaylist': YoutubePlaylistController.inst.favouritesPlaylist.value.tracks,
+      'playlists': playlists,
+      'sendPort': port,
+      'token': RootIsolateToken.instance!,
+    };
+    return IsolateFunctionReturnBuild(_prepareResourcesAndListen, params);
   }
 
   static void _prepareResourcesAndListen(Map params) async {
-    final tempStreamInfo = params['tempStreamInfo'] as Map<String, StreamInfoItem>;
-    final dirStreamInfo = params['dirStreamInfo'] as String;
-    final dirVideoInfo = params['dirVideoInfo'] as String;
+    final databasesDir = params['databasesDir'] as String;
+    final sensitiveDataDir = params['sensitiveDataDir'] as String;
     final tempBackupYTVH = params['tempBackupYTVH'] as Map<String, YoutubeVideoHistory>;
+
     final mostplayedPlaylist = params['mostplayedPlaylist'] as Iterable<String>;
     final favouritesPlaylist = params['favouritesPlaylist'] as List<YoutubeID>;
     final playlists = params['playlists'] as Map<String, List<YoutubeID>>;
     final sendPort = params['sendPort'] as SendPort;
     final token = params['token'] as RootIsolateToken;
-    final recievePort = ReceivePort();
 
+    final recievePort = ReceivePort();
     BackgroundIsolateBinaryMessenger.ensureInitialized(token);
 
     sendPort.send(recievePort.sendPort);
@@ -141,11 +131,16 @@ class NamidaYTGenerator extends NamidaGeneratorBase<YoutubeID, String> with Port
     final allIds = <String>[];
     final allIdsAdded = <String, bool>{};
 
+    var lookupListStreamInfoMapCacheDetails = <CacheDetailsBase>[];
+    var lookupListVideoStreamsMapCacheDetails = <CacheDetailsBase>[];
+
     // -- start listening
     StreamSubscription? streamSub;
     streamSub = recievePort.listen((p) async {
       if (PortsProvider.isDisposeMessage(p)) {
         recievePort.close();
+        lookupListStreamInfoMapCacheDetails.loop((item) => item.close());
+        lookupListVideoStreamsMapCacheDetails.loop((item) => item.close());
         releaseDateMap.clear();
         allIds.clear();
         allIdsAdded.clear();
@@ -167,7 +162,7 @@ class NamidaYTGenerator extends NamidaGeneratorBase<YoutubeID, String> with Port
           final results = <String>[];
           final daysRange = p['daysRange'] as int;
           final videoToRemove = p['videoToRemove'] as String?;
-          allIds.loop((id, _) {
+          allIds.loop((id) {
             final dt = releaseDateMap[id];
             if (dt != null && (dt.difference(dateReleased).inDays).abs() <= daysRange) {
               results.add(id);
@@ -191,50 +186,58 @@ class NamidaYTGenerator extends NamidaGeneratorBase<YoutubeID, String> with Port
     // -- start filling info
     final start = DateTime.now();
 
-    for (final id in tempStreamInfo.keys) {
-      allIds.add(id);
-      allIdsAdded[id] = true;
-      releaseDateMap[id] = tempStreamInfo[id]?.date;
+    YoutiPie.cacheManager.init(databasesDir);
+    final activeChannel = YoutiPie.getActiveAccountChannelIsolate(sensitiveDataDir);
+    final activeChannelId = activeChannel?.id;
+
+    if (activeChannelId != null && activeChannelId.isNotEmpty) {
+      lookupListStreamInfoMapCacheDetails.add(CacheDetailsBase(YoutiPieSection.streamInfoItem, null, () => activeChannelId));
+      lookupListVideoStreamsMapCacheDetails.add(CacheDetailsBase(YoutiPieSection.videoStreams, null, () => activeChannelId));
     }
+    // -- damn the annonymous acc videos look saxy
+    lookupListStreamInfoMapCacheDetails.add(CacheDetailsBase(YoutiPieSection.streamInfoItem, null, () => null));
+    lookupListVideoStreamsMapCacheDetails.add(CacheDetailsBase(YoutiPieSection.videoStreams, null, () => null));
 
-    final completer1 = Completer<void>();
-    final completer2 = Completer<void>();
-
-    Directory(dirStreamInfo).listAllIsolate().then((value) {
-      value.loop((file, _) {
-        try {
-          final res = (file as File).readAsJsonSync();
-          if (res != null) {
-            final id = res['id'];
+    lookupListStreamInfoMapCacheDetails.loop(
+      (db) {
+        db.loadEverything(
+          (map) {
+            final id = map['id'];
             if (id != null && releaseDateMap[id] == null) {
+              DateTime? date;
+              try {
+                date = PublishTime.fromMap(map['publishedAt']).date;
+              } catch (_) {}
               allIds.add(id);
               allIdsAdded[id] = true;
-              releaseDateMap[id] = (res['date'] as String?)?.getDateTimeFromMSSEString();
+              releaseDateMap[id] = date;
             }
-          }
-        } catch (_) {}
-      });
-      completer1.complete();
-    });
-    Directory(dirVideoInfo).listAllIsolate().then((value) {
-      value.loop((file, _) {
-        try {
-          final res = (file as File).readAsJsonSync();
-          if (res != null) {
-            final id = res['id'];
-            if (id != null && releaseDateMap[id] == null) {
-              allIds.add(id);
-              allIdsAdded[id] = true;
-              releaseDateMap[id] = (res['date'] as String?)?.getDateTimeFromMSSEString();
+          },
+        );
+      },
+    );
+    lookupListVideoStreamsMapCacheDetails.loop((db) {
+      db.loadEverything(
+        (map) {
+          final info = map['info'] as Map;
+          final id = info['id'];
+          if (id != null && releaseDateMap[id] == null) {
+            DateTime? date;
+            try {
+              date = PublishTime.fromMap(info['publishDate']).date;
+            } catch (_) {}
+            if (date == null) {
+              try {
+                date = PublishTime.fromMap(info['uploadDate']).date;
+              } catch (_) {}
             }
+            allIds.add(id);
+            allIdsAdded[id] = true;
+            releaseDateMap[id] = date;
           }
-        } catch (_) {}
-      });
-      completer2.complete();
+        },
+      );
     });
-
-    await completer1.future;
-    await completer2.future;
 
     for (final id in tempBackupYTVH.keys) {
       if (releaseDateMap[id] == null) {
@@ -249,7 +252,7 @@ class NamidaYTGenerator extends NamidaGeneratorBase<YoutubeID, String> with Port
         allIds.add(id);
       }
     }
-    favouritesPlaylist.loop((v, _) {
+    favouritesPlaylist.loop((v) {
       final id = v.id;
       if (allIdsAdded[id] == null) {
         allIds.add(id);
@@ -257,7 +260,7 @@ class NamidaYTGenerator extends NamidaGeneratorBase<YoutubeID, String> with Port
     });
 
     for (final pl in playlists.values) {
-      pl.loop((v, index) {
+      pl.loop((v) {
         final id = v.id;
         if (allIdsAdded[id] == null) {
           allIds.add(id);
@@ -265,7 +268,7 @@ class NamidaYTGenerator extends NamidaGeneratorBase<YoutubeID, String> with Port
       });
     }
     // -- end filling from playlists
-    sendPort.send(true); // finished filling
+    sendPort.send(null); // finished filling
 
     final durationTaken = start.difference(DateTime.now());
     printo('Initialized 4 Lists in $durationTaken');

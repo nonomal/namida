@@ -1,11 +1,8 @@
-// ignore_for_file: depend_on_referenced_packages
-
 import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:get/get.dart';
 import 'package:lrc/lrc.dart';
 
 import 'package:namida/class/lyrics.dart';
@@ -13,24 +10,29 @@ import 'package:namida/class/track.dart';
 import 'package:namida/controller/current_color.dart';
 import 'package:namida/controller/file_browser.dart';
 import 'package:namida/controller/lyrics_controller.dart';
+import 'package:namida/controller/lyrics_search_utils/lrc_search_utils_base.dart';
 import 'package:namida/controller/navigator_controller.dart';
 import 'package:namida/controller/player_controller.dart';
 import 'package:namida/core/extensions.dart';
 import 'package:namida/core/icon_fonts/broken_icons.dart';
 import 'package:namida/core/translations/language.dart';
+import 'package:namida/core/utils.dart';
 import 'package:namida/packages/three_arched_circle.dart';
 import 'package:namida/ui/dialogs/edit_tags_dialog.dart';
 import 'package:namida/ui/widgets/custom_widgets.dart';
 
-void showLRCSetDialog(Track track, Color colorScheme) async {
+void showLRCSetDialog(Playable item, Color colorScheme) async {
+  final LrcSearchUtils? lrcUtils = LrcSearchUtils.fromPlayable(item);
+  if (lrcUtils == null) return;
+
   final fetchingFromInternet = Rxn<bool>();
   final availableLyrics = <LyricsModel>[].obs;
   final fetchedLyrics = <LyricsModel>[].obs;
 
-  final embedded = track.lyrics;
-  final cachedTxt = Lyrics.inst.lyricsFileText(track);
-  final cachedLRC = Lyrics.inst.lyricsFileCache(track);
-  final localLRCFiles = Lyrics.inst.lyricsFilesDevice(track);
+  final embedded = lrcUtils.embeddedLyrics;
+  final cachedTxt = lrcUtils.cachedTxtFile;
+  final cachedLRC = lrcUtils.cachedLRCFile;
+  final localLRCFiles = lrcUtils.deviceLRCFiles;
 
   if (embedded != '') {
     availableLyrics.add(
@@ -84,8 +86,8 @@ void showLRCSetDialog(Track track, Color colorScheme) async {
   }
 
   void updateForCurrentTrack() {
-    if (track == Player.inst.nowPlayingTrack) {
-      Lyrics.inst.updateLyrics(track);
+    if (item == Player.inst.currentItem.value) {
+      Lyrics.inst.updateLyrics(item);
     }
   }
 
@@ -195,7 +197,7 @@ void showLRCSetDialog(Track track, Color colorScheme) async {
                   language: lrc.language,
                 );
                 final lyricsString = newLRC.format();
-                await Lyrics.inst.saveLyricsToCache(track, newLRC.format(), true);
+                await lrcUtils.saveLyricsToCache(lyricsString, true);
                 availableLyrics.remove(l);
                 availableLyrics.add(
                   LyricsModel(
@@ -228,16 +230,16 @@ void showLRCSetDialog(Track track, Color colorScheme) async {
                     children: [
                       Text(
                         lang.OFFSET,
-                        style: Get.textTheme.displayMedium,
+                        style: namida.textTheme.displayMedium,
                       ),
                       Obx(
                         () {
-                          final ms = newOffset.value.remainder(1000).abs().toString();
+                          final ms = newOffset.valueR.remainder(1000).abs().toString();
                           final msText = ms.length > 2 ? ms.substring(0, 2) : ms;
-                          final off = newOffset.value;
+                          final off = newOffset.valueR;
                           return Text(
                             "${off.milliSecondsLabel}.$msText",
-                            style: Get.textTheme.displaySmall,
+                            style: namida.textTheme.displaySmall,
                           );
                         },
                       ),
@@ -249,8 +251,8 @@ void showLRCSetDialog(Track track, Color colorScheme) async {
                   const SizedBox(width: 8.0),
                   Obx(
                     () => Text(
-                      "${newOffset.value}ms",
-                      style: Get.textTheme.displayMedium,
+                      "${newOffset.valueR}ms",
+                      style: namida.textTheme.displayMedium,
                     ),
                   ),
                   const SizedBox(width: 8.0),
@@ -278,16 +280,13 @@ void showLRCSetDialog(Track track, Color colorScheme) async {
 
   final searchController = TextEditingController();
 
-  final initialSearchTextHint = '${track.originalArtist} - ${track.title}';
+  final initialSearchTextHint = lrcUtils.initialSearchTextHint;
 
   void onSearchTrigger([String? query]) async {
     fetchingFromInternet.value = true;
     fetchedLyrics.clear();
-    final lyrics = await Lyrics.inst.fetchLRCBasedLyricsFromInternet(
-      durationInSeconds: track.duration,
-      title: track.title,
-      artist: track.originalArtist,
-      album: track.album,
+    final lyrics = await Lyrics.inst.searchLRCLyricsFromInternet(
+      lrcUtils: lrcUtils,
       customQuery: query ?? searchController.text,
     );
     if (lyrics.isNotEmpty) fetchedLyrics.addAll(lyrics);
@@ -316,14 +315,14 @@ void showLRCSetDialog(Track track, Color colorScheme) async {
         const SizedBox(width: 6.0),
         Obx(
           () {
-            final selected = selectedLyrics.value;
+            final selected = selectedLyrics.valueR;
             return NamidaButton(
               enabled: selected != null && !selected.isInCache && !selected.isEmbedded /* && (selected.file != null || selected.fromInternet == true) */,
               text: lang.SAVE,
               onPressed: () async {
                 final selected = selectedLyrics.value;
                 if (selected != null) {
-                  await Lyrics.inst.saveLyricsToCache(track, selected.lyrics, selected.synced);
+                  await lrcUtils.saveLyricsToCache(selected.lyrics, selected.synced);
                   updateForCurrentTrack();
                 }
                 NamidaNavigator.inst.closeDialog();
@@ -333,8 +332,8 @@ void showLRCSetDialog(Track track, Color colorScheme) async {
         )
       ],
       child: SizedBox(
-        width: Get.width,
-        height: Get.height * 0.6,
+        width: namida.width,
+        height: namida.height * 0.6,
         child: Column(
           children: [
             Row(
@@ -364,14 +363,14 @@ void showLRCSetDialog(Track track, Color colorScheme) async {
             Expanded(
               child: Obx(
                 () {
-                  if (fetchingFromInternet.value == true) {
+                  if (fetchingFromInternet.valueR == true) {
                     return ThreeArchedCircle(
-                      color: Get.theme.cardColor,
+                      color: namida.theme.cardColor,
                       size: 58.0,
                     );
                   }
-                  final both = [...availableLyrics, ...fetchedLyrics];
-                  if (both.isEmpty && fetchingFromInternet.value != null) {
+                  final both = [...availableLyrics.valueR, ...fetchedLyrics.valueR];
+                  if (both.isEmpty && fetchingFromInternet.valueR != null) {
                     return const Icon(
                       Broken.emoji_sad,
                       size: 48.0,
@@ -393,9 +392,9 @@ void showLRCSetDialog(Track track, Color colorScheme) async {
                           borderRadius: 12.0,
                           animationDurationMS: 200,
                           onTap: () => selectedLyrics.value = l,
-                          bgColor: Get.theme.cardColor.withOpacity(0.4),
+                          bgColor: namida.theme.cardColor.withOpacity(0.4),
                           decoration: BoxDecoration(
-                            border: selectedLyrics.value == l
+                            border: selectedLyrics.valueR == l
                                 ? Border.all(
                                     width: 2.0,
                                     color: colorScheme,
@@ -414,12 +413,12 @@ void showLRCSetDialog(Track track, Color colorScheme) async {
                                   Expanded(
                                     child: Text(
                                       cacheText != '' ? "$syncedText ($cacheText)" : syncedText,
-                                      style: Get.textTheme.displayMedium,
+                                      style: namida.textTheme.displayMedium,
                                     ),
                                   ),
                                   NamidaIconButton(
                                     horizontalPadding: 0.0,
-                                    tooltip: lang.COPY,
+                                    tooltip: () => lang.COPY,
                                     icon: Broken.copy,
                                     iconSize: 20.0,
                                     onPressed: () {
@@ -465,22 +464,19 @@ void showLRCSetDialog(Track track, Color colorScheme) async {
                                 children: [
                                   NamidaInkWell(
                                     borderRadius: 8.0,
-                                    bgColor: Get.theme.cardColor,
+                                    bgColor: namida.theme.cardColor,
                                     padding: const EdgeInsets.all(8.0),
-                                    child: NamidaAnimatedSwitcher(
-                                      durationMS: 0,
-                                      showFirst: expandedLyrics.value == l,
-                                      firstChild: Text(
-                                        l.lyrics,
-                                        style: Get.textTheme.displaySmall,
-                                      ),
-                                      secondChild: Text(
-                                        l.lyrics,
-                                        maxLines: 12,
-                                        overflow: TextOverflow.fade,
-                                        style: Get.textTheme.displaySmall,
-                                      ),
-                                    ),
+                                    child: expandedLyrics.valueR == l
+                                        ? Text(
+                                            l.lyrics,
+                                            style: namida.textTheme.displaySmall,
+                                          )
+                                        : Text(
+                                            l.lyrics,
+                                            maxLines: 12,
+                                            overflow: TextOverflow.fade,
+                                            style: namida.textTheme.displaySmall,
+                                          ),
                                   ),
                                   Positioned(
                                     bottom: 4.0,
@@ -493,7 +489,7 @@ void showLRCSetDialog(Track track, Color colorScheme) async {
                                         boxShadow: [
                                           BoxShadow(
                                             blurRadius: 4.0,
-                                            color: Get.theme.scaffoldBackgroundColor,
+                                            color: namida.theme.scaffoldBackgroundColor,
                                           ),
                                         ],
                                       ),
@@ -533,7 +529,7 @@ void showLRCSetDialog(Track track, Color colorScheme) async {
                   final picked = await NamidaFileBrowser.pickFile(
                     note: lang.ADD_LRC_FILE,
                     allowedExtensions: ['lrc', 'LRC', 'txt', 'TXT'],
-                    initialDirectory: track.path.getDirectoryPath,
+                    initialDirectory: lrcUtils.pickFileInitialDirectory,
                   );
                   final path = picked?.path;
                   if (path != null) {

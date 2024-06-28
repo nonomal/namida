@@ -2,9 +2,9 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_html/flutter_html.dart';
-import 'package:get/get.dart';
 import 'package:jiffy/jiffy.dart';
-import 'package:newpipeextractor_dart/newpipeextractor_dart.dart';
+import 'package:youtipie/class/stream_info_item/stream_info_item.dart';
+import 'package:youtipie/core/url_utils.dart';
 
 import 'package:namida/controller/current_color.dart';
 import 'package:namida/controller/navigator_controller.dart';
@@ -17,12 +17,14 @@ import 'package:namida/core/functions.dart';
 import 'package:namida/core/icon_fonts/broken_icons.dart';
 import 'package:namida/core/namida_converter_ext.dart';
 import 'package:namida/core/translations/language.dart';
+import 'package:namida/core/utils.dart';
 import 'package:namida/ui/dialogs/track_info_dialog.dart';
 import 'package:namida/ui/widgets/custom_widgets.dart';
 import 'package:namida/ui/widgets/settings/extra_settings.dart';
 import 'package:namida/youtube/class/youtube_id.dart';
 import 'package:namida/youtube/class/youtube_item_download_config.dart';
 import 'package:namida/youtube/controller/youtube_controller.dart';
+import 'package:namida/youtube/controller/youtube_info_controller.dart';
 import 'package:namida/youtube/controller/youtube_ongoing_finished_downloads.dart';
 import 'package:namida/youtube/controller/youtube_playlist_controller.dart';
 import 'package:namida/youtube/functions/download_sheet.dart';
@@ -44,20 +46,21 @@ class YTDownloadTaskItemCard extends StatelessWidget {
   Widget _getChip({
     required BuildContext context,
     required IconData icon,
+    Color? iconColor,
     required String title,
     String betweenBrackets = '',
     bool displayTitle = false,
     void Function()? onTap,
     Widget? Function(double size)? iconWidget,
   }) {
-    final textWidget = RichText(
-      text: TextSpan(
+    final textWidget = Text.rich(
+      TextSpan(
         children: [
-          TextSpan(text: title, style: context.textTheme.displayMedium?.copyWith(fontSize: 13.0.multipliedFontScale)),
+          TextSpan(text: title, style: context.textTheme.displayMedium?.copyWith(fontSize: 13.0)),
           if (betweenBrackets != '')
             TextSpan(
               text: " ($betweenBrackets)",
-              style: Get.textTheme.displaySmall?.copyWith(fontSize: 11.0.multipliedFontScale),
+              style: namida.textTheme.displaySmall?.copyWith(fontSize: 11.0),
             ),
         ],
       ),
@@ -72,7 +75,7 @@ class YTDownloadTaskItemCard extends StatelessWidget {
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            iconWidget?.call(iconSize) ?? Icon(icon, size: iconSize),
+            iconWidget?.call(iconSize) ?? Icon(icon, size: iconSize, color: iconColor),
             if (displayTitle) ...[
               const SizedBox(width: 4.0),
               textWidget,
@@ -109,36 +112,37 @@ class YTDownloadTaskItemCard extends StatelessWidget {
     );
   }
 
-  void _onCancelDeleteDownloadTap(List<YoutubeItemDownloadConfig> itemsConfig) {
-    YoutubeController.inst.cancelDownloadTask(itemsConfig: itemsConfig, groupName: groupName);
+  void _onCancelDeleteDownloadTap(List<YoutubeItemDownloadConfig> itemsConfig, {bool keepInList = false}) {
+    YoutubeController.inst.cancelDownloadTask(itemsConfig: itemsConfig, groupName: groupName, keepInList: keepInList);
   }
 
   void _showInfoDialog(
     final BuildContext context,
     final YoutubeItemDownloadConfig item,
-    final VideoInfo? info,
+    final StreamInfoItem? info,
     final String groupName,
   ) {
-    final videoTitle = info?.name ?? YoutubeController.inst.getVideoName(item.id) ?? item.id;
-    final videoSubtitle = info?.uploaderName ?? YoutubeController.inst.getVideoChannelName(item.id) ?? '?';
-    final dateMS = info?.date?.millisecondsSinceEpoch;
+    final videoPage = YoutubeInfoController.video.fetchVideoPageSync(item.id);
+    final videoTitle = info?.title ?? YoutubeInfoController.utils.getVideoName(item.id) ?? item.id;
+    final videoSubtitle = info?.channel.title ?? YoutubeInfoController.utils.getVideoChannelName(item.id) ?? '?';
+    final dateMS = info?.publishedAt.date?.millisecondsSinceEpoch;
     final dateText = dateMS?.dateAndClockFormattedOriginal ?? '?';
     final dateAgo = dateMS == null ? '' : "\n(${Jiffy.parseFromMillisecondsSinceEpoch(dateMS).fromNow()})";
-    final duration = info?.duration?.inSeconds.secondsLabel ?? '?';
+    final duration = info?.durSeconds?.secondsLabel ?? '?';
     final descriptionWidget = info == null
         ? null
         : Html(
-            data: info.description ?? '',
+            data: info.availableDescription ?? '',
             style: {
               '*': Style.fromTextStyle(
                 context.textTheme.displaySmall!.copyWith(
-                  fontSize: 13.0.multipliedFontScale,
+                  fontSize: 13.0,
                 ),
               ),
               'a': Style.fromTextStyle(
                 context.textTheme.displaySmall!.copyWith(
                   color: context.theme.colorScheme.primary.withAlpha(210),
-                  fontSize: 12.5.multipliedFontScale,
+                  fontSize: 12.5,
                 ),
               )
             },
@@ -169,6 +173,12 @@ class YTDownloadTaskItemCard extends StatelessWidget {
       ];
     }
 
+    final videoId = info?.id ?? '';
+    final isUserLiked = YoutubePlaylistController.inst.favouritesPlaylist.value.tracks.firstWhereEff((element) => element.id == videoId) != null;
+    final videoPageInfo = videoPage?.videoInfo;
+    final likesCount = videoPageInfo?.engagement?.likesCount;
+    final videoLikeCount = likesCount == null && !isUserLiked ? null : (isUserLiked ? 1 : 0) + (likesCount ?? 0);
+
     NamidaNavigator.inst.navigateDialog(
       dialog: CustomBlurryDialog(
         insetPadding: const EdgeInsets.symmetric(horizontal: 38.0, vertical: 32.0),
@@ -177,29 +187,24 @@ class YTDownloadTaskItemCard extends StatelessWidget {
         trailingWidgets: [
           ...getTrailing(
             Broken.eye,
-            info?.viewCount?.formatDecimalShort() ?? '?',
+            videoPageInfo?.viewsCount?.formatDecimalShort() ?? '?',
             iconColor: context.theme.colorScheme.primary,
           ),
           const SizedBox(width: 6.0),
-          ...() {
-            final videoId = info?.id ?? '';
-            final isUserLiked = YoutubePlaylistController.inst.favouritesPlaylist.value.tracks.firstWhereEff((element) => element.id == videoId) != null;
-            final videoLikeCount = info?.likeCount == null && !isUserLiked ? null : (isUserLiked ? 1 : 0) + (info?.likeCount ?? 0);
-            return getTrailing(
-              Broken.like_1,
-              videoLikeCount?.formatDecimalShort() ?? '?',
-              iconWidget: NamidaRawLikeButton(
-                size: 18.0,
-                likedIcon: Broken.like_filled,
-                normalIcon: Broken.like_1,
-                disabledColor: context.theme.colorScheme.primary,
-                isLiked: isUserLiked,
-                onTap: (isLiked) async {
-                  YoutubePlaylistController.inst.favouriteButtonOnPressed(videoId);
-                },
-              ),
-            );
-          }(),
+          ...getTrailing(
+            Broken.like_1,
+            videoLikeCount?.formatDecimalShort() ?? '?',
+            iconWidget: NamidaRawLikeButton(
+              size: 18.0,
+              likedIcon: Broken.like_filled,
+              normalIcon: Broken.like_1,
+              disabledColor: context.theme.colorScheme.primary,
+              isLiked: isUserLiked,
+              onTap: (isLiked) async {
+                YoutubePlaylistController.inst.favouriteButtonOnPressed(videoId);
+              },
+            ),
+          ),
         ],
         child: SizedBox(
           height: context.height * 0.7,
@@ -232,7 +237,7 @@ class YTDownloadTaskItemCard extends StatelessWidget {
                       ),
                       TrackInfoListTile(
                         title: lang.LINK,
-                        value: YoutubeController.inst.getYoutubeLink(item.id),
+                        value: YTUrlUtils.buildVideoUrl(item.id),
                         icon: Broken.link_1,
                       ),
                       TrackInfoListTile(
@@ -247,7 +252,7 @@ class YTDownloadTaskItemCard extends StatelessWidget {
                       ),
                       TrackInfoListTile(
                         title: lang.DESCRIPTION,
-                        value: HtmlParser.parseHTML(info?.description ?? '').text,
+                        value: info?.availableDescription ?? '',
                         icon: Broken.message_text_1,
                         child: descriptionWidget,
                       ),
@@ -260,7 +265,7 @@ class YTDownloadTaskItemCard extends StatelessWidget {
                         .addSeparators(
                           separator: NamidaContainerDivider(
                             height: 1.5,
-                            colorForce: context.theme.colorScheme.onBackground.withOpacity(0.2),
+                            colorForce: context.theme.colorScheme.onSurface.withOpacity(0.2),
                           ),
                           skipFirst: 1,
                         )
@@ -308,7 +313,7 @@ class YTDownloadTaskItemCard extends StatelessWidget {
           Expanded(
             child: Text(
               texts.joinText(),
-              style: context.textTheme.displaySmall?.copyWith(fontSize: 12.0.multipliedFontScale),
+              style: context.textTheme.displaySmall?.copyWith(fontSize: 12.0),
             ),
           ),
         ],
@@ -332,9 +337,9 @@ class YTDownloadTaskItemCard extends StatelessWidget {
         getRow(
           icon: Broken.video_square,
           texts: [
-            videoStream.sizeInBytes?.fileSizeFormatted ?? '',
-            videoStream.bitrateText,
-            videoStream.resolution ?? '',
+            videoStream.sizeInBytes.fileSizeFormatted,
+            videoStream.bitrateText(),
+            videoStream.qualityLabel,
           ],
         ),
       ],
@@ -343,8 +348,8 @@ class YTDownloadTaskItemCard extends StatelessWidget {
         getRow(
           icon: Broken.audio_square,
           texts: [
-            audioStream.sizeInBytes?.fileSizeFormatted ?? '',
-            audioStream.bitrateText,
+            audioStream.sizeInBytes.fileSizeFormatted,
+            audioStream.bitrateText(),
           ],
         ),
       ],
@@ -380,8 +385,8 @@ class YTDownloadTaskItemCard extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               const SizedBox(height: 12.0),
-              RichText(
-                text: TextSpan(
+              Text.rich(
+                TextSpan(
                   children: [
                     TextSpan(text: "$operationTitle: ", style: context.textTheme.displayLarge),
                     TextSpan(
@@ -409,7 +414,7 @@ class YTDownloadTaskItemCard extends StatelessWidget {
       initialItemConfig: config,
       confirmButtonText: lang.RESTART,
       onConfirmButtonTap: (groupName, newConfig) {
-        _onCancelDeleteDownloadTap([config]);
+        _onCancelDeleteDownloadTap([config], keepInList: true);
         _onResumeDownloadTap([newConfig], context);
         YTOnGoingFinishedDownloads.inst.refreshList();
         return true;
@@ -444,7 +449,8 @@ class YTDownloadTaskItemCard extends StatelessWidget {
       },
       buttonText: lang.SAVE,
       onButtonTap: (text) async {
-        _onPauseDownloadTap([config]);
+        final wasDownloading = YoutubeController.inst.isDownloading[config.id]?[config.filename] ?? false;
+        if (wasDownloading) _onPauseDownloadTap([config]);
         await YoutubeController.inst.renameConfigFilename(
           config: config,
           videoID: config.id,
@@ -453,7 +459,7 @@ class YTDownloadTaskItemCard extends StatelessWidget {
           renameCacheFiles: true,
         );
         // ignore: use_build_context_synchronously
-        _onResumeDownloadTap([config], context);
+        if (wasDownloading) _onResumeDownloadTap([config], context);
         return true;
       },
     );
@@ -468,8 +474,8 @@ class YTDownloadTaskItemCard extends StatelessWidget {
     const thumbHeight = 24.0 * 2.6;
     const thumbWidth = thumbHeight * 16 / 9;
 
-    final info = YoutubeController.inst.getVideoInfo(item.id);
-    final duration = info?.duration?.inSeconds.secondsLabel;
+    final info = YoutubeInfoController.utils.getStreamInfoSync(item.id);
+    final duration = info?.durSeconds?.secondsLabel;
 
     final itemIcon = item.videoStream != null
         ? Broken.video
@@ -482,10 +488,10 @@ class YTDownloadTaskItemCard extends StatelessWidget {
       openOnLongPress: true,
       childrenDefault: () => YTUtils.getVideoCardMenuItems(
         videoId: item.id,
-        url: info?.url,
-        channelUrl: info?.uploaderUrl,
+        url: info?.buildUrl(),
+        channelID: info?.channelId,
         playlistID: null,
-        idsNamesLookup: {item.id: info?.name},
+        idsNamesLookup: {item.id: info?.title},
         playlistName: '',
         videoYTID: null,
       )..insert(
@@ -534,7 +540,7 @@ class YTDownloadTaskItemCard extends StatelessWidget {
                 final cp = videoP?.progress ?? audioP?.progress ?? 0;
                 final ctp = videoP?.totalProgress ?? audioP?.totalProgress ?? 0;
                 final speedText = speedB == null ? '' : ' (${speedB.fileSizeFormatted}/s)';
-                final downloadInfoText = "${cp.fileSizeFormatted}/${ctp.fileSizeFormatted}$speedText";
+                final downloadInfoText = "${cp.fileSizeFormatted}/${ctp == 0 ? '?' : ctp.fileSizeFormatted}$speedText";
                 final canDisplayPercentage = audioPerc != null || videoPerc != null;
 
                 final fileExists = YoutubeController.inst.downloadedFilesMap[groupName]?[item.filename] != null;
@@ -609,7 +615,7 @@ class YTDownloadTaskItemCard extends StatelessWidget {
                       const SizedBox(height: 4.0),
                       Text(
                         [percentageText, downloadInfoText].joinText(),
-                        style: context.textTheme.displaySmall?.copyWith(fontSize: 11.0.multipliedFontScale),
+                        style: context.textTheme.displaySmall?.copyWith(fontSize: 11.0),
                       ),
                     ],
                     const SizedBox(height: 4.0),
@@ -640,20 +646,26 @@ class YTDownloadTaskItemCard extends StatelessWidget {
                                                 context: context,
                                                 operationTitle: lang.RESTART,
                                               );
-                                              // ignore: use_build_context_synchronously
-                                              if (confirmed) _onResumeDownloadTap([item], context);
+                                              if (confirmed) {
+                                                _onCancelDeleteDownloadTap([item], keepInList: true);
+                                                // ignore: use_build_context_synchronously
+                                                _onResumeDownloadTap([item], context);
+                                              }
                                             })
                                         : willBeDownloaded || isDownloading || isFetching
                                             ? _getChip(
                                                 context: context,
                                                 title: lang.PAUSE,
                                                 icon: Broken.pause,
-                                                iconWidget: (size) => StackedIcon(
-                                                  baseIcon: Broken.pause,
-                                                  secondaryIcon: Broken.timer,
-                                                  iconSize: size,
-                                                  secondaryIconSize: 10.0,
-                                                ),
+                                                iconColor: context.defaultIconColor(),
+                                                iconWidget: isDownloading
+                                                    ? null
+                                                    : (size) => StackedIcon(
+                                                          baseIcon: Broken.pause,
+                                                          secondaryIcon: Broken.timer,
+                                                          iconSize: size,
+                                                          secondaryIconSize: 10.0,
+                                                        ),
                                                 onTap: () => _onPauseDownloadTap([item]),
                                               )
                                             : _getChip(
@@ -724,10 +736,10 @@ class YTDownloadTaskItemCard extends StatelessWidget {
                           children: [
                             Text(
                               [
-                                item.videoStream?.resolution,
+                                item.videoStream?.qualityLabel,
                                 downloadedFile.fileSizeFormatted(),
                               ].joinText(),
-                              style: context.textTheme.displaySmall?.copyWith(fontSize: 11.0.multipliedFontScale),
+                              style: context.textTheme.displaySmall?.copyWith(fontSize: 11.0),
                             ),
                             const SizedBox(width: 4.0),
                             if (itemIcon != null)

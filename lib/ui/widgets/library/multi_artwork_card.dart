@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-import 'package:get/get.dart';
+import 'package:namida/core/utils.dart';
 
 import 'package:namida/class/track.dart';
 import 'package:namida/core/dimensions.dart';
@@ -33,7 +33,7 @@ class MultiArtworkCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final thumbnailSize = dimensions.$1;
-    final fontSize = dimensions.$2.multipliedFontScale;
+    final fontSize = dimensions.$2;
 
     return GridTile(
       child: Container(
@@ -47,16 +47,13 @@ class MultiArtworkCard extends StatelessWidget {
           children: [
             Column(
               children: [
-                NamidaHero(
-                  tag: heroTag,
-                  child: MultiArtworks(
-                    borderRadius: 12.0,
-                    heroTag: heroTag,
-                    disableHero: true,
-                    tracks: tracks.toImageTracks(),
-                    thumbnailSize: thumbnailSize,
-                    iconSize: 92.0 - 14 * gridCount,
-                  ),
+                MultiArtworks(
+                  borderRadius: 12.0,
+                  heroTag: heroTag,
+                  disableHero: false,
+                  tracks: tracks.toImageTracks(),
+                  thumbnailSize: thumbnailSize,
+                  iconSize: 92.0 - 14 * gridCount,
                 ),
                 Expanded(
                   child: Container(
