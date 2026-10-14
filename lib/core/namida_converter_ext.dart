@@ -1,34 +1,53 @@
-// ignore_for_file: depend_on_referenced_packages
-
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
-import 'package:get/get.dart';
-import 'package:history_manager/history_manager.dart';
-import 'package:newpipeextractor_dart/newpipeextractor_dart.dart';
-import 'package:path/path.dart' as p;
 
+import 'package:basic_audio_handler/basic_audio_handler.dart' show EqualizerBandType, EqualizerChannel;
+import 'package:history_manager/history_manager.dart';
+import 'package:path/path.dart' as p;
+import 'package:playlist_manager/playlist_manager.dart';
+import 'package:youtipie/class/streams/audio_stream.dart';
+import 'package:youtipie/class/streams/audio_track.dart';
+import 'package:youtipie/class/streams/video_stream.dart';
+import 'package:youtipie/class/youtipie_feed/playlist_basic_info.dart';
+import 'package:youtipie/core/enum.dart';
+import 'package:youtipie/core/extensions.dart';
+import 'package:youtipie/core/url_utils.dart';
+
+import 'package:namida/base/audio_handler.dart';
+import 'package:namida/class/count_per_row.dart';
 import 'package:namida/class/faudiomodel.dart';
-import 'package:namida/class/lang.dart';
 import 'package:namida/class/media_info.dart';
 import 'package:namida/class/queue.dart';
 import 'package:namida/class/queue_insertion.dart';
 import 'package:namida/class/route.dart';
 import 'package:namida/class/track.dart';
+import 'package:namida/controller/audio_output_controller.dart';
+import 'package:namida/controller/back_cover_controller.dart';
+import 'package:namida/controller/bookmarks_controller.dart';
 import 'package:namida/controller/current_color.dart';
+import 'package:namida/controller/edit_delete_controller.dart';
 import 'package:namida/controller/ffmpeg_controller.dart';
 import 'package:namida/controller/folders_controller.dart';
 import 'package:namida/controller/history_controller.dart';
 import 'package:namida/controller/indexer_controller.dart';
 import 'package:namida/controller/json_to_history_parser.dart';
+import 'package:namida/controller/music_web_server/music_web_server_base.dart';
 import 'package:namida/controller/navigator_controller.dart';
+import 'package:namida/controller/party/party_controller.dart';
 import 'package:namida/controller/player_controller.dart';
 import 'package:namida/controller/playlist_controller.dart';
 import 'package:namida/controller/queue_controller.dart';
 import 'package:namida/controller/scroll_search_controller.dart';
 import 'package:namida/controller/search_sort_controller.dart';
-import 'package:namida/controller/selected_tracks_controller.dart';
 import 'package:namida/controller/settings_controller.dart';
+import 'package:namida/controller/smart_playlists/smart_playlists_controller.dart';
+import 'package:namida/controller/stats_controller.dart';
+import 'package:namida/controller/sync_manager/sync_manager.dart';
+import 'package:namida/controller/thumbnail_manager.dart';
+import 'package:namida/controller/version_controller.dart';
+import 'package:namida/controller/vibrator_controller.dart';
 import 'package:namida/core/constants.dart';
 import 'package:namida/core/dimensions.dart';
 import 'package:namida/core/enums.dart';
@@ -36,157 +55,201 @@ import 'package:namida/core/extensions.dart';
 import 'package:namida/core/functions.dart';
 import 'package:namida/core/icon_fonts/broken_icons.dart';
 import 'package:namida/core/translations/language.dart';
+import 'package:namida/core/utils.dart';
+import 'package:namida/ui/dialogs/add_to_playlist_dialog.dart';
 import 'package:namida/ui/dialogs/common_dialogs.dart';
-import 'package:namida/ui/pages/about_page.dart';
+import 'package:namida/ui/dialogs/edit_tags_dialog.dart';
+import 'package:namida/ui/dialogs/track_advanced_dialog.dart';
+import 'package:namida/ui/dialogs/track_info_dialog.dart';
+import 'package:namida/ui/dialogs/track_listens_dialog.dart';
+import 'package:namida/ui/dialogs/track_stats_dialog.dart';
 import 'package:namida/ui/pages/albums_page.dart';
+import 'package:namida/ui/pages/artists_map_page.dart';
 import 'package:namida/ui/pages/artists_page.dart';
+import 'package:namida/ui/pages/current_queue_page.dart';
 import 'package:namida/ui/pages/folders_page.dart';
 import 'package:namida/ui/pages/genres_page.dart';
 import 'package:namida/ui/pages/home_page.dart';
+import 'package:namida/ui/pages/languages_page.dart';
 import 'package:namida/ui/pages/main_page.dart';
+import 'package:namida/ui/pages/moods_tags_page.dart';
+import 'package:namida/ui/pages/party_page.dart';
 import 'package:namida/ui/pages/playlists_page.dart';
 import 'package:namida/ui/pages/queues_page.dart';
 import 'package:namida/ui/pages/settings_page.dart';
-import 'package:namida/ui/pages/subpages/album_tracks_subpage.dart';
-import 'package:namida/ui/pages/subpages/artist_tracks_subpage.dart';
-import 'package:namida/ui/pages/subpages/genre_tracks_subpage.dart';
-import 'package:namida/ui/pages/subpages/indexer_missing_tracks_subpage.dart';
+import 'package:namida/ui/pages/smart_playlists_page.dart';
 import 'package:namida/ui/pages/subpages/playlist_tracks_subpage.dart';
-import 'package:namida/ui/pages/subpages/queue_tracks_subpage.dart';
+import 'package:namida/ui/pages/sync_manager_page.dart';
 import 'package:namida/ui/pages/tracks_page.dart';
 import 'package:namida/ui/widgets/circular_percentages.dart';
 import 'package:namida/ui/widgets/custom_widgets.dart';
+import 'package:namida/ui/widgets/network_artwork.dart';
 import 'package:namida/ui/widgets/settings_search_bar.dart';
 import 'package:namida/ui/widgets/stats.dart';
+import 'package:namida/youtube/class/sponsorblock.dart';
 import 'package:namida/youtube/class/youtube_id.dart';
-import 'package:namida/youtube/controller/youtube_controller.dart';
 import 'package:namida/youtube/controller/youtube_history_controller.dart';
+import 'package:namida/youtube/controller/youtube_info_controller.dart';
 import 'package:namida/youtube/controller/youtube_playlist_controller.dart' as ytplc;
 import 'package:namida/youtube/functions/add_to_playlist_sheet.dart';
 import 'package:namida/youtube/functions/download_sheet.dart';
-import 'package:namida/youtube/functions/yt_playlist_utils.dart';
+import 'package:namida/youtube/functions/video_listens_dialog.dart';
 import 'package:namida/youtube/pages/youtube_home_view.dart';
-import 'package:namida/youtube/pages/yt_history_page.dart';
+import 'package:namida/youtube/pages/yt_channel_subpage.dart';
 import 'package:namida/youtube/pages/yt_playlist_download_subpage.dart';
-import 'package:namida/youtube/pages/yt_playlist_subpage.dart';
-import 'package:namida/youtube/youtube_playlists_view.dart';
-
-extension LibraryTabToEnum on int {
-  LibraryTab toEnum() => settings.libraryTabs.elementAt(this);
-}
+import 'package:namida/youtube/widgets/video_info_dialog.dart';
+import 'package:namida/youtube/widgets/yt_thumbnail.dart';
+import 'package:namida/youtube/yt_utils.dart';
 
 extension MediaTypeUtils on MediaType {
-  LibraryTab? toLibraryTab() {
-    switch (this) {
-      case MediaType.track:
-        return LibraryTab.tracks;
-      case MediaType.album:
-        return LibraryTab.albums;
-      case MediaType.artist:
-        return LibraryTab.artists;
-      case MediaType.genre:
-        return LibraryTab.genres;
-      case MediaType.folder:
-        return LibraryTab.folders;
-      default:
-        return null;
-    }
+  LibraryTab toLibraryTab() {
+    return switch (this) {
+      MediaType.track => LibraryTab.tracks,
+      MediaType.album => LibraryTab.albums,
+      MediaType.artist || MediaType.albumArtist || MediaType.composer => LibraryTab.artists,
+      MediaType.genre || MediaType.style => LibraryTab.genres,
+      MediaType.language => LibraryTab.languages,
+      MediaType.folder => LibraryTab.folders,
+      MediaType.folderMusic => LibraryTab.foldersMusic,
+      MediaType.folderVideo => LibraryTab.foldersVideos,
+      MediaType.mood => LibraryTab.moods,
+      MediaType.tag => LibraryTab.tags,
+      MediaType.rating => LibraryTab.rating,
+      MediaType.playlist => LibraryTab.playlists,
+    };
   }
+
+  String toGenreHeroTag(String name) => switch (this) {
+    MediaType.style => 'style_$name',
+    MediaType.language => 'language_$name',
+    _ => 'genre_$name',
+  };
+
+  MediaType toSubpageInfoType() => switch (this) {
+    MediaType.album => MediaType.album,
+    MediaType.artist || MediaType.albumArtist || MediaType.composer => MediaType.artist,
+    MediaType.genre || MediaType.style || MediaType.language || MediaType.mood || MediaType.tag || MediaType.rating => MediaType.genre,
+    MediaType.track || MediaType.playlist || MediaType.folder || MediaType.folderMusic || MediaType.folderVideo => MediaType.playlist,
+  };
+}
+
+extension LibraryTabsListUtils on List<LibraryTab> {
+  List<LibraryTab> toNavTabs() => map((e) => e.activeVariant()).toFixedList();
 }
 
 extension LibraryTabUtils on LibraryTab {
+  List<LibraryTab> availableVariants(bool includeVideos) {
+    if (!includeVideos && group == LibraryTab.tracks) return const [];
+    return groupVariants;
+  }
+
+  LibraryTab activeVariant() {
+    final group = this.group;
+    final variants = availableVariants(settings.includeVideos.value);
+    if (variants.isEmpty) return group;
+    final selected = settings.extra.selectedLibraryTab.value;
+    if (selected.group == group) return selected;
+    return settings.extra.libraryTabGroupVariants.value[group] ?? group;
+  }
+
   MediaType? toMediaType() {
-    switch (this) {
-      case LibraryTab.tracks:
-        return MediaType.track;
-      case LibraryTab.albums:
-        return MediaType.album;
-      case LibraryTab.artists:
-        return MediaType.artist;
-      case LibraryTab.genres:
-        return MediaType.genre;
-      case LibraryTab.folders:
-        return MediaType.folder;
-      default:
-        return null;
-    }
+    return switch (this) {
+      LibraryTab.tracks || LibraryTab.tracksMusic || LibraryTab.tracksVideos => MediaType.track,
+      LibraryTab.albums => MediaType.album,
+      LibraryTab.artists => MediaType.artist,
+      LibraryTab.genres => MediaType.genre,
+      LibraryTab.languages => MediaType.language,
+      LibraryTab.playlists => MediaType.playlist,
+      LibraryTab.smartPlaylists => null,
+      LibraryTab.folders => MediaType.folder,
+      LibraryTab.foldersMusic => MediaType.folderMusic,
+      LibraryTab.foldersVideos => MediaType.folderVideo,
+      LibraryTab.home => null,
+      LibraryTab.search => null,
+      LibraryTab.youtube => null,
+      LibraryTab.ytHome => null,
+      LibraryTab.ytNotifications => null,
+      LibraryTab.ytChannels => null,
+      LibraryTab.ytPlaylists => null,
+      LibraryTab.ytDownloads => null,
+      LibraryTab.queues => null,
+      LibraryTab.currentQueue => null,
+      LibraryTab.favourites => null,
+      LibraryTab.history => null,
+      LibraryTab.mostPlayed => null,
+      LibraryTab.moods => null,
+      LibraryTab.tags => null,
+      LibraryTab.rating => null,
+      LibraryTab.stats => null,
+      LibraryTab.party => null,
+    };
   }
 
-  int toInt() => settings.libraryTabs.indexOf(this);
+  int toInt() => settings.libraryTabs.value.indexOf(group);
 
-  Widget toWidget([int? gridCount, bool animateTiles = true, bool enableHero = true]) {
-    Widget page = const SizedBox();
-    switch (this) {
-      case LibraryTab.tracks:
-        page = TracksPage(animateTiles: animateTiles);
-        break;
-      case LibraryTab.albums:
-        page = AlbumsPage(
-          countPerRow: gridCount ?? settings.albumGridCount.value,
-          animateTiles: animateTiles,
-          enableHero: enableHero,
-        );
-        break;
-      case LibraryTab.artists:
-        page = ArtistsPage(
-          countPerRow: gridCount ?? settings.artistGridCount.value,
-          animateTiles: animateTiles,
-          enableHero: enableHero,
-        );
-        break;
-      case LibraryTab.genres:
-        page = GenresPage(
-          countPerRow: gridCount ?? settings.genreGridCount.value,
-          animateTiles: animateTiles,
-          enableHero: enableHero,
-        );
-        break;
-      case LibraryTab.playlists:
-        page = PlaylistsPage(
-          countPerRow: gridCount ?? settings.playlistGridCount.value,
-          animateTiles: animateTiles,
-          enableHero: enableHero,
-        );
-        break;
-      case LibraryTab.folders:
-        page = const FoldersPage();
-        break;
-      case LibraryTab.home:
-        page = const HomePage();
-      case LibraryTab.youtube:
-        page = const YouTubeHomeView();
-        break;
-      default:
-        null;
-    }
-
-    return page;
+  NamidaRouteWidget toWidget([CountPerRow? gridCount, bool animateTiles = true, bool enableHero = false]) {
+    gridCount ??= settings.mediaGridCounts.value.get(this);
+    return switch (this) {
+      LibraryTab.tracks || LibraryTab.tracksMusic || LibraryTab.tracksVideos => TracksPage(tab: this, animateTiles: animateTiles),
+      LibraryTab.albums => AlbumsPage(
+        countPerRow: gridCount,
+        animateTiles: animateTiles,
+        enableHero: enableHero,
+      ),
+      LibraryTab.artists => ArtistsPage(
+        countPerRow: gridCount,
+        animateTiles: animateTiles,
+        enableHero: enableHero,
+      ),
+      LibraryTab.genres => GenresPage(
+        countPerRow: gridCount,
+        animateTiles: animateTiles,
+        enableHero: enableHero,
+      ),
+      LibraryTab.languages => LanguagesPage(
+        countPerRow: gridCount,
+        animateTiles: animateTiles,
+        enableHero: enableHero,
+      ),
+      LibraryTab.playlists => PlaylistsPage(
+        countPerRow: gridCount,
+        animateTiles: animateTiles,
+        enableHero: enableHero,
+      ),
+      LibraryTab.smartPlaylists => const SmartPlaylistsPage(isLibraryTab: true),
+      LibraryTab.folders => FoldersPage.tracksAndVideos(),
+      LibraryTab.foldersMusic => FoldersPage.tracks(),
+      LibraryTab.foldersVideos => FoldersPage.videos(),
+      LibraryTab.home => const HomePageLocal(),
+      LibraryTab.youtube => const YouTubeHomeView(),
+      LibraryTab.ytHome => const YouTubeHomeSectionView(section: YTHomePages.home),
+      LibraryTab.ytNotifications => const YouTubeHomeSectionView(section: YTHomePages.notifications),
+      LibraryTab.ytChannels => const YouTubeHomeSectionView(section: YTHomePages.channels),
+      LibraryTab.ytPlaylists => const YouTubeHomeSectionView(section: YTHomePages.playlists),
+      LibraryTab.ytDownloads => const YouTubeHomeSectionView(section: YTHomePages.downloads),
+      LibraryTab.search => const NamidaDummyPage(),
+      LibraryTab.queues => const QueuesPage(isLibraryTab: true),
+      LibraryTab.currentQueue => const CurrentQueuePage(),
+      LibraryTab.favourites => const NormalPlaylistTracksPage(
+        playlistName: k_PLAYLIST_NAME_FAV,
+        disableAnimation: true,
+        isLibraryTab: true,
+      ),
+      LibraryTab.history => const HistoryTracksPage(isLibraryTab: true),
+      LibraryTab.mostPlayed => const MostPlayedTracksPage(isLibraryTab: true),
+      LibraryTab.moods => const MoodsPage(),
+      LibraryTab.tags => const TagsPage(),
+      LibraryTab.rating => const RatingsPage(),
+      LibraryTab.stats => const StatsPage(isYoutube: false, isLibraryTab: true),
+      LibraryTab.party => const NamidaPartyPage(),
+    };
   }
-
-  String toText() => _NamidaConverters.inst.getTitle(this);
-  IconData toIcon() => _NamidaConverters.inst.getIcon(this);
-}
-
-extension MediaTypeToText on MediaType {
-  String toText() => _NamidaConverters.inst.getTitle(this);
-}
-
-extension AlbumIdentifierToText on AlbumIdentifier {
-  String toText() => _NamidaConverters.inst.getTitle(this);
-}
-
-extension SortToText on SortType {
-  String toText() => _NamidaConverters.inst.getTitle(this);
-}
-
-extension GroupSortToText on GroupSortType {
-  String toText() => _NamidaConverters.inst.getTitle(this);
 }
 
 extension YTVideoQuality on String {
   String settingLabeltoVideoLabel() {
     final val = split('p').first;
-    return <String, String>{
+    return const <String, String>{
           '144': '144',
           '240': '240',
           '360': '360',
@@ -202,7 +265,7 @@ extension YTVideoQuality on String {
 
   String videoLabelToSettingLabel() {
     final val = split('p').first;
-    return <String, String>{
+    return const <String, String>{
           '144': '144p',
           '240': '240p',
           '360': '360p',
@@ -217,192 +280,277 @@ extension YTVideoQuality on String {
   }
 }
 
-extension CacheGetterAudio on AudioOnlyStream {
+extension AudioTrackUtils on AudioTrack {
+  String? get displayNameOrLangCode {
+    final name = displayName;
+    if (name != null && name.isNotEmpty) return name;
+    final code = langCode;
+    if (code != null && code.isNotEmpty) return code.toUpperCase();
+    return null;
+  }
+}
+
+extension CacheGetterAudio on AudioStream {
   String cacheKey(String id) {
     final audio = this;
     // -- wont save english track, only saves non-english ones.
-    final langCode = audio.language?.toLowerCase();
-    final langName = audio.displayLanguage?.toLowerCase();
-    final isNull = langCode == null || langName == null;
-    final isEnglish = langCode == 'en' || langName == 'english';
-    final languageText = isNull || isEnglish ? '' : '_${audio.language}_${audio.displayLanguage}';
-    return "$id${languageText}_${audio.bitrate}.${audio.formatSuffix}";
+    String languageText = '';
+
+    final audioTrack = audio.audioTrack;
+    if (audioTrack != null) {
+      final langCode = audioTrack.langCode?.toLowerCase();
+      final langName = audioTrack.displayName?.toLowerCase();
+
+      if (langCode == 'en' && audioTrack.isDefault == true) {
+        // -- is original english
+        // -- isDefault check is required cuz there can be more than 1 english audio
+      } else {
+        languageText = '_${langCode}_$langName';
+      }
+    }
+
+    return "$id${languageText}_${audio.bitrate}.${audio.codecInfo.container}";
   }
 
-  String cachePath(String id, {String? directory}) {
-    return p.join(directory ?? AppDirs.AUDIOS_CACHE, cacheKey(id));
+  String cachePath(String id) {
+    return p.join(AppDirs.AUDIOS_CACHE, cacheKey(id));
   }
 
-  File? getCachedFile(String? id, {String? directory}) {
+  File? getCachedFileSync(String? id) {
     if (id == null) return null;
-    final path = cachePath(id, directory: directory);
+    final path = cachePath(id);
     return File(path).existsSync() ? File(path) : null;
+  }
+
+  Future<File?> getCachedFile(String? id) async {
+    if (id == null) return null;
+    final path = cachePath(id);
+    return await File(path).exists() ? File(path) : null;
   }
 }
 
-extension CacheGetterVideo on VideoOnlyStream {
-  String cacheKey(String id, {String? directory}) {
+extension CacheGetterVideo on VideoStream {
+  String cacheKey(String id) {
     final video = this;
-    return "${id}_${video.resolution}.${video.formatSuffix}";
+    var codecIdentifier = codecInfo.codecIdentifierIfCustom();
+    var suffix = codecIdentifier != null ? '-$codecIdentifier' : '';
+    return "${id}_${video.qualityLabel}$suffix.${video.codecInfo.container}";
   }
 
-  String cachePath(String id, {String? directory}) {
-    return p.join(directory ?? AppDirs.VIDEOS_CACHE, cacheKey(id));
+  String cachePath(String id) {
+    return p.join(AppDirs.VIDEOS_CACHE, cacheKey(id));
   }
 
-  File? getCachedFile(String? id, {String? directory}) {
+  String cachePathTemp(String id) {
+    return p.join(AppDirs.VIDEOS_CACHE_TEMP, cacheKey(id));
+  }
+
+  File? getCachedFileSync(String? id) {
     if (id == null) return null;
-    final path = cachePath(id, directory: directory);
+    final path = cachePath(id);
     return File(path).existsSync() ? File(path) : null;
+  }
+
+  Future<File?> getCachedFile(String? id) async {
+    if (id == null) return null;
+    final path = cachePath(id);
+    return await File(path).exists() ? File(path) : null;
   }
 }
 
-extension StreamInfoUtils on StreamInfoItem {
-  VideoInfo toVideoInfo() {
-    return VideoInfo(
-      id: id,
-      url: url,
-      name: name,
-      uploaderName: uploaderName,
-      uploaderUrl: uploaderUrl,
-      uploaderAvatarUrl: uploaderAvatarUrl,
-      date: date,
-      isDateApproximation: isDateApproximation,
-      description: null,
-      duration: duration,
-      viewCount: viewCount,
-      likeCount: null,
-      category: null,
-      ageLimit: null,
-      tags: null,
-      thumbnailUrl: thumbnailUrl,
-      isUploaderVerified: isUploaderVerified,
-      textualUploadDate: textualUploadDate,
-      uploaderSubscriberCount: -1,
-      privacy: null,
-      isShortFormContent: isShortFormContent,
+extension FAudioModelExtensions on FAudioModel {
+  FAudioModel merge(FAudioModel? original) {
+    if (original == null) return this;
+    return FAudioModel(
+      tags: FTags(
+        path: original.tags.path.isNotEmpty ? original.tags.path : this.tags.path,
+        artwork: original.tags.artwork.hasArtwork ? original.tags.artwork : this.tags.artwork,
+        title: original.tags.title ?? this.tags.title,
+        album: original.tags.album ?? this.tags.album,
+        albumArtist: original.tags.albumArtist ?? this.tags.albumArtist,
+        artist: original.tags.artist ?? this.tags.artist,
+        composer: original.tags.composer ?? this.tags.composer,
+        genre: original.tags.genre ?? this.tags.genre,
+        style: original.tags.style ?? this.tags.style,
+        trackNumber: original.tags.trackNumber ?? this.tags.trackNumber,
+        trackTotal: original.tags.trackTotal ?? this.tags.trackTotal,
+        discNumber: original.tags.discNumber ?? this.tags.discNumber,
+        discTotal: original.tags.discTotal ?? this.tags.discTotal,
+        lyrics: original.tags.lyrics ?? this.tags.lyrics,
+        comment: original.tags.comment ?? this.tags.comment,
+        description: original.tags.description ?? this.tags.description,
+        synopsis: original.tags.synopsis ?? this.tags.synopsis,
+        year: original.tags.year ?? this.tags.year,
+        language: original.tags.language ?? this.tags.language,
+        lyricist: original.tags.lyricist ?? this.tags.lyricist,
+        djmixer: original.tags.djmixer ?? this.tags.djmixer,
+        mixer: original.tags.mixer ?? this.tags.mixer,
+        mood: original.tags.mood ?? this.tags.mood,
+        rating: original.tags.rating ?? this.tags.rating,
+        remixer: original.tags.remixer ?? this.tags.remixer,
+        tags: original.tags.tags ?? this.tags.tags,
+        tempo: original.tags.tempo ?? this.tags.tempo,
+        country: original.tags.country ?? this.tags.country,
+        recordLabel: original.tags.recordLabel ?? this.tags.recordLabel,
+        releaseType: original.tags.releaseType ?? this.tags.releaseType,
+        bpm: original.tags.bpm ?? this.tags.bpm,
+        musicalKey: original.tags.musicalKey ?? this.tags.musicalKey,
+        mbAlbumId: original.tags.mbAlbumId ?? this.tags.mbAlbumId,
+        mbAlbumArtistId: original.tags.mbAlbumArtistId ?? this.tags.mbAlbumArtistId,
+        ratingPercentage: original.tags.ratingPercentage ?? this.tags.ratingPercentage,
+        gainData: original.tags.gainData ?? this.tags.gainData,
+        sortInfo: original.tags.sortInfo ?? this.tags.sortInfo,
+      ),
+      durationMS: original.durationMS ?? this.durationMS,
+      bitRate: original.bitRate ?? this.bitRate,
+      channels: original.channels ?? this.channels,
+      encodingType: original.encodingType ?? this.encodingType,
+      format: original.format ?? this.format,
+      sampleRate: original.sampleRate ?? this.sampleRate,
+      bits: original.bits ?? this.bits,
+      isVariableBitRate: original.isVariableBitRate ?? this.isVariableBitRate,
+      isLossless: original.isLossless ?? this.isLossless,
+      hasError: this.hasError,
+      errorsMap: this.errorsMap,
     );
   }
 }
 
-extension MediaInfoToFAudioModel on MediaInfo? {
-  FAudioModel? toFAudioModel() {
+extension MediaInfoToFAudioModel on MediaInfo {
+  FAudioModel toFAudioModel({required FArtwork? artwork}) {
     final infoFull = this;
-    final info = infoFull?.format?.tags;
-    if (infoFull == null || info == null) return null;
-    final trackNumberTotal = info.track?.split('/');
-    final discNumberTotal = info.disc?.split('/');
-    final audioStream = infoFull.streams?.firstWhereEff((e) => e.streamType == StreamType.audio);
+    final info = infoFull.format?.tags;
+    final trackNumberTotal = info?.track?.split('/');
+    final discNumberTotal = info?.disc?.split('/');
+    final audioStream = infoFull.getAudioStream();
     int? parsy(String? v) => v == null ? null : int.tryParse(v);
     final bitrate = parsy(infoFull.format?.bitRate); // 234292
     final bitrateThousands = bitrate == null ? null : bitrate / 1000; // 234
+    String? format = audioStream?.codecName ?? infoFull.format?.formatName;
+    int? channels = audioStream?.channels;
     return FAudioModel(
       tags: FTags(
         path: infoFull.path,
-        artwork: FArtwork(),
-        title: info.title,
-        album: info.album,
-        albumArtist: info.albumArtist,
-        artist: info.artist,
-        composer: info.composer,
-        genre: info.genre,
-        trackNumber: trackNumberTotal?.first ?? info.track,
-        trackTotal: info.trackTotal ?? (trackNumberTotal?.length == 2 ? trackNumberTotal?.last : null),
-        discNumber: discNumberTotal?.first ?? info.disc,
-        discTotal: info.discTotal ?? (discNumberTotal?.length == 2 ? discNumberTotal?.last : null),
-        lyrics: info.lyrics,
-        comment: info.comment,
-        year: info.date,
-        language: info.language,
-        lyricist: info.lyricist,
-        remixer: info.remixer,
-        mood: info.mood,
-        country: info.country,
+        artwork: artwork ?? FArtwork(),
+        title: info?.title ?? audioStream?.tags?.title,
+        album: info?.album ?? audioStream?.tags?.album,
+        albumArtist: info?.albumArtist ?? audioStream?.tags?.albumArtist,
+        artist: info?.artist ?? audioStream?.tags?.artist,
+        composer: info?.composer,
+        genre: info?.genre,
+        style: info?.style,
+        trackNumber: trackNumberTotal?.first ?? info?.track ?? audioStream?.tags?.track,
+        trackTotal: info?.trackTotal ?? (trackNumberTotal?.length == 2 ? trackNumberTotal?.last : null),
+        discNumber: discNumberTotal?.first ?? info?.disc,
+        discTotal: info?.discTotal ?? (discNumberTotal?.length == 2 ? discNumberTotal?.last : null),
+        lyrics: info?.lyrics,
+        comment: info?.comment,
+        description: info?.description,
+        synopsis: info?.synopsis,
+        year: info?.date,
+        language: info?.language,
+        lyricist: info?.lyricist,
+        remixer: info?.remixer,
+        mood: info?.mood,
+        country: info?.country,
+        recordLabel: info?.label,
+        releaseType: info?.releaseType,
+        bpm: info?.bpm,
+        musicalKey: info?.musicalKey,
+        mbAlbumId: info?.mbAlbumId,
+        mbAlbumArtistId: info?.mbAlbumArtistId,
+        gainData: info?.gainData,
+        sortInfo: info?.sortInfo,
+        ratingPercentage: info?.rating,
+        djmixer: info?.djmixer,
+        mixer: info?.mixer,
+        tags: info?.tags,
+        tempo: info?.tempo,
+        rating: info?.rating?.toString(),
       ),
-      length: infoFull.format?.duration?.inSeconds,
+      durationMS: infoFull.format?.duration?.inMilliseconds,
       bitRate: bitrateThousands?.round(),
-      channels: audioStream?.channels == null
-          ? null
-          : {
-                0: null,
-                1: 'mono',
-                2: 'stereo',
-              }[audioStream?.channels] ??
-              'unknown',
-      format: infoFull.format?.formatName,
+      channels: switch (channels) {
+        null => null,
+        0 => null,
+        1 => 'mono',
+        2 => 'stereo',
+        _ => channels.toString(),
+      },
+      format: format,
       sampleRate: parsy(audioStream?.sampleRate),
+      bits: audioStream?.bitsPerSample,
+      isLossless: infoFull.isLossless(),
     );
   }
 }
 
-extension VideoSource on VideoPlaybackSource {
-  String toText() => _NamidaConverters.inst.getTitle(this);
-  String? toSubtitle() => _NamidaConverters.inst.getSubtitle(this);
-}
-
-extension LyricsSourceUtils on LyricsSource {
-  String toText() => _NamidaConverters.inst.getTitle(this);
-}
-
-extension TrackItemSubstring on TrackTileItem {
-  String toText() => _NamidaConverters.inst.getTitle(this);
-}
-
-extension HomePageGetter on HomePageItems {
-  String toText() => _NamidaConverters.inst.getTitle(this);
-}
-
 extension QueueNameGetter on Queue {
-  String toText() => homePageItem?.toText() ?? source.toText();
+  String? toSourceText() =>
+      homePageItem?.toText() ??
+      switch (source) {
+        final QueueSource s => switch (s.s) {
+          QueueSourceEnum.playlist || QueueSourceEnum.favourites || QueueSourceEnum.history || QueueSourceEnum.mostPlayed => s.title?.translatePlaylistName(),
+          QueueSourceEnum.folder || QueueSourceEnum.folderMusic || QueueSourceEnum.folderVideos => s.title?.formatPath(),
+          QueueSourceEnum.queuePage => null, // has date as title
+          _ => s.title,
+        },
+        final QueueSourceYoutubeID s => switch (s.s) {
+          QueueSourceYoutubeIDEnum.ytPlaylist ||
+          QueueSourceYoutubeIDEnum.ytFavourites ||
+          QueueSourceYoutubeIDEnum.ytHistory ||
+          QueueSourceYoutubeIDEnum.ytHistoryFiltered ||
+          QueueSourceYoutubeIDEnum.ytMostPlayed => s.title?.translatePlaylistName(),
+          _ => s.title,
+        },
+      };
 }
 
-extension QUEUESOURCEtoTRACKS on QueueSource {
-  String toText() => _NamidaConverters.inst.getTitle(this);
+// extension QUEUESOURCEtoTRACKS on QueueSource {
 
-  List<Selectable> toTracks([int? limit, int? dayOfHistory]) {
-    final trs = <Selectable>[];
-    void addThese(Iterable<Selectable> tracks) => trs.addAll(tracks.withLimit(limit));
-    switch (this) {
-      case QueueSource.allTracks:
-        addThese(SearchSortController.inst.trackSearchList);
-        break;
-      case QueueSource.search:
-        addThese(SearchSortController.inst.trackSearchTemp);
-        break;
-      case QueueSource.mostPlayed:
-        addThese(HistoryController.inst.currentMostPlayedTracks);
-        break;
-      case QueueSource.history:
-        dayOfHistory != null
-            ? addThese(HistoryController.inst.historyMap.value[dayOfHistory] ?? [])
-            : addThese(
-                HistoryController.inst.historyTracks.withLimit(limit),
-              );
-        break;
-      case QueueSource.favourites:
-        addThese(PlaylistController.inst.favouritesPlaylist.value.tracks);
-        break;
-      case QueueSource.queuePage:
-        addThese(SelectedTracksController.inst.currentAllTracks);
-        break;
-      case QueueSource.selectedTracks:
-        addThese(SelectedTracksController.inst.selectedTracks);
-        break;
-      case QueueSource.playerQueue:
-        addThese(Player.inst.currentQueue);
-        break;
-      case QueueSource.recentlyAdded:
-        addThese(Indexer.inst.recentlyAddedTracks);
-        break;
-      default:
-        addThese(SelectedTracksController.inst.currentAllTracks);
-    }
+//   List<Selectable> toTracksObso([int? limit, int? dayOfHistory]) {
+//     final trs = <Selectable>[];
+//     void addThese(Iterable<Selectable> tracks) => trs.addAll(tracks.withLimit(limit));
+//     switch (this) {
+//       case QueueSource.allTracksAll:
+//         addThese(SearchSortController.inst.trackSearchList.value);
+//         break;
+//       case QueueSource.allTracks:
+//         addThese(SearchSortController.inst.trackSearchList.value);
+//         break;
+//       case QueueSource.search:
+//         addThese(SearchSortController.inst.trackSearchTemp.value);
+//         break;
+//       case QueueSource.mostPlayed:
+//         addThese(HistoryController.inst.currentMostPlayedTracks);
+//         break;
+//       case QueueSource.history:
+//         dayOfHistory != null ? addThese(HistoryController.inst.historyMap.value[dayOfHistory] ?? []) : addThese(HistoryController.inst.historyTracks);
+//         break;
+//       case QueueSource.favourites:
+//         addThese(PlaylistController.inst.favouritesPlaylist.value.tracks);
+//         break;
+//       case QueueSource.queuePage:
+//         addThese(SelectedTracksController.inst.getCurrentAllTracks());
+//         break;
+//       case QueueSource.selectedTracks:
+//         addThese(SelectedTracksController.inst.selectedTracks.value);
+//         break;
+//       case QueueSource.playerQueue:
+//         addThese(Player.inst.currentQueue.value.whereType<Selectable>());
+//         break;
+//       case QueueSource.recentlyAdded:
+//         addThese(Indexer.inst.recentlyAddedTracksSorted());
+//         break;
+//       default:
+//         addThese(SelectedTracksController.inst.getCurrentAllTracks());
+//     }
 
-    return trs;
-  }
-}
+//     return trs;
+//   }
+// }
 
-extension PlaylistToQueueSource on Playlist {
+extension PlaylistToQueueSource on LocalPlaylist {
   QueueSource toQueueSource() {
     // if (name == k_PLAYLIST_NAME_MOST_PLAYED) {
     //   return QueueSource.mostPlayed;
@@ -413,172 +561,605 @@ extension PlaylistToQueueSource on Playlist {
     if (name == k_PLAYLIST_NAME_FAV) {
       return QueueSource.favourites;
     }
-    return QueueSource.playlist;
+    return QueueSource.playlist(name);
   }
 }
 
-extension WAKELOCKMODETEXT on WakelockMode {
-  String toText() => _NamidaConverters.inst.getTitle(this);
+extension FFMPEGTagFieldUtilsC on FFMPEGTagField {
+  String ffmpegTagToText() => switch (this) {
+    FFMPEGTagField.title => lang.title,
+    FFMPEGTagField.album => lang.album,
+    FFMPEGTagField.artist => lang.artist,
+    FFMPEGTagField.albumArtist => lang.albumArtist,
+    FFMPEGTagField.genre => lang.genre,
+    FFMPEGTagField.style => lang.style,
+    FFMPEGTagField.mood => lang.mood,
+    FFMPEGTagField.composer => lang.composer,
+    FFMPEGTagField.comment => lang.comment,
+    FFMPEGTagField.description => lang.description,
+    FFMPEGTagField.synopsis => lang.synopsis,
+    FFMPEGTagField.lyrics => lang.lyrics,
+    FFMPEGTagField.trackNumber => lang.trackNumber,
+    FFMPEGTagField.discNumber => lang.discNumber,
+    FFMPEGTagField.trackTotal => lang.trackNumberTotal,
+    FFMPEGTagField.discTotal => lang.discNumberTotal,
+    FFMPEGTagField.year => lang.year,
+    FFMPEGTagField.remixer => lang.remixer,
+    FFMPEGTagField.lyricist => lang.lyricist,
+    FFMPEGTagField.language => lang.language,
+    FFMPEGTagField.recordLabel => lang.recordLabel,
+    FFMPEGTagField.releaseType => lang.releaseType,
+    FFMPEGTagField.country => lang.country,
+    FFMPEGTagField.rating => lang.rating,
+    FFMPEGTagField.tags => lang.tags,
+    FFMPEGTagField.titleSort => '${lang.title} (${lang.sortBy})',
+    FFMPEGTagField.albumSort => '${lang.album} (${lang.sortBy})',
+    FFMPEGTagField.albumArtistSort => '${lang.albumArtist} (${lang.sortBy})',
+    FFMPEGTagField.artistSort => '${lang.artist} (${lang.sortBy})',
+    FFMPEGTagField.composerSort => '${lang.composer} (${lang.sortBy})',
+  };
+
+  IconData ffmpegTagToIcon() => switch (this) {
+    FFMPEGTagField.title => Broken.music,
+    FFMPEGTagField.album => MediaType.album.toIcon(),
+    FFMPEGTagField.artist => MediaType.artist.toIcon(),
+    FFMPEGTagField.albumArtist => MediaType.albumArtist.toIcon(),
+    FFMPEGTagField.genre => MediaType.genre.toIcon(),
+    FFMPEGTagField.style => MediaType.style.toIcon(),
+    FFMPEGTagField.mood => MediaType.mood.toIcon(),
+    FFMPEGTagField.composer => MediaType.composer.toIcon(),
+    FFMPEGTagField.comment => Broken.text_block,
+    FFMPEGTagField.description => Broken.note_text,
+    FFMPEGTagField.synopsis => Broken.text,
+    FFMPEGTagField.lyrics => Broken.message_text,
+    FFMPEGTagField.trackNumber => Broken.hashtag,
+    FFMPEGTagField.discNumber => Broken.hashtag,
+    FFMPEGTagField.trackTotal => Broken.hashtag,
+    FFMPEGTagField.discTotal => Broken.hashtag,
+    FFMPEGTagField.year => Broken.calendar,
+    FFMPEGTagField.remixer => Broken.radio,
+    FFMPEGTagField.lyricist => Broken.pen_add,
+    FFMPEGTagField.language => MediaType.language.toIcon(),
+    FFMPEGTagField.recordLabel => Broken.ticket,
+    FFMPEGTagField.releaseType => Broken.cd,
+    FFMPEGTagField.country => Broken.house,
+    FFMPEGTagField.rating => MediaType.rating.toIcon(),
+    FFMPEGTagField.tags => MediaType.tag.toIcon(),
+    FFMPEGTagField.titleSort => Broken.music,
+    FFMPEGTagField.albumSort => MediaType.album.toIcon(),
+    FFMPEGTagField.albumArtistSort => MediaType.albumArtist.toIcon(),
+    FFMPEGTagField.artistSort => MediaType.artist.toIcon(),
+    FFMPEGTagField.composerSort => MediaType.composer.toIcon(),
+  };
 }
 
-extension NotificationTapActionTEXT on NotificationTapAction {
-  String toText() => _NamidaConverters.inst.getTitle(this);
+extension PlayerRepeatModeUtils on PlayerRepeatMode {
+  String buildText({int? numberOfRepeats}) => switch (this) {
+    PlayerRepeatMode.none => lang.repeatModeNone,
+    PlayerRepeatMode.one => lang.repeatModeOne,
+    PlayerRepeatMode.all => lang.repeatModeAll,
+    PlayerRepeatMode.allShuffle => "${lang.repeatModeAll} (${lang.shuffle})",
+    // PlayerRepeatMode.shuffle => lang.shuffle,
+    PlayerRepeatMode.forNtimes => lang.repeatForNTimes(number: numberOfRepeats ?? Player.inst.numberOfRepeats.value),
+  };
 }
 
-extension LocalVideoMatchingTypeText on LocalVideoMatchingType {
-  String toText() => _NamidaConverters.inst.getTitle(this);
+extension DataSaverModeUtils on DataSaverMode {
+  String toText() => switch (this) {
+    DataSaverMode.off => lang.disable,
+    DataSaverMode.medium => lang.medium,
+    DataSaverMode.extreme => lang.extreme,
+  };
 }
 
-extension TRACKPLAYMODE on TrackPlayMode {
-  String toText() => _NamidaConverters.inst.getTitle(this);
-}
+extension TrackExecuteActionsUtils on TrackExecuteActions {
+  String toText() => switch (this) {
+    TrackExecuteActions.none => lang.none,
+    TrackExecuteActions.play => "${lang.play} (${lang.single})",
+    TrackExecuteActions.playOptions => "${lang.play} (${lang.choose})",
+    TrackExecuteActions.playnext => lang.playNext,
+    TrackExecuteActions.playlast => lang.playLast,
+    TrackExecuteActions.playafter => lang.playAfter,
+    TrackExecuteActions.addtoplaylist => lang.addToPlaylist,
+    TrackExecuteActions.addBookmark => lang.addBookmark,
+    TrackExecuteActions.stopAfterCurrent => lang.stopAfterThisTrack,
+    TrackExecuteActions.openinfo => lang.info,
+    TrackExecuteActions.openArtwork => "${lang.artwork} (${lang.open})",
+    TrackExecuteActions.editArtwork => lang.editArtwork,
+    TrackExecuteActions.saveArtwork => "${lang.artwork} (${lang.save})",
+    TrackExecuteActions.flipArtwork => lang.flipArtwork,
+    TrackExecuteActions.editTags => lang.editTags,
+    TrackExecuteActions.setRating => lang.setRating,
+    TrackExecuteActions.setRatingAdv => "${lang.rating}/${lang.moods}/${lang.tags}",
+    TrackExecuteActions.openListens => lang.totalListens,
+    TrackExecuteActions.focus => lang.focus,
+    TrackExecuteActions.goToTrack => lang.goToTrack,
+    TrackExecuteActions.goToAlbum => lang.goToAlbum,
+    TrackExecuteActions.goToArtist => lang.goToArtist,
+    TrackExecuteActions.goToFolder => lang.goToFolder,
+    TrackExecuteActions.copyTitle => "${lang.copy} (${lang.title})",
+    TrackExecuteActions.copyArtist => "${lang.copy} (${lang.artist})",
+    TrackExecuteActions.copyArtistAndTitle => "${lang.copy} (${lang.artist} + ${lang.title})",
+    TrackExecuteActions.copyYTLink => "${lang.copy} (${lang.link})",
+    TrackExecuteActions.searchYTSimilar => lang.searchYoutube,
+    TrackExecuteActions.delete => lang.delete,
+  };
 
-extension TagFieldsUtilsC on TagField {
-  String toText() => _NamidaConverters.inst.getTitle(this);
-  IconData toIcon() => _NamidaConverters.inst.getIcon(this);
-}
+  IconData toIcon() {
+    return switch (this) {
+      TrackExecuteActions.none => Broken.minus_cirlce,
+      TrackExecuteActions.play => Broken.play,
+      TrackExecuteActions.playOptions => Broken.play_add,
+      TrackExecuteActions.playnext => Broken.next,
+      TrackExecuteActions.playlast => Broken.play_cricle,
+      TrackExecuteActions.playafter => Broken.hierarchy_square,
+      TrackExecuteActions.addtoplaylist => Broken.music_library_2,
+      TrackExecuteActions.addBookmark => Broken.book_saved,
+      TrackExecuteActions.stopAfterCurrent => Broken.pause_circle,
+      TrackExecuteActions.openinfo => Broken.info_circle,
+      TrackExecuteActions.openArtwork => Broken.gallery,
+      TrackExecuteActions.editArtwork => Broken.gallery_edit,
+      TrackExecuteActions.saveArtwork => Broken.gallery_import,
+      TrackExecuteActions.flipArtwork => Broken.convert_card,
+      TrackExecuteActions.editTags => Broken.edit,
+      TrackExecuteActions.setRating => Broken.grammerly,
+      TrackExecuteActions.setRatingAdv => Broken.smileys,
+      TrackExecuteActions.openListens => Broken.math,
+      TrackExecuteActions.focus => Broken.music_square_search,
+      TrackExecuteActions.goToTrack => Broken.music_square,
+      TrackExecuteActions.goToAlbum => Broken.music_dashboard,
+      TrackExecuteActions.goToArtist => Broken.profile_2user,
+      TrackExecuteActions.goToFolder => Broken.folder,
+      TrackExecuteActions.copyTitle => Broken.copy,
+      TrackExecuteActions.copyArtist => Broken.copy,
+      TrackExecuteActions.copyArtistAndTitle => Broken.copy,
+      TrackExecuteActions.copyYTLink => Broken.copy,
+      TrackExecuteActions.searchYTSimilar => Broken.search_normal_1,
+      TrackExecuteActions.delete => Broken.danger,
+    };
+  }
 
-extension FFMPEGTagFieldUtilsC on String {
-  String ffmpegTagToText() => _NamidaConverters.inst.ffmpegTagFieldName(this);
-  IconData ffmpegTagToIcon() => _NamidaConverters.inst.ffmpegTagFieldIcon(this);
-}
+  void executePlayingItem(Playable currentItem) {
+    final queueSource =
+        currentItem.execute(
+              selectable: (_) => QueueSource.playerQueue,
+              youtubeID: (_) => QueueSourceYoutubeID.ytPlayerQueue,
+            )
+            as QueueSourceBase;
+    this.execute(
+      currentItem,
+      info: SwipeQueueAddTileInfo(
+        queueSource: queueSource,
+        heroTag: null,
+      ),
+    );
+  }
 
-extension PlayerRepeatModeUtils on RepeatMode {
-  String toText() => _NamidaConverters.inst.getTitle(this);
-  IconData toIcon() => _NamidaConverters.inst.getIcon(this);
-}
+  void execute(Playable item, {required SwipeQueueAddTileInfo info}) async {
+    switch (this) {
+      case TrackExecuteActions.none:
+        return;
+      case TrackExecuteActions.play:
+        Player.inst.playOrPause(0, [item], info.queueSource);
+      case TrackExecuteActions.playOptions:
+        final queue = info.queue ?? [item];
+        Player.inst.playWithOptions(info.index, queue, info.queueSource);
+      case TrackExecuteActions.playnext:
+        Player.inst.addToQueue([item], insertNext: true);
+      case TrackExecuteActions.playlast:
+        Player.inst.addToQueue([item], insertNext: false);
+      case TrackExecuteActions.playafter:
+        Player.inst.addToQueue([item], insertAfterLatest: true);
+      case TrackExecuteActions.addtoplaylist:
+        item.execute(
+          selectable: (finalItem) {
+            showAddToPlaylistDialog([finalItem.track]);
+          },
+          youtubeID: (finalItem) {
+            showAddToPlaylistSheet(ids: [finalItem.id], idsNamesLookup: {finalItem.id: info.videoTitle});
+          },
+        );
+      case TrackExecuteActions.addBookmark:
+        if (Player.inst.isCurrentItem(item)) await BookmarksController.inst.addAtCurrentPosition();
+      case TrackExecuteActions.stopAfterCurrent:
+        if (Player.inst.isCurrentItem(item)) {
+          final isStopping = Player.inst.toggleStopAfterCurrent();
+          snackyy(
+            icon: Broken.pause_circle,
+            message: "${lang.stopAfterThisTrack}: ${isStopping ? '✓' : '✗'}",
+            top: false,
+            type: SnackbarType.playerInfo,
+          );
+        }
+      case TrackExecuteActions.openinfo:
+        item.execute(
+          selectable: (finalItem) {
+            showTrackInfoDialog(
+              finalItem.track,
+              true,
+              heroTag: info.heroTag,
+            );
+          },
+          youtubeID: (finalItem) {
+            NamidaNavigator.inst.navigateDialog(
+              dialog: VideoInfoDialog(
+                videoId: finalItem.id,
+              ),
+            );
+          },
+        );
 
-extension KillAppModeUtils on KillAppMode {
-  String toText() => _NamidaConverters.inst.getTitle(this);
-}
+      case TrackExecuteActions.openArtwork:
+        item.execute(
+          selectable: (finalItem) {
+            final track = finalItem.track;
+            final details = NamidaArtworkExpandableToFullscreen(
+              artwork: const SizedBox(),
+              heroTag: info.heroTag,
+              imageFile: () => File(track.pathToImage),
+              fetchImage: () => Indexer.inst.getArtwork(
+                imagePath: track.pathToImage,
+                track: track,
+                compressed: false,
+              ),
+              onSave: (_, _) => EditDeleteController.inst.saveTrackArtworkToStorage(track),
+              themeColor: null,
+            );
+            details.openInFullscreen();
+          },
+          youtubeID: (finalItem) {
+            final videoId = finalItem.id;
+            final details = NamidaArtworkExpandableToFullscreen(
+              artwork: const SizedBox(),
+              heroTag: null,
+              imageFile: () => ThumbnailManager.inst.getYoutubeThumbnailFromCache(
+                id: videoId,
+                type: ThumbnailType.video,
+                isTemp: null,
+              ),
+              fetchImage: () async => FArtwork(
+                file: await ThumbnailManager.inst.getYoutubeThumbnailAndCache(
+                  id: videoId,
+                  type: ThumbnailType.video,
+                ),
+              ),
+              onSave: (_, _) => YTUtils.copyThumbnailToStorage(videoId),
+              themeColor: null,
+            );
+            details.openInFullscreen();
+          },
+        );
 
-extension FABTypeUtils on FABType {
-  String toText() => _NamidaConverters.inst.getTitle(this);
-  IconData toIcon() => _NamidaConverters.inst.getIcon(this);
-}
+      case TrackExecuteActions.saveArtwork:
+        item.execute(
+          selectable: (finalItem) async {
+            final savePath = await EditDeleteController.inst.saveTrackArtworkToStorage(finalItem.track);
+            NamidaOnTaps.inst.showSavedImageInSnack(savePath, null);
+          },
+          youtubeID: (finalItem) async {
+            final savePath = await YTUtils.copyThumbnailToStorage(finalItem.id);
+            NamidaOnTaps.inst.showSavedImageInSnack(savePath, null);
+          },
+        );
+      case TrackExecuteActions.flipArtwork:
+        item.execute(
+          selectable: (finalItem) async {
+            if (!Player.inst.isCurrentItem(finalItem)) return;
+            final hasBackCover = await BackCoverController.inst.toggle(finalItem.track);
+            if (!hasBackCover) {
+              snackyy(
+                icon: Broken.gallery_slash,
+                message: lang.noBackCoverFound,
+                top: false,
+                type: SnackbarType.playerInfo,
+              );
+            }
+          },
+          youtubeID: (finalItem) {},
+        );
+      case TrackExecuteActions.editTags:
+        item.execute(
+          selectable: (finalItem) {
+            final tr = finalItem.track.asPhysicalOrError();
+            if (tr == null) return;
+            showEditTracksTagsDialog([tr], null);
+          },
+          youtubeID: (finalItem) {},
+        );
+      case TrackExecuteActions.editArtwork:
+        item.execute(
+          selectable: (finalItem) {
+            final tr = finalItem.track.asPhysicalOrError();
+            if (tr == null) return;
+            showEditTracksTagsDialog([tr], null, instantEditArtwork: true);
+          },
+          youtubeID: (finalItem) {},
+        );
 
-extension SetMusicAsActionUtils on SetMusicAsAction {
-  String toText() => _NamidaConverters.inst.getTitle(this);
-}
+      case TrackExecuteActions.setRating:
+        item.execute(
+          selectable: (finalItem) {
+            final track = finalItem.track;
+            showSetTrackStatsDialogSimple(
+              track: track,
+              stats: track.statsRaw,
+            );
+          },
+          youtubeID: (finalItem) {},
+        );
 
-extension TrackSearchFilterUtils on TrackSearchFilter {
-  String toText() => _NamidaConverters.inst.getTitle(this);
+      case TrackExecuteActions.setRatingAdv:
+        item.execute(
+          selectable: (finalItem) {
+            showSetTrackStatsDialog(
+              tracks: [finalItem.track],
+            );
+          },
+          youtubeID: (finalItem) {},
+        );
+      case TrackExecuteActions.openListens:
+        item.execute(
+          selectable: (finalItem) {
+            showTrackListensDialog(finalItem.track);
+          },
+          youtubeID: (finalItem) {
+            showVideoListensDialog(finalItem.id);
+          },
+        );
+
+      case TrackExecuteActions.focus:
+        item.execute(
+          selectable: (finalItem) {
+            MainPageFABResumeButton.jumpToTrackInCurrentRoute(finalItem, fallbackToOpenTracksPage: true);
+          },
+          youtubeID: (finalItem) {},
+        );
+
+      case TrackExecuteActions.goToTrack:
+        item.execute(
+          selectable: (finalItem) {
+            MainPageFABResumeButton.jumpToTrackInTracksPage(finalItem);
+          },
+          youtubeID: (finalItem) {},
+        );
+
+      case TrackExecuteActions.goToAlbum:
+        item.execute(
+          selectable: (finalItem) {
+            NamidaOnTaps.inst.onAlbumTap(finalItem.track.albumsIdentifiersModified.firstOrNull);
+          },
+          youtubeID: (finalItem) {},
+        );
+
+      case TrackExecuteActions.goToArtist:
+        item.execute(
+          selectable: (finalItem) {
+            NamidaOnTaps.inst.onArtistsTap(finalItem.track.artistsList);
+          },
+          youtubeID: (finalItem) async {
+            final channelId = await YoutubeInfoController.utils.getVideoChannelID(finalItem.id);
+            if (channelId != null) {
+              YTChannelSubpage(channelID: channelId).navigate();
+            }
+          },
+        );
+
+      case TrackExecuteActions.goToFolder:
+        item.execute(
+          selectable: (finalItem) {
+            final track = finalItem.track;
+            final folder = track.folder;
+            NamidaOnTaps.inst.onFolderTapNavigate(folder, null, trackToScrollTo: track);
+          },
+          youtubeID: (finalItem) {},
+        );
+
+      case TrackExecuteActions.copyTitle:
+        item.execute(
+          selectable: (finalItem) {
+            final title = finalItem.track.title;
+            info.copyToClipboard(title);
+          },
+          youtubeID: (finalItem) async {
+            final title = await YoutubeInfoController.utils.getVideoName(finalItem.id);
+            if (title != null) {
+              info.copyToClipboard(title);
+            }
+          },
+        );
+      case TrackExecuteActions.copyArtist:
+        item.execute(
+          selectable: (finalItem) {
+            final artist = finalItem.track.originalArtist;
+            info.copyToClipboard(artist);
+          },
+          youtubeID: (finalItem) async {
+            final artist = await YoutubeInfoController.utils.getVideoChannelName(finalItem.id);
+            if (artist != null) {
+              info.copyToClipboard(artist);
+            }
+          },
+        );
+      case TrackExecuteActions.copyArtistAndTitle:
+        item.execute(
+          selectable: (finalItem) {
+            final title = finalItem.track.title;
+            final artist = finalItem.track.originalArtist;
+            info.copyToClipboard("$artist - $title");
+          },
+          youtubeID: (finalItem) async {
+            final title = await YoutubeInfoController.utils.getVideoName(finalItem.id);
+            final artist = await YoutubeInfoController.utils.getVideoChannelName(finalItem.id);
+            if (title?.isNotEmpty == true || artist?.isNotEmpty == true) {
+              info.copyToClipboard("${artist ?? ''} - ${title ?? ''}");
+            }
+          },
+        );
+      case TrackExecuteActions.copyYTLink:
+        item.execute(
+          selectable: (finalItem) {
+            final link = finalItem.track.youtubeLink;
+            if (link.isNotEmpty) {
+              info.copyToClipboard(link);
+            } else {
+              snackyy(title: lang.error, message: lang.couldntOpenYtLink, top: false);
+            }
+          },
+          youtubeID: (finalItem) async {
+            final videoLink = YTUrlUtils.buildVideoUrl(finalItem.id);
+            info.copyToClipboard(videoLink);
+          },
+        );
+      case TrackExecuteActions.searchYTSimilar:
+        final text = await item.execute<FutureOr<String>>(
+          selectable: (finalItem) {
+            final title = finalItem.track.title;
+            final artist = finalItem.track.originalArtist;
+            return "$artist - $title";
+          },
+          youtubeID: (finalItem) async {
+            final title = await YoutubeInfoController.utils.getVideoName(finalItem.id);
+            final artist = await YoutubeInfoController.utils.getVideoChannelName(finalItem.id);
+            if (title?.isNotEmpty == true || artist?.isNotEmpty == true) {
+              return "${artist ?? ''} - ${title ?? ''}";
+            }
+            return '';
+          },
+        );
+        if (text != null && text.isNotEmpty) {
+          ScrollSearchController.inst.openYoutubeSearch(text);
+        }
+      case TrackExecuteActions.delete:
+        item.execute(
+          selectable: (finalItem) {
+            showTrackDeletePermanentlyDialog(
+              [finalItem],
+              null,
+              afterDone: NamidaNavigator.inst.closeDialog,
+            );
+          },
+          youtubeID: (finalItem) {},
+        );
+    }
+    VibratorController.verylight();
+  }
 }
 
 extension OnYoutubeLinkOpenActionUtils on OnYoutubeLinkOpenAction {
-  String toText() => _NamidaConverters.inst.getTitle(this);
-  IconData toIcon() => _NamidaConverters.inst.getIcon(this);
-
-  Future<void> executePlaylist(String playlistUrl, {YoutubePlaylist? playlist, required BuildContext? context}) async {
-    final plInfo = playlist ?? await YoutubeController.inst.getPlaylistInfo(playlistUrl);
-    if (plInfo == null) return snackyy(title: lang.ERROR, message: 'error retrieving playlist info, check your connection?');
-    final didFetch = await plInfo.fetchAllPlaylistStreams(context: context?.mounted == true ? context : null);
-    if (!didFetch) return snackyy(title: lang.ERROR, message: 'error fetching playlist videos');
-
-    final streams = plInfo.streams;
-
-    switch (this) {
-      case OnYoutubeLinkOpenAction.showDownload:
-        plInfo.showPlaylistDownloadSheet(context: context?.mounted == true ? context : null);
-      case OnYoutubeLinkOpenAction.addToPlaylist:
-        showAddToPlaylistSheet(ids: streams.map((e) => e.id ?? ''), idsNamesLookup: {});
-      case OnYoutubeLinkOpenAction.play:
-        await Player.inst.playOrPause(0, streams.map((e) => YoutubeID(id: e.id ?? '', playlistID: null)), QueueSource.others);
-      case OnYoutubeLinkOpenAction.alwaysAsk:
-        _showAskDialog(
-          (action) => action.executePlaylist(playlistUrl, context: context, playlist: plInfo),
-          playlistToOpen: plInfo,
-          playlistToAddAs: plInfo,
-        );
-
-      default:
-        null;
-    }
-  }
-
-  Future<void> execute(Iterable<String> ids) async {
+  Future<bool> execute(Iterable<String> ids, {ThemeData? theme}) async {
+    Iterable<YoutubeID> getPlayables() => ids.map((e) => YoutubeID(id: e, playlistID: null));
     switch (this) {
       case OnYoutubeLinkOpenAction.showDownload:
         if (ids.length == 1) {
-          showDownloadVideoBottomSheet(videoId: ids.first);
+          showDownloadVideoBottomSheet(videoId: ids.first, originalIndex: null, totalLength: null, playlistId: null, streamInfoItem: null);
         } else {
-          NamidaNavigator.inst.navigateTo(
-            YTPlaylistDownloadPage(
-              ids: ids.map((e) => YoutubeID(id: e, playlistID: null)).toList(),
-              playlistName: 'External - ${DateTime.now().millisecondsSinceEpoch.dateAndClockFormattedOriginal}',
-              infoLookup: const {},
+          final ptitle = 'External - ${DateTime.now().dateAndClockFormattedOriginal}';
+          YTPlaylistDownloadPage(
+            ids: ids.map((e) => YoutubeID(id: e, playlistID: null)).toList(),
+            playlistName: ptitle,
+            infoLookup: const {},
+            playlistInfo: PlaylistBasicInfo(
+              id: '',
+              title: ptitle,
+              videosCountText: ids.length.toString(),
+              videosCount: ids.length,
+              thumbnails: [],
             ),
-          );
+          ).navigate();
         }
+        return true;
       case OnYoutubeLinkOpenAction.addToPlaylist:
         showAddToPlaylistSheet(ids: ids, idsNamesLookup: {});
+        return true;
       case OnYoutubeLinkOpenAction.play:
-        await Player.inst.playOrPause(0, ids.map((e) => YoutubeID(id: e, playlistID: null)), QueueSource.others);
+        await Player.inst.playOrPause(0, getPlayables(), QueueSourceYoutubeID.ytExternalLink, gentlePlay: true);
+        return true;
+      case OnYoutubeLinkOpenAction.playNext:
+        return Player.inst.addToQueue(getPlayables(), insertNext: true);
+      case OnYoutubeLinkOpenAction.playLast:
+        return Player.inst.addToQueue(getPlayables(), insertNext: false);
+      case OnYoutubeLinkOpenAction.playAfter:
+        return Player.inst.addToQueue(getPlayables(), insertAfterLatest: true);
       case OnYoutubeLinkOpenAction.alwaysAsk:
-        _showAskDialog((action) => action.execute(ids));
-
-      default:
-        null;
+        final videoNamesSubtitle =
+            await ids
+                .take(3)
+                .mapAsync((id) async => await YoutubeInfoController.utils.getVideoName(id) ?? id) //
+                .join(', ') +
+            (ids.length > 3 ? '... + ${ids.length - 3}' : '');
+        _showAskDialog((action) => action.execute(ids), title: videoNamesSubtitle, theme: theme);
+        return true;
     }
   }
 
-  void _showAskDialog(void Function(OnYoutubeLinkOpenAction action) onTap, {YoutubePlaylist? playlistToOpen, YoutubePlaylist? playlistToAddAs}) {
-    final newVals = List<OnYoutubeLinkOpenAction>.from(OnYoutubeLinkOpenAction.values);
-    newVals.remove(OnYoutubeLinkOpenAction.alwaysAsk);
+  void _showAskDialog(void Function(OnYoutubeLinkOpenAction action) onTap, {String? title, ThemeData? theme}) async {
+    final isItemEnabled = <OnYoutubeLinkOpenAction, bool>{
+      OnYoutubeLinkOpenAction.playNext: true,
+      OnYoutubeLinkOpenAction.playAfter: true,
+      OnYoutubeLinkOpenAction.playLast: true,
+    }.obs;
 
-    String playlistNameToAddAs = playlistToAddAs?.name ?? '';
-    String suffix = '';
-    int suffixIndex = 1;
-    while (ytplc.YoutubePlaylistController.inst.playlistsMap["$playlistNameToAddAs$suffix"] != null) {
-      suffixIndex++;
-      suffix = ' ($suffixIndex)';
-    }
-    playlistNameToAddAs += suffix;
+    final playAfterVid = await YTUtils.getPlayerAfterVideo();
 
     NamidaNavigator.inst.navigateDialog(
-      dialog: CustomBlurryDialog(
-        title: lang.CHOOSE,
+      onDisposing: () {
+        isItemEnabled.close();
+      },
+      theme: theme,
+      dialogBuilder: (theme) => CustomBlurryDialog(
+        theme: theme,
+        title: lang.choose,
+        titleWidgetInPadding: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              lang.choose,
+              style: theme.textTheme.displayLarge,
+            ),
+            if (title != null && title.isNotEmpty)
+              Text(
+                title,
+                style: theme.textTheme.displaySmall,
+              ),
+          ],
+        ),
         normalTitleStyle: true,
-        actions: [
-          NamidaButton(
-            text: lang.DONE,
-            onPressed: NamidaNavigator.inst.closeDialog,
-          )
+        actions: const [
+          DoneButton(),
         ],
         child: Column(
           children: [
-            if (playlistToOpen != null)
-              CustomListTile(
-                icon: Broken.export_2,
-                title: lang.OPEN,
-                onTap: () {
-                  NamidaNavigator.inst.navigateTo(YTHostedPlaylistSubpage(playlist: playlistToOpen));
-                },
-              ),
-            ...newVals.map(
-              (e) => CustomListTile(
-                icon: e.toIcon(),
-                title: e.toText(),
-                onTap: () => onTap(e),
-              ),
+            ...[
+              OnYoutubeLinkOpenAction.showDownload,
+              OnYoutubeLinkOpenAction.play,
+              OnYoutubeLinkOpenAction.playNext,
+              if (playAfterVid != null) OnYoutubeLinkOpenAction.playAfter,
+              OnYoutubeLinkOpenAction.playLast,
+              OnYoutubeLinkOpenAction.addToPlaylist,
+            ].map(
+              (e) {
+                final isPlayAfter = e == OnYoutubeLinkOpenAction.playAfter && playAfterVid != null;
+                final extraTitle = isPlayAfter ? ": ${playAfterVid.diff.displayVideoKeyword}" : "";
+                String? subtitle = isPlayAfter ? playAfterVid.name : null;
+                if (subtitle == '') subtitle = null;
+                return Obx(
+                  (context) => CustomListTile(
+                    passedColor: theme.colorScheme.primaryContainer,
+                    enabled: isItemEnabled[e] ?? true,
+                    icon: e.toIcon(),
+                    title: e.toText() + extraTitle,
+                    subtitle: subtitle,
+                    onTap: () {
+                      onTap(e);
+                      if (isItemEnabled[e] != null) {
+                        isItemEnabled[e] = false; // only disable existing item
+                      }
+                    },
+                  ),
+                );
+              },
             ),
-            if (playlistNameToAddAs != '')
-              ObxValue<RxBool>(
-                (didAdd) => CustomListTile(
-                  enabled: !didAdd.value,
-                  icon: Broken.add_square,
-                  title: lang.ADD_AS_A_NEW_PLAYLIST,
-                  subtitle: playlistNameToAddAs,
-                  onTap: () {
-                    didAdd.value = true;
-                    ytplc.YoutubePlaylistController.inst.addNewPlaylist(
-                      playlistNameToAddAs,
-                      videoIds: playlistToAddAs?.streams.map((e) => e.id ?? '') ?? [],
-                    );
-                  },
-                ),
-                false.obs,
-              ),
           ],
         ),
       ),
@@ -587,301 +1168,308 @@ extension OnYoutubeLinkOpenActionUtils on OnYoutubeLinkOpenAction {
 }
 
 extension PerformanceModeUtils on PerformanceMode {
-  String toText() => _NamidaConverters.inst.getTitle(this);
-  IconData toIcon() => _NamidaConverters.inst.getIcon(this);
-
-  Future<void> execute() async {
+  Future<void> executeAndSave() async {
     switch (this) {
       case PerformanceMode.highPerformance:
-        settings.save(
-          enableBlurEffect: false,
-          enableGlowEffect: false,
-          enableMiniplayerParallaxEffect: false,
-          artworkCacheHeightMultiplier: 0.8,
-        );
+        settings.transaction(() {
+          settings.performanceMode.save(PerformanceMode.highPerformance);
+          settings.enableBlurEffect.save(false);
+          settings.enableGlowEffect.save(false);
+          settings.enableMiniplayerParallaxEffect.save(false);
+          settings.enableMiniplayerParticles.save(false);
+          settings.miniplayerVisualizers.reset();
+          settings.visualizerArtworkColors.save(false);
+          settings.effectsBackground.save(EffectTheme.none);
+          settings.effectsOverlay.save(EffectTheme.none);
+          settings.playerBackground.save(PlayerBackground.none);
+          settings.artworkCacheHeightMultiplier.save(0.8);
+          settings.autoColor.save(false);
+          settings.animatedTheme.save(false);
+        });
       case PerformanceMode.balanced:
-        settings.save(
-          enableBlurEffect: false,
-          enableGlowEffect: false,
-          enableMiniplayerParallaxEffect: true,
-          artworkCacheHeightMultiplier: 0.9,
-        );
+        settings.transaction(() {
+          settings.performanceMode.save(PerformanceMode.balanced);
+          settings.enableBlurEffect.save(false);
+          settings.enableGlowEffect.save(false);
+          settings.enableMiniplayerParallaxEffect.save(true);
+          settings.artworkCacheHeightMultiplier.save(0.9);
+          settings.autoColor.save(true);
+          settings.animatedTheme.save(false);
+        });
       case PerformanceMode.goodLooking:
-        settings.save(
-          enableBlurEffect: true,
-          enableGlowEffect: true,
-          enableMiniplayerParallaxEffect: true,
-          artworkCacheHeightMultiplier: 1.0,
-        );
-      // case PerformanceMode.custom:
-      default:
-        null;
+        settings.transaction(() {
+          settings.performanceMode.save(PerformanceMode.goodLooking);
+          settings.enableBlurEffect.save(true);
+          settings.enableGlowEffect.save(true);
+          settings.enableMiniplayerParallaxEffect.save(true);
+          settings.artworkCacheHeightMultiplier.save(1.0);
+          settings.autoColor.save(true);
+          settings.animatedTheme.save(true);
+        });
+      case PerformanceMode.custom:
+        settings.performanceMode.save(PerformanceMode.custom);
     }
   }
-}
-
-extension ThemeUtils on ThemeMode {
-  IconData toIcon() => _NamidaConverters.inst.getIcon(this);
 }
 
 extension QueueInsertionTypeToQI on QueueInsertionType {
-  QueueInsertion toQueueInsertion() => settings.queueInsertion[this]!;
-
-  /// NOTE: Modifies the original list.
-  List<Selectable> shuffleOrSort(List<Selectable> tracks) {
-    final sortBy = toQueueInsertion().sortBy;
-
-    switch (sortBy) {
-      case InsertionSortingType.listenCount:
-        if (this == QueueInsertionType.algorithm) {
-          // already sorted by repeated times inside [NamidaGenerator.generateRecommendedTrack].
-        } else {
-          tracks.sortByReverse((e) => HistoryController.inst.topTracksMapListens[e.track]?.length ?? 0);
-        }
-      case InsertionSortingType.rating:
-        tracks.sortByReverse((e) => e.track.stats.rating);
-      case InsertionSortingType.random:
-        tracks.shuffle();
-
-      default:
-        null;
-    }
-
-    return tracks;
-  }
-
-  /// NOTE: Modifies the original list.
-  List<YoutubeID> shuffleOrSortYT(List<YoutubeID> videos) {
-    final sortBy = toQueueInsertion().sortBy;
-
-    switch (sortBy) {
-      case InsertionSortingType.listenCount:
-        if (this == QueueInsertionType.algorithm) {
-          // already sorted by repeated times inside [NamidaGenerator.generateRecommendedTrack].
-        } else {
-          videos.sortByReverse((e) => YoutubeHistoryController.inst.topTracksMapListens[e.id]?.length ?? 0);
-        }
-      // case InsertionSortingType.rating:
-      //   tracks.sortByReverse((e) => e.track.stats.rating);
-      case InsertionSortingType.random:
-        videos.shuffle();
-
-      default:
-        null;
-    }
-
-    return videos;
-  }
+  QueueInsertion toQueueInsertion() => settings.queueInsertion.value[this] ?? const QueueInsertion(numberOfTracks: 0, insertNext: true);
 }
 
-extension InsertionSortingTypeTextIcon on InsertionSortingType {
-  String toText() => _NamidaConverters.inst.getTitle(this);
-  IconData toIcon() => _NamidaConverters.inst.getIcon(this);
+extension SimilarTracksSourceL10n on SimilarTracksSource {
+  String toText() => switch (this) {
+    SimilarTracksSource.genre => lang.genre,
+    SimilarTracksSource.style => lang.style,
+    SimilarTracksSource.mood => lang.mood,
+    SimilarTracksSource.tag => lang.tags,
+    SimilarTracksSource.artist => lang.artist,
+    SimilarTracksSource.albumArtist => lang.albumArtist,
+    SimilarTracksSource.composer => lang.composer,
+    SimilarTracksSource.year => lang.year,
+    SimilarTracksSource.language => lang.language,
+    SimilarTracksSource.bpm => 'BPM',
+    SimilarTracksSource.key => lang.musicalKey,
+    SimilarTracksSource.history => lang.history,
+  };
+
+  IconData toIcon() => switch (this) {
+    SimilarTracksSource.genre => MediaType.genre.toIcon(),
+    SimilarTracksSource.style => MediaType.style.toIcon(),
+    SimilarTracksSource.mood => MediaType.mood.toIcon(),
+    SimilarTracksSource.tag => MediaType.tag.toIcon(),
+    SimilarTracksSource.artist => MediaType.artist.toIcon(),
+    SimilarTracksSource.albumArtist => MediaType.albumArtist.toIcon(),
+    SimilarTracksSource.composer => MediaType.composer.toIcon(),
+    SimilarTracksSource.year => Broken.calendar,
+    SimilarTracksSource.language => MediaType.language.toIcon(),
+    SimilarTracksSource.bpm => Broken.alarm,
+    SimilarTracksSource.key => Broken.musicnote,
+    SimilarTracksSource.history => Broken.refresh,
+  };
 }
 
-extension YTHomePagesUils on YTHomePages {
-  String toText() => _NamidaConverters.inst.getTitle(this);
+extension SponsorBlockCategoryExt on SponsorBlockCategory {
+  String toText() => this.name.sponsorCategoryToText();
 }
 
-extension PlaylistAddDuplicateActionUtils on PlaylistAddDuplicateAction {
-  String toText() => _NamidaConverters.inst.getTitle(this);
+extension SponsorBlockCategoryNamesExt on String {
+  String sponsorCategoryToText() => switch (this) {
+    'sponsor' => lang.sponsor,
+    'selfpromo' => lang.selfPromotion,
+    'interaction' => lang.interactionReminder,
+    'poi_highlight' => lang.highlight,
+    'intro' => lang.intro,
+    'outro' => lang.outro,
+    'preview' => lang.preview,
+    'hook' => lang.hook,
+    'filler' => lang.filler,
+    'music_offtopic' => lang.musicOfftopic,
+    _ => '',
+  };
 }
 
-extension YTSeekActionModeUtils on YTSeekActionMode {
-  String toText() => _NamidaConverters.inst.getTitle(this);
-}
+extension SponsorBlockActionExt on SponsorBlockAction {
+  String toText() => switch (this) {
+    SponsorBlockAction.showInSeekbar => lang.showInSeekbar,
+    SponsorBlockAction.showSkipButton => lang.showSkipButton,
+    SponsorBlockAction.autoSkip => lang.autoSkip,
+    SponsorBlockAction.autoSkipOnce => lang.autoSkipOnce,
+    SponsorBlockAction.disabled => lang.disable,
+  };
 
-extension WidgetsPagess on Widget {
-  NamidaRoute toNamidaRoute() {
-    String name = '';
-    RouteType route = RouteType.UNKNOWN;
-    switch (runtimeType) {
-      // ----- Pages -----
-      case TracksPage:
-        route = RouteType.PAGE_allTracks;
-        break;
-      case AlbumsPage:
-        route = RouteType.PAGE_albums;
-        break;
-      case ArtistsPage:
-        route = RouteType.PAGE_artists;
-        break;
-      case GenresPage:
-        route = RouteType.PAGE_genres;
-        break;
-      case PlaylistsPage:
-        route = RouteType.PAGE_playlists;
-        break;
-      case FoldersPage:
-        route = RouteType.PAGE_folders;
-        break;
-      case QueuesPage:
-        route = RouteType.PAGE_queue;
-        break;
-      case AboutPage:
-        route = RouteType.PAGE_about;
-        break;
-
-      // ----- Subpages -----
-      case RecentlyAddedTracksPage:
-        route = RouteType.SUBPAGE_recentlyAddedTracks;
-        break;
-      case AlbumTracksPage:
-        route = RouteType.SUBPAGE_albumTracks;
-        name = (this as AlbumTracksPage).albumIdentifier;
-        break;
-      case ArtistTracksPage:
-        final page = (this as ArtistTracksPage);
-        final type = page.type;
-        route = type == MediaType.albumArtist
-            ? RouteType.SUBPAGE_albumArtistTracks
-            : type == MediaType.composer
-                ? RouteType.SUBPAGE_composerTracks
-                : RouteType.SUBPAGE_artistTracks;
-        name = page.name;
-        break;
-      case GenreTracksPage:
-        route = RouteType.SUBPAGE_genreTracks;
-        name = (this as GenreTracksPage).name;
-        break;
-      case NormalPlaylistTracksPage:
-        route = RouteType.SUBPAGE_playlistTracks;
-        name = (this as NormalPlaylistTracksPage).playlistName;
-        break;
-      case HistoryTracksPage:
-        route = RouteType.SUBPAGE_historyTracks;
-        name = k_PLAYLIST_NAME_HISTORY;
-        break;
-      case MostPlayedTracksPage:
-        route = RouteType.SUBPAGE_mostPlayedTracks;
-        name = k_PLAYLIST_NAME_MOST_PLAYED;
-        break;
-      case QueueTracksPage:
-        route = RouteType.SUBPAGE_queueTracks;
-        name = (this as QueueTracksPage).queue.date.toString();
-        break;
-      case IndexerMissingTracksSubpage:
-        route = RouteType.SUBPAGE_INDEXER_UPDATE_MISSING_TRACKS;
-        break;
-
-      // ----- Search Results -----
-      case AlbumSearchResultsPage:
-        route = RouteType.SEARCH_albumResults;
-        break;
-      case ArtistSearchResultsPage:
-        route = RouteType.SEARCH_artistResults;
-        break;
-
-      // ----- Settings -----
-      case SettingsPage:
-        route = RouteType.SETTINGS_page;
-        break;
-      case SettingsSubPage:
-        route = RouteType.SETTINGS_subpage;
-        name = (this as SettingsSubPage).title;
-        break;
-
-      case YouTubeHomeView:
-        route = RouteType.YOUTUBE_HOME;
-        break;
-      case YoutubePlaylistsView:
-        route = RouteType.YOUTUBE_PLAYLISTS;
-        break;
-      case YTNormalPlaylistSubpage:
-        route = RouteType.YOUTUBE_PLAYLIST_SUBPAGE;
-        name = (this as YTNormalPlaylistSubpage).playlistName;
-        break;
-      case YTHostedPlaylistSubpage:
-        route = RouteType.YOUTUBE_PLAYLIST_SUBPAGE_HOSTED;
-        name = (this as YTHostedPlaylistSubpage).playlist.name ?? '';
-        break;
-      case YTPlaylistDownloadPage:
-        route = RouteType.YOUTUBE_PLAYLIST_DOWNLOAD_SUBPAGE;
-        name = (this as YTPlaylistDownloadPage).playlistName;
-        break;
-      case YoutubeHistoryPage:
-        route = RouteType.YOUTUBE_HISTORY_SUBPAGE;
-        break;
-      case YTMostPlayedVideosPage:
-        route = RouteType.YOUTUBE_MOST_PLAYED_SUBPAGE;
-        break;
-      case YTLikedVideosPage:
-        route = RouteType.YOUTUBE_LIKED_SUBPAGE;
-        break;
-    }
-
-    return NamidaRoute(route, name);
+  IconData toIcon() {
+    return switch (this) {
+      SponsorBlockAction.showInSeekbar => Broken.settings,
+      SponsorBlockAction.showSkipButton => Broken.next,
+      SponsorBlockAction.autoSkip => Broken.forward,
+      SponsorBlockAction.autoSkipOnce => Broken.forward,
+      SponsorBlockAction.disabled => Broken.slash,
+    };
   }
 }
 
 extension RouteUtils on NamidaRoute {
-  /// Mainly used for sending to [generalPopupDialog] and use these tracks to remove from playlist.
-  Iterable<TrackWithDate>? get tracksWithDateInside {
-    switch (route) {
-      case RouteType.SUBPAGE_playlistTracks:
-        return PlaylistController.inst.getPlaylist(name)?.tracks;
-      case RouteType.SUBPAGE_historyTracks:
-        return HistoryController.inst.historyTracks;
+  AlbumIdentifierWrapper? get routeDataAlbumIdentifier => routeData is AlbumIdentifierWrapper ? (routeData as AlbumIdentifierWrapper) : null;
 
-      default:
-        null;
-    }
-    return null;
+  AppDocsLinks? getDocsLink() {
+    final routeData = this.routeData;
+    if (routeData is AppDocsLinks) return routeData;
+
+    return switch (route) {
+      RouteType.SETTINGS_page => AppDocsLinks.SETTINGS,
+      RouteType.PAGE_Sync => AppDocsLinks.SETTINGS_SYNC,
+      RouteType.PAGE_about => AppDocsLinks.BASE,
+      _ => null,
+    };
   }
 
-  List<Selectable> get tracksInside {
-    final tr = <Selectable>[];
-    switch (route) {
-      case RouteType.PAGE_allTracks:
-        tr.addAll(SearchSortController.inst.trackSearchList);
-        break;
-      case RouteType.PAGE_folders:
-        tr.addAll(Folders.inst.currentTracks);
-        break;
-      case RouteType.SUBPAGE_albumTracks:
-        tr.addAll(name.getAlbumTracks());
-        break;
-      case RouteType.SUBPAGE_artistTracks:
-        tr.addAll(name.getArtistTracks());
-        break;
-      case RouteType.SUBPAGE_albumArtistTracks:
-        tr.addAll(name.getAlbumArtistTracks());
-        break;
-      case RouteType.SUBPAGE_composerTracks:
-        tr.addAll(name.getComposerTracks());
-        break;
-      case RouteType.SUBPAGE_genreTracks:
-        tr.addAll(name.getGenresTracks());
-        break;
-      case RouteType.SUBPAGE_queueTracks:
-        tr.addAll(name.getQueue()?.tracks ?? []);
-        break;
-      case RouteType.SUBPAGE_playlistTracks:
-        tr.addAll(PlaylistController.inst.getPlaylist(name)?.tracks ?? []);
-        break;
-      case RouteType.SUBPAGE_historyTracks:
-        tr.addAll(HistoryController.inst.historyTracks);
-        break;
-      case RouteType.SUBPAGE_mostPlayedTracks:
-        tr.addAll(HistoryController.inst.currentMostPlayedTracks);
-        break;
-      case RouteType.SUBPAGE_recentlyAddedTracks:
-        tr.addAll(Indexer.inst.recentlyAddedTracks);
-        break;
+  List<Selectable> tracksListInside() {
+    final iter = tracksInside();
+    return iter is List ? iter as List<Selectable> : iter.toList();
+  }
 
-      default:
-        null;
-    }
-    return tr;
+  List<YoutubeID> videosListInside() {
+    final iter = videosInside();
+    return iter is List ? iter as List<YoutubeID> : iter.toList();
+  }
+
+  bool hasTracksInside() => tracksInside().isNotEmpty;
+  bool hasTracksInsideReactive() => tracksInsideReactive().isNotEmpty;
+
+  QueueSourceBase toQueueSource() {
+    return switch (route) {
+      RouteType.PAGE_allTracks || RouteType.PAGE_allTracks_music || RouteType.PAGE_allTracks_videos => QueueSource.allTracksAll,
+      RouteType.PAGE_folders => QueueSource.folder(name),
+      RouteType.PAGE_folders_music => QueueSource.folderMusic(name),
+      RouteType.PAGE_folders_videos => QueueSource.folderVideos(name),
+      RouteType.SUBPAGE_albumTracks => QueueSource.album(routeDataAlbumIdentifier, name),
+      RouteType.SUBPAGE_artistTracks => QueueSource.artist(name),
+      RouteType.SUBPAGE_albumArtistTracks => QueueSource.albumArtist(name),
+      RouteType.SUBPAGE_composerTracks => QueueSource.composer(name),
+      RouteType.SUBPAGE_genreTracks => QueueSource.genre(name),
+      RouteType.SUBPAGE_styleTracks => QueueSource.style(name),
+      RouteType.SUBPAGE_languageTracks => QueueSource.language(name),
+      RouteType.SUBPAGE_queueTracks => QueueSource.queuePageByName(name),
+      RouteType.SUBPAGE_playlistTracks => QueueSource.playlist(name),
+      RouteType.SUBPAGE_favPlaylistTracks => QueueSource.favourites,
+      RouteType.SUBPAGE_historyTracks => QueueSource.history,
+      RouteType.SUBPAGE_mostPlayedTracks => QueueSource.mostPlayed,
+      RouteType.SUBPAGE_recentlyAddedTracks => QueueSource.recentlyAdded,
+
+      // -- YOUTUBE
+      RouteType.YOUTUBE_HOME || RouteType.YOUTUBE_HOME_SECTION => QueueSourceYoutubeID.ytHomeFeed,
+      RouteType.YOUTUBE_PLAYLIST_SUBPAGE => QueueSourceYoutubeID.ytPlaylist(name),
+      RouteType.YOUTUBE_PLAYLIST_DOWNLOAD_SUBPAGE => QueueSourceYoutubeID.ytDownloadTask,
+      RouteType.YOUTUBE_PLAYLIST_SUBPAGE_HOSTED => QueueSourceYoutubeID.ytPlaylistHosted,
+      RouteType.YOUTUBE_LIKED_SUBPAGE => QueueSourceYoutubeID.ytFavourites,
+      RouteType.YOUTUBE_HISTORY_SUBPAGE => QueueSourceYoutubeID.ytHistory,
+      RouteType.YOUTUBE_MOST_PLAYED_SUBPAGE => QueueSourceYoutubeID.ytMostPlayed,
+      RouteType.YOUTUBE_CHANNEL_SUBPAGE => QueueSourceYoutubeID.ytChannel(name),
+      RouteType.YOUTUBE_HASHTAG_SUBPAGE => QueueSourceYoutubeID.ytHashtag(name),
+      RouteType.YOUTUBE_USER_CHANNELS_PAGE_HOSTED => QueueSourceYoutubeID.ytChannelHosted,
+      RouteType.YOUTUBE_HISTORY_HOSTED_SUBPAGE => QueueSourceYoutubeID.ytHistoryHosted,
+      // -----------
+      _ => QueueSource.others(name),
+    };
+  }
+
+  /// NOTE: any modification done to this will be reflected in the original list.
+  Iterable<Selectable> tracksInside() {
+    return switch (route) {
+          RouteType.PAGE_allTracks || RouteType.PAGE_allTracks_music || RouteType.PAGE_allTracks_videos => SearchSortController.inst.trackSearchList.value,
+          RouteType.PAGE_folders => FoldersController.tracksAndVideos.currentFolderTracksList,
+          RouteType.PAGE_folders_music => FoldersController.tracks.currentFolderTracksList,
+          RouteType.PAGE_folders_videos => FoldersController.videos.currentFolderTracksList,
+          RouteType.SUBPAGE_albumTracks => routeDataAlbumIdentifier?.getAlbumTracks(),
+          RouteType.SUBPAGE_artistTracks => name?.getArtistTracks(),
+          RouteType.SUBPAGE_albumArtistTracks => name?.getAlbumArtistTracks(),
+          RouteType.SUBPAGE_composerTracks => name?.getComposerTracks(),
+          RouteType.SUBPAGE_genreTracks => name?.getGenresTracks(),
+          RouteType.SUBPAGE_styleTracks => name?.getStylesTracks(),
+          RouteType.SUBPAGE_languageTracks => name?.getLanguagesTracks(),
+          RouteType.SUBPAGE_moodsTracks => Indexer.inst.getTracksForMood(name),
+          RouteType.SUBPAGE_tagsTracks => Indexer.inst.getTracksForTag(name),
+          RouteType.SUBPAGE_ratingTracks => Indexer.inst.getTracksForRating(name),
+          RouteType.SUBPAGE_queueTracks => name?.getQueue()?.tracks,
+          RouteType.SUBPAGE_smartPlaylistTracks => SmartPlaylistsController.inst.smartPlaylistsMap.value[name]?.resolve(),
+          RouteType.SUBPAGE_playlistTracks => name == null ? null : PlaylistController.inst.getPlaylist(name!)?.tracks,
+          RouteType.SUBPAGE_favPlaylistTracks => name == null ? null : PlaylistController.inst.favouritesPlaylist.value.tracks,
+          RouteType.SUBPAGE_historyTracks => HistoryController.inst.historyTracks,
+          // RouteType.SUBPAGE_mostPlayedTracks => HistoryController.inst.currentMostPlayedTracks,
+          RouteType.SUBPAGE_recentlyAddedTracks => Indexer.inst.recentlyAddedTracksSorted(),
+          _ => null,
+        } ??
+        [];
+  }
+
+  /// NOTE: only few pages supported based on [QueueSourceYoutubeIDEnum.supportResuming]
+  Iterable<YoutubeID> videosInside() {
+    return switch (route) {
+          RouteType.YOUTUBE_PLAYLIST_SUBPAGE => name == null ? null : ytplc.YoutubePlaylistController.inst.getPlaylist(name!)?.tracks,
+          RouteType.YOUTUBE_LIKED_SUBPAGE => name == null ? null : ytplc.YoutubePlaylistController.inst.favouritesPlaylist.value.tracks,
+          _ => null,
+        } ??
+        [];
+  }
+
+  Iterable<Selectable>? _registerAndReturn(Iterable<Selectable>? trs, void Function() fn) {
+    fn();
+    return trs;
+  }
+
+  Iterable<Selectable> tracksInsideReactive() {
+    return switch (route) {
+          RouteType.PAGE_allTracks || RouteType.PAGE_allTracks_music || RouteType.PAGE_allTracks_videos => SearchSortController.inst.trackSearchList.valueR,
+          RouteType.PAGE_folders => FoldersController.tracksAndVideos.currentFolderTracksList,
+          RouteType.PAGE_folders_music => FoldersController.tracks.currentFolderTracksList,
+          RouteType.PAGE_folders_videos => FoldersController.videos.currentFolderTracksList,
+          RouteType.SUBPAGE_mostPlayedTracks =>
+            HistoryController.inst.currentTopTracksMapListensReactive(HistoryController.inst.currentMostPlayedTimeRange.valueR).valueR.keysSortedByValue,
+          RouteType.SUBPAGE_albumTracks => _registerAndReturn(routeDataAlbumIdentifier?.getAlbumTracks(), () => Indexer.inst.mainMapAlbums.valueR),
+          RouteType.SUBPAGE_artistTracks => _registerAndReturn(name?.getArtistTracks(), () => Indexer.inst.mainMapArtists.valueR),
+          RouteType.SUBPAGE_albumArtistTracks => _registerAndReturn(name?.getAlbumArtistTracks(), () => Indexer.inst.mainMapAlbumArtists.valueR),
+          RouteType.SUBPAGE_composerTracks => _registerAndReturn(name?.getComposerTracks(), () => Indexer.inst.mainMapComposer.valueR),
+          RouteType.SUBPAGE_genreTracks => _registerAndReturn(name?.getGenresTracks(), () => Indexer.inst.mainMapGenres.valueR),
+          RouteType.SUBPAGE_styleTracks => _registerAndReturn(name?.getStylesTracks(), () => Indexer.inst.mainMapStyles.valueR),
+          RouteType.SUBPAGE_languageTracks => _registerAndReturn(name?.getLanguagesTracks(), () => Indexer.inst.mainMapLanguages.valueR),
+
+          RouteType.SUBPAGE_moodsTracks => _registerAndReturn(
+            Indexer.inst.getTracksForMood(name),
+            () {
+              Indexer.inst.tracksInfoList.valueR;
+              Indexer.inst.trackStatsMap.valueR;
+            },
+          ),
+          RouteType.SUBPAGE_tagsTracks => _registerAndReturn(
+            Indexer.inst.getTracksForTag(name),
+            () {
+              Indexer.inst.tracksInfoList.valueR;
+              Indexer.inst.trackStatsMap.valueR;
+            },
+          ),
+          RouteType.SUBPAGE_ratingTracks => _registerAndReturn(
+            Indexer.inst.getTracksForRating(name),
+            () {
+              Indexer.inst.tracksInfoList.valueR;
+              Indexer.inst.trackStatsMap.valueR;
+            },
+          ),
+          RouteType.SUBPAGE_queueTracks => _registerAndReturn(name?.getQueue()?.tracks, () => QueueController.inst.queuesMap.valueR),
+          RouteType.SUBPAGE_smartPlaylistTracks => SmartPlaylistsController.inst.smartPlaylistsMap.valueR[name]?.resolve(),
+          RouteType.SUBPAGE_playlistTracks =>
+            name == null ? null : _registerAndReturn(PlaylistController.inst.getPlaylist(name!)?.tracks, () => PlaylistController.inst.playlistsMap.valueR),
+          RouteType.SUBPAGE_favPlaylistTracks => name == null ? null : PlaylistController.inst.favouritesPlaylist.valueR.tracks,
+          RouteType.SUBPAGE_historyTracks => HistoryController.inst.historyTracksR,
+          // RouteType.SUBPAGE_mostPlayedTracks => HistoryController.inst.currentMostPlayedTracks,
+          RouteType.SUBPAGE_recentlyAddedTracks => _registerAndReturn(Indexer.inst.recentlyAddedTracksSorted(), () => Indexer.inst.tracksInfoList.valueR),
+          _ => null,
+        } ??
+        [];
   }
 
   /// Currently Supports only [RouteType.SUBPAGE_albumTracks], [RouteType.SUBPAGE_artistTracks],
   /// [RouteType.SUBPAGE_albumArtistTracks] & [RouteType.SUBPAGE_composerTracks].
   Track? get trackOfColor {
-    if (route == RouteType.SUBPAGE_albumTracks) return name.getAlbumTracks().trackOfImage;
+    final name = this.name;
+    if (name == null) return null;
+    if (route == RouteType.SUBPAGE_albumTracks) return routeDataAlbumIdentifier?.getAlbumTracks().trackOfImage;
     if (route == RouteType.SUBPAGE_artistTracks) return name.getArtistTracks().trackOfImage;
     if (route == RouteType.SUBPAGE_albumArtistTracks) return name.getAlbumArtistTracks().trackOfImage;
     if (route == RouteType.SUBPAGE_composerTracks) return name.getComposerTracks().trackOfImage;
+    return null;
+  }
+
+  NetworkArtworkInfo? get getNetworkArtworkInfo {
+    final name = this.name;
+    if (name == null) return null;
+    if (route == RouteType.SUBPAGE_albumTracks) {
+      final identifier = routeDataAlbumIdentifier;
+      if (identifier == null) return null;
+      return NetworkArtworkInfo.albumAutoArtist(identifier);
+    }
+    if (route == RouteType.SUBPAGE_artistTracks) return NetworkArtworkInfo.artist(name);
+    if (route == RouteType.SUBPAGE_albumArtistTracks) return NetworkArtworkInfo.artist(name);
+    if (route == RouteType.SUBPAGE_composerTracks) return NetworkArtworkInfo.artist(name);
     return null;
   }
 
@@ -893,90 +1481,126 @@ extension RouteUtils on NamidaRoute {
 
     Color? color;
     final trackToExtractFrom = trackOfColor;
-    if (trackToExtractFrom != null) {
-      color = await CurrentColor.inst.getTrackDelightnedColor(trackToExtractFrom, useIsolate: true);
+    final networkArtworkInfo = getNetworkArtworkInfo;
+    if (trackToExtractFrom != null || networkArtworkInfo != null) {
+      color = await CurrentColor.inst.getTrackDelightnedColor(trackToExtractFrom ?? kDummyTrack, networkArtworkInfo);
     }
     CurrentColor.inst.updateCurrentColorSchemeOfSubPages(color);
   }
 
   Widget? toTitle(BuildContext context) {
-    Widget getTextWidget(String t) => Text(t, style: context.textTheme.titleLarge);
+    final textTheme = context.textTheme;
+    Widget getTextWidget(String t) => Text(t, style: textTheme.titleLarge);
     Widget? finalWidget;
+    bool displaySettingSearch = false;
     switch (route) {
       case RouteType.SETTINGS_page:
-        finalWidget = getTextWidget(lang.SETTINGS);
+        displaySettingSearch = true;
+        finalWidget = getTextWidget(lang.settings);
         break;
-      case RouteType.SETTINGS_subpage:
-        finalWidget = getTextWidget(name);
+      case RouteType.SETTINGS_subpage || RouteType.PAGE_Sync:
+        displaySettingSearch = true;
+        finalWidget = getTextWidget(name ?? '');
         break;
-      case RouteType.SEARCH_albumResults:
-        finalWidget = getTextWidget(lang.ALBUMS);
+      case RouteType.SEARCH_albumResults || RouteType.SEARCH_albumCustomResults:
+        finalWidget = getTextWidget(lang.albums);
         break;
       case RouteType.SEARCH_artistResults:
-        finalWidget = getTextWidget(lang.ARTISTS);
+        finalWidget = getTextWidget(lang.artists);
         break;
       case RouteType.PAGE_queue:
-        finalWidget = Obx(() => getTextWidget("${lang.QUEUES} • ${QueueController.inst.queuesMap.value.length}"));
+        finalWidget = ObxO(
+          rx: QueueController.inst.totalQueuesCount,
+          builder: (context, count) => getTextWidget("${lang.queues} • $count"),
+        );
+        break;
+      case RouteType.PAGE_smartPlaylists:
+        finalWidget = ObxO(
+          rx: SmartPlaylistsController.inst.smartPlaylistsMap,
+          builder: (context, spmap) => getTextWidget("${lang.smartPlaylists} • ${spmap.length}"),
+        );
+        break;
+      case RouteType.PAGE_discover:
+        finalWidget = getTextWidget(lang.discover);
+        break;
+      case RouteType.PAGE_artistsMap:
+        finalWidget = getTextWidget(lang.artistsMap);
+        break;
+      case RouteType.PAGE_party:
+        finalWidget = getTextWidget(lang.partyListeningParty);
         break;
       default:
         null;
     }
 
-    return AnimatedSwitcher(
+    return CustomAnimatedSwitcher(
+      alignment: AlignmentDirectional.centerStart,
       duration: const Duration(milliseconds: 400),
-      child: (route == RouteType.SETTINGS_page || route == RouteType.SETTINGS_subpage)
+      child:
+          displaySettingSearch //
           ? NamidaSettingSearchBar(closedChild: finalWidget)
           : finalWidget ?? ScrollSearchController.inst.searchBarWidget,
     );
   }
 
-  List<Widget> toActions() {
-    Widget getMoreIcon(void Function()? onPressed) {
-      return NamidaAppBarIcon(
-        icon: Broken.more_2,
-        onPressed: onPressed,
-      );
-    }
+  Widget _getMoreIcon(void Function()? onPressed) {
+    return NamidaAppBarIcon(
+      icon: Broken.more_2,
+      onPressed: onPressed,
+    );
+  }
 
-    Widget getAnimatedCrossFade({required Widget child, required bool shouldShow}) {
-      return child.animateEntrance(
-        showWhen: shouldShow,
-        durationMS: 400,
-        sizeCurve: Curves.easeOut,
-        firstCurve: Curves.easeInOutQuart,
-        secondCurve: Curves.easeInOutQuart,
-      );
-    }
+  Widget _getAnimatedCrossFade({required Widget child, required bool shouldShow}) {
+    return AnimatedShow(
+      show: shouldShow,
+      isHorizontal: true,
+      curve: Curves.fastEaseInToSlowEaseOut,
+      duration: Duration(milliseconds: 400),
+      child: child,
+    );
+  }
 
-    final shouldShowInitialActions = route != RouteType.PAGE_stats && route != RouteType.SETTINGS_page && route != RouteType.SETTINGS_subpage;
-    final shouldShowJsonParse = route != RouteType.SETTINGS_page && route != RouteType.SETTINGS_subpage;
+  List<Widget> toActions({required bool isInnerPage}) {
+    final shouldShowProgressPercentage = route != RouteType.SETTINGS_page && route != RouteType.SETTINGS_subpage;
+    const shouldShowMissingServerDirAuth = true;
 
-    final queue = route == RouteType.SUBPAGE_queueTracks ? name.getQueue() : null;
+    final name = this.name;
 
-    MediaType? sortingTracksMediaType;
-    switch (route) {
-      case RouteType.SUBPAGE_albumTracks:
-        sortingTracksMediaType = MediaType.album;
-        break;
-      case RouteType.SUBPAGE_artistTracks:
-      case RouteType.SUBPAGE_albumArtistTracks:
-      case RouteType.SUBPAGE_composerTracks:
-        sortingTracksMediaType = MediaType.artist;
-        break;
-      case RouteType.SUBPAGE_genreTracks:
-        sortingTracksMediaType = MediaType.genre;
-        break;
-      // -- sorting icon is displayed in folder page itself
-      // case RouteType.PAGE_folders:
-      //   sortingTracksMediaType = MediaType.folder;
-      //   break;
+    final queue = route == RouteType.SUBPAGE_queueTracks ? name?.getQueue() : null;
 
-      default:
-        null;
-    }
+    final showMainMenu =
+        route == RouteType.SUBPAGE_albumTracks ||
+        route == RouteType.SUBPAGE_artistTracks ||
+        route == RouteType.SUBPAGE_albumArtistTracks ||
+        route == RouteType.SUBPAGE_composerTracks ||
+        route == RouteType.SUBPAGE_genreTracks ||
+        route == RouteType.SUBPAGE_styleTracks ||
+        route == RouteType.SUBPAGE_languageTracks ||
+        route == RouteType.SUBPAGE_moodsTracks ||
+        route == RouteType.SUBPAGE_tagsTracks ||
+        route == RouteType.SUBPAGE_ratingTracks ||
+        route == RouteType.SUBPAGE_queueTracks ||
+        route == RouteType.SUBPAGE_smartPlaylistTracks;
+
+    final showPlaylistMenu =
+        route == RouteType.SUBPAGE_playlistTracks ||
+        route == RouteType.SUBPAGE_favPlaylistTracks ||
+        route == RouteType.SUBPAGE_historyTracks ||
+        route == RouteType.SUBPAGE_mostPlayedTracks;
+
+    final shouldShowSettingsIcon =
+        !showMainMenu && //
+        !showPlaylistMenu &&
+        !route.isOpenableFromSettings &&
+        route != RouteType.PAGE_stats &&
+        route != RouteType.PAGE_yourYear;
+
+    final docsLink = this.getDocsLink();
 
     return <Widget>[
-      getAnimatedCrossFade(
+      const SizedBox(width: 2.0),
+
+      _getAnimatedCrossFade(
         child: NamidaAppBarIcon(
           icon: Broken.trush_square,
           onPressed: () => NamidaOnTaps.inst.onQueuesClearIconTap(),
@@ -984,25 +1608,16 @@ extension RouteUtils on NamidaRoute {
         shouldShow: route == RouteType.PAGE_queue,
       ),
 
-      // -- Stats Icon
-      getAnimatedCrossFade(
-          child: NamidaAppBarIcon(
-            icon: Broken.chart_21,
-            onPressed: () {
-              NamidaNavigator.inst.navigateTo(
-                SettingsSubPage(
-                  title: lang.STATS,
-                  child: const StatsSection(),
-                ),
-              );
-            },
-          ),
-          shouldShow: shouldShowInitialActions),
-
       // -- Parsing Json Icon
-      getAnimatedCrossFade(child: const ParsingJsonPercentage(size: 30.0), shouldShow: shouldShowJsonParse),
+      _getAnimatedCrossFade(child: const ParsingJsonPercentage(size: 30.0, hero: false), shouldShow: shouldShowProgressPercentage),
 
-      getAnimatedCrossFade(
+      // -- Indexer Icon
+      _getAnimatedCrossFade(child: const IndexingPercentage(size: 30.0, hero: false), shouldShow: shouldShowProgressPercentage),
+
+      // -- Videos Icon
+      _getAnimatedCrossFade(child: const VideosExtractingPercentage(size: 30.0, hero: false), shouldShow: shouldShowProgressPercentage),
+
+      _getAnimatedCrossFade(
         child: NamidaAppBarIcon(
           icon: Broken.activity,
           onPressed: () => JsonToHistoryParser.inst.showMissingEntriesDialog(),
@@ -1010,38 +1625,137 @@ extension RouteUtils on NamidaRoute {
         shouldShow: JsonToHistoryParser.inst.shouldShowMissingEntriesDialog,
       ),
 
-      // -- Settings Icon
-      getAnimatedCrossFade(
-        child: NamidaAppBarIcon(
-          icon: Broken.setting_2,
-          onPressed: () => NamidaNavigator.inst.navigateTo(const SettingsPage()),
+      _getAnimatedCrossFade(
+        child: ObxO(
+          rx: MusicWebServerAuthDetails.manager.hasMissingAuthRx,
+          builder: (context, missingAuth) => missingAuth
+              ? NamidaAppBarIcon(
+                  icon: Broken.danger,
+                  onPressed: MusicWebServerAuthDetails.manager.promptFillMissingAuthDialog,
+                )
+              : const SizedBox(),
         ),
-        shouldShow: shouldShowInitialActions,
+        shouldShow: shouldShowMissingServerDirAuth,
       ),
 
-      getAnimatedCrossFade(
+      ObxO(
+        rx: PartyController.inst.isActive,
+        builder: (context, isActive) => _getAnimatedCrossFade(
+          child: NamidaAppBarIcon(
+            icon: Broken.people,
+            tooltip: () => lang.partyListeningParty,
+            onPressed: const NamidaPartyPage().navigate,
+          ),
+          shouldShow: isActive && route != RouteType.PAGE_party,
+        ),
+      ),
+
+      ObxO(
+        rx: VersionController.inst.latestVersion,
+        builder: (context, value) => _getAnimatedCrossFade(
+          child: const NamidaUpdateButton(),
+          shouldShow: !showMainMenu && (value?.isUpdate() ?? false),
+        ),
+      ),
+
+      _getAnimatedCrossFade(
         child: NamidaRawLikeButton(
           padding: const EdgeInsets.symmetric(horizontal: 3.0),
           isLiked: queue?.isFav,
+          removeConfirmationAction: lang.removeFromFavourites,
           onTap: (isLiked) async => await QueueController.inst.toggleFavButton(queue!),
         ),
         shouldShow: queue != null,
       ),
-      getAnimatedCrossFade(
+
+      _getAnimatedCrossFade(
         child: NamidaAppBarIcon(
           icon: Broken.sort,
           onPressed: () {
-            NamidaOnTaps.inst.onSubPageTracksSortIconTap(sortingTracksMediaType!);
+            NamidaOnTaps.inst.onPlaylistSubPageTracksSortIconTap(
+              name ?? '',
+              ytplc.YoutubePlaylistController.inst,
+              YTSortType.values,
+              (sort) => sort.toText(),
+              (sort) => sort.toIcon(),
+            );
           },
         ),
-        shouldShow: sortingTracksMediaType != null,
+        shouldShow: route == RouteType.YOUTUBE_PLAYLIST_SUBPAGE || route == RouteType.YOUTUBE_LIKED_SUBPAGE,
       ),
 
-      getAnimatedCrossFade(
-        child: getMoreIcon(() {
+      _getAnimatedCrossFade(
+        child: HistoryJumpToDayIcon(
+          considerInfoBoxPadding: true,
+          controller: HistoryController.inst,
+          itemExtentAndDayHeaderExtent: () => (
+            itemExtent: Dimensions.inst.trackTileItemExtent,
+            dayHeaderExtent: kHistoryDayHeaderHeightWithPadding,
+          ),
+        ),
+        shouldShow: route == RouteType.SUBPAGE_historyTracks,
+      ),
+
+      _getAnimatedCrossFade(
+        child: HistoryJumpToDayIcon(
+          considerInfoBoxPadding: false,
+          controller: YoutubeHistoryController.inst,
+          itemExtentAndDayHeaderExtent: () => (
+            itemExtent: Dimensions.youtubeCardItemExtent,
+            dayHeaderExtent: kYoutubeHistoryDayHeaderHeightWithPadding,
+          ),
+        ),
+        shouldShow: route == RouteType.YOUTUBE_HISTORY_SUBPAGE,
+      ),
+
+      _getAnimatedCrossFade(
+        child: NamidaAppBarIcon(
+          icon: Broken.gallery_export,
+          tooltip: () => lang.share,
+          onPressed: StatsController.inst.shareAll,
+        ),
+        shouldShow: route == RouteType.PAGE_stats || route == RouteType.PAGE_yourYear,
+      ),
+
+      // ---- Playlist Tracks ----
+      _getAnimatedCrossFade(
+        child: EnableDisablePlaylistReordering(
+          playlistName: name ?? '',
+          playlistManager: PlaylistController.inst,
+        ),
+        shouldShow: route == RouteType.SUBPAGE_playlistTracks || route == RouteType.SUBPAGE_favPlaylistTracks,
+      ),
+
+      _getAnimatedCrossFade(
+        child: EnableDisablePlaylistReordering(
+          playlistName: name ?? '',
+          playlistManager: ytplc.YoutubePlaylistController.inst,
+        ),
+        shouldShow: route == RouteType.YOUTUBE_PLAYLIST_SUBPAGE || route == RouteType.YOUTUBE_LIKED_SUBPAGE,
+      ),
+
+      _getAnimatedCrossFade(
+        child: NamidaAppBarIcon(
+          icon: Broken.map,
+          tooltip: () => lang.artistsMap,
+          onPressed: () {
+            final type = switch (route) {
+              RouteType.SUBPAGE_albumArtistTracks => MediaType.albumArtist,
+              RouteType.SUBPAGE_composerTracks => MediaType.composer,
+              _ => MediaType.artist,
+            };
+            ArtistsMapPage(type: type, focusArtist: name).navigate();
+          },
+        ),
+        shouldShow: route == RouteType.SUBPAGE_artistTracks || route == RouteType.SUBPAGE_albumArtistTracks || route == RouteType.SUBPAGE_composerTracks,
+      ),
+
+      _getAnimatedCrossFade(
+        child: _getMoreIcon(() {
+          if (name == null) return;
           switch (route) {
             case RouteType.SUBPAGE_albumTracks:
-              NamidaDialogs.inst.showAlbumDialog(name);
+              NamidaDialogs.inst.showAlbumDialog(routeDataAlbumIdentifier);
               break;
             case RouteType.SUBPAGE_artistTracks:
               NamidaDialogs.inst.showArtistDialog(name, MediaType.artist);
@@ -1053,115 +1767,121 @@ extension RouteUtils on NamidaRoute {
               NamidaDialogs.inst.showArtistDialog(name, MediaType.composer);
               break;
             case RouteType.SUBPAGE_genreTracks:
-              NamidaDialogs.inst.showGenreDialog(name);
+              NamidaDialogs.inst.showGenreDialog(name, MediaType.genre);
+              break;
+            case RouteType.SUBPAGE_styleTracks:
+              NamidaDialogs.inst.showGenreDialog(name, MediaType.style);
+              break;
+            case RouteType.SUBPAGE_languageTracks:
+              NamidaDialogs.inst.showGenreDialog(name, MediaType.language);
+              break;
+            case RouteType.SUBPAGE_moodsTracks:
+              NamidaDialogs.inst.showMoodDialog(name, tracksListInside().whereType<Track>().toList());
+              break;
+            case RouteType.SUBPAGE_tagsTracks:
+              NamidaDialogs.inst.showTagDialog(name, tracksListInside().whereType<Track>().toList());
+              break;
+            case RouteType.SUBPAGE_ratingTracks:
+              NamidaDialogs.inst.showRatingDialog(name, tracksListInside().whereType<Track>().toList());
               break;
             case RouteType.SUBPAGE_queueTracks:
               NamidaDialogs.inst.showQueueDialog(int.parse(name));
+              break;
+            case RouteType.SUBPAGE_smartPlaylistTracks:
+              NamidaDialogs.inst.showSmartPlaylistDialog(SmartPlaylistsController.inst.getPlaylistForKey(name));
               break;
 
             default:
               null;
           }
         }),
-        shouldShow: route == RouteType.SUBPAGE_albumTracks ||
-            route == RouteType.SUBPAGE_artistTracks ||
-            route == RouteType.SUBPAGE_albumArtistTracks ||
-            route == RouteType.SUBPAGE_composerTracks ||
-            route == RouteType.SUBPAGE_genreTracks ||
-            route == RouteType.SUBPAGE_queueTracks,
+        shouldShow: showMainMenu && name != null,
       ),
 
-      getAnimatedCrossFade(child: HistoryJumpToDayIcon(controller: HistoryController.inst), shouldShow: route == RouteType.SUBPAGE_historyTracks),
-
-      getAnimatedCrossFade(child: HistoryJumpToDayIcon(controller: YoutubeHistoryController.inst), shouldShow: route == RouteType.YOUTUBE_HISTORY_SUBPAGE),
-
-      // ---- Playlist Tracks ----
-      getAnimatedCrossFade(
-        child: Obx(
-          () {
-            final reorderable = PlaylistController.inst.canReorderTracks.value;
-            return NamidaAppBarIcon(
-              tooltip: reorderable ? lang.DISABLE_REORDERING : lang.ENABLE_REORDERING,
-              icon: reorderable ? Broken.forward_item : Broken.lock_1,
-              onPressed: () => PlaylistController.inst.canReorderTracks.value = !PlaylistController.inst.canReorderTracks.value,
-            );
-          },
-        ),
-        shouldShow: route == RouteType.SUBPAGE_playlistTracks,
-      ),
-      getAnimatedCrossFade(
-        child: getMoreIcon(() {
+      _getAnimatedCrossFade(
+        child: _getMoreIcon(() {
+          if (name == null) return;
           NamidaDialogs.inst.showPlaylistDialog(name);
         }),
-        shouldShow: route == RouteType.SUBPAGE_playlistTracks || route == RouteType.SUBPAGE_historyTracks || route == RouteType.SUBPAGE_mostPlayedTracks,
+        shouldShow: showPlaylistMenu && name != null,
       ),
 
-      getAnimatedCrossFade(
-        child: Obx(
-          () {
-            final reorderable = ytplc.YoutubePlaylistController.inst.canReorderVideos.value;
-            return NamidaAppBarIcon(
-              tooltip: reorderable ? lang.DISABLE_REORDERING : lang.ENABLE_REORDERING,
-              icon: reorderable ? Broken.forward_item : Broken.lock_1,
-              onPressed: () => ytplc.YoutubePlaylistController.inst.canReorderVideos.value = !ytplc.YoutubePlaylistController.inst.canReorderVideos.value,
-            );
-          },
+      _getAnimatedCrossFade(
+        child: NamidaAppBarIcon(
+          icon: Broken.message_question,
+          tooltip: () => lang.guide,
+          onPressed: docsLink?.launch,
         ),
-        shouldShow: route == RouteType.YOUTUBE_PLAYLIST_SUBPAGE,
+        shouldShow: docsLink != null,
       ),
+
+      // if (kDebugMode) const SnackbarTestAppBarIcon(),
+
+      // -- Settings Icon
+      _getAnimatedCrossFade(
+        child: AnimatedRotation(
+          duration: const Duration(milliseconds: 300),
+          turns: shouldShowSettingsIcon ? 0.0 : 0.25,
+          curve: Curves.easeOutQuart,
+          child: NamidaAppBarIcon(
+            icon: Broken.setting_2,
+            onPressed: const SettingsPage().navigate,
+            child: const SyncStatusIconWrapper(
+              icon: Broken.setting_2,
+              showDisconnectedDot: false,
+            ),
+          ),
+        ),
+        shouldShow: shouldShowSettingsIcon,
+      ),
+
       const SizedBox(width: 8.0),
     ];
   }
+}
 
-  LibraryTab? toLibraryTab() {
-    LibraryTab? tab;
-    switch (route) {
-      case RouteType.PAGE_allTracks:
-        tab = LibraryTab.tracks;
-        break;
-      case RouteType.PAGE_albums:
-        tab = LibraryTab.albums;
-        break;
-      case RouteType.PAGE_artists:
-        tab = LibraryTab.artists;
-        break;
-      case RouteType.PAGE_genres:
-        tab = LibraryTab.genres;
-        break;
-      case RouteType.PAGE_folders:
-        tab = LibraryTab.folders;
-        break;
-      case RouteType.PAGE_playlists:
-        tab = LibraryTab.playlists;
-        break;
-      case RouteType.PAGE_HOME:
-        tab = LibraryTab.home;
-      case RouteType.YOUTUBE_HOME:
-        tab = LibraryTab.youtube;
-        break;
-      default:
-        null;
+extension AlbumsFromMaps on AlbumIdentifierWrapper {
+  List<Track> getAlbumTracks() => Indexer.inst.mainMapAlbums.value[this.modifiedOnly()] ?? [];
+  bool isSingle() => getAlbumType() == AlbumType.single;
+
+  AlbumType getAlbumType() {
+    final tracks = getAlbumTracks();
+    final leadingTrack = tracks.firstOrNull;
+    if (leadingTrack == null) return AlbumType.normal;
+    final releaseType = leadingTrack.releaseType;
+    if (releaseType.isNotEmpty) return _albumTypeOfReleaseType(releaseType);
+    if (tracks.length == 1) {
+      final isAlbum = leadingTrack.trackTo > 1 || leadingTrack.trackNo > 1;
+      if (!isAlbum) return AlbumType.single;
     }
-    return tab;
+    return AlbumType.normal;
+  }
+
+  /// primary type comes first, ex: `single; live`.
+  static AlbumType _albumTypeOfReleaseType(String releaseType) {
+    final releaseTypeLower = releaseType.toLowerCase();
+    if (releaseTypeLower.startsWith('single')) return AlbumType.single;
+    if (releaseTypeLower.startsWith('ep')) return AlbumType.ep;
+    return AlbumType.normal;
   }
 }
 
 extension TracksFromMaps on String {
-  List<Track> getAlbumTracks() => Indexer.inst.mainMapAlbums.value[this] ?? [];
-
   List<Track> getArtistTracks() => Indexer.inst.mainMapArtists.value[this] ?? [];
+
   List<Track> getArtistTracksFor(MediaType type) {
-    return switch (type) {
-      MediaType.artist => Indexer.inst.mainMapArtists.value[this] ?? [],
-      MediaType.albumArtist => Indexer.inst.mainMapAlbumArtists.value[this] ?? [],
-      MediaType.composer => Indexer.inst.mainMapComposer.value[this] ?? [],
-      _ => Indexer.inst.mainMapArtists.value[this] ?? [],
-    };
+    return Indexer.inst.getArtistMapFor(type).value[this] ?? [];
   }
 
   List<Track> getAlbumArtistTracks() => Indexer.inst.mainMapAlbumArtists.value[this] ?? [];
   List<Track> getComposerTracks() => Indexer.inst.mainMapComposer.value[this] ?? [];
   List<Track> getGenresTracks() => Indexer.inst.mainMapGenres.value[this] ?? [];
+  List<Track> getStylesTracks() => Indexer.inst.mainMapStyles.value[this] ?? [];
+  List<Track> getLanguagesTracks() => Indexer.inst.mainMapLanguages.value[this] ?? [];
+
+  List<Track> getGenresTracksFor(MediaType type) {
+    return Indexer.inst.getGenreMapFor(type).value[this] ?? [];
+  }
 
   Queue? getQueue() => QueueController.inst.queuesMap.value[int.tryParse(this)];
 }
@@ -1170,494 +1890,1404 @@ extension QueueFromMap on int {
   Queue? getQueue() => QueueController.inst.queuesMap.value[this];
 }
 
-extension TrackTileItemExtentExt on Iterable {
-  List<double>? toTrackItemExtents() => length == 0 ? null : List.filled(length, Dimensions.inst.trackTileItemExtent);
-}
-
 extension ThemeDefaultColors on BuildContext {
   Color defaultIconColor([Color? mainColor, Color? secondaryColor]) => Color.alphaBlend(
-        (mainColor ?? CurrentColor.inst.color).withAlpha(120),
-        secondaryColor ?? theme.colorScheme.onBackground,
-      );
-}
-
-extension InterruptionMediaUtils on InterruptionType {
-  String toText() => _NamidaConverters.inst.getTitle(this);
-  String? toSubtitle() => _NamidaConverters.inst.getSubtitle(this);
-  IconData toIcon() => _NamidaConverters.inst.getIcon(this);
-}
-
-extension InterruptionActionUtils on InterruptionAction {
-  String toText() => _NamidaConverters.inst.getTitle(this);
-  IconData toIcon() => _NamidaConverters.inst.getIcon(this);
-}
-
-extension MostPlayedTimeRangeUtils on MostPlayedTimeRange {
-  String toText() => _NamidaConverters.inst.getTitle(this);
-}
-
-extension NamidaLanguageRefresher on NamidaLanguage {
-  void refreshConverterMaps() => _NamidaConverters.inst.refillMaps();
-}
-
-extension LanguageUtils on Language {
-  String getMinimumItemSubtitle([int minimum = 1]) => lang.MINIMUM_ONE_ITEM_SUBTITLE.replaceFirst('_NUM_', '$minimum');
+    (mainColor ?? CurrentColor.inst.color).withAlpha(120),
+    secondaryColor ?? theme.colorScheme.onSurface,
+  );
 }
 
 void showMinimumItemsSnack([int minimum = 1]) {
-  snackyy(title: lang.MINIMUM_ONE_ITEM, message: lang.getMinimumItemSubtitle(minimum));
+  snackyy(
+    title: lang.minimumOneItem,
+    message: lang.minimumOneItemSubtitle(number: minimum),
+  );
 }
 
-class _NamidaConverters {
-  static _NamidaConverters get inst => _instance;
-  static final _NamidaConverters _instance = _NamidaConverters._internal();
-  _NamidaConverters._internal() {
-    refillMaps();
-  }
+extension InterruptionActionL10n on InterruptionAction {
+  String toText() => switch (this) {
+    InterruptionAction.doNothing => lang.doNothing,
+    InterruptionAction.duckAudio => lang.duckAudio,
+    InterruptionAction.pause => lang.pausePlayback,
+  };
 
-  void refillMaps() {
-    // =================================================
-    // ====================== Title ====================
-    // =================================================
-    _toTitle = <Type, Map<Enum, String>>{
-      InterruptionAction: {
-        InterruptionAction.doNothing: lang.DO_NOTHING,
-        InterruptionAction.duckAudio: lang.DUCK_AUDIO,
-        InterruptionAction.pause: lang.PAUSE_PLAYBACK,
-      },
-      InterruptionType: {
-        InterruptionType.shouldPause: lang.SHOULD_PAUSE,
-        InterruptionType.shouldDuck: lang.SHOULD_DUCK,
-        InterruptionType.unknown: lang.OTHERS,
-      },
-      RepeatMode: {
-        RepeatMode.none: lang.REPEAT_MODE_NONE,
-        RepeatMode.one: lang.REPEAT_MODE_ONE,
-        RepeatMode.all: lang.REPEAT_MODE_ALL,
-        RepeatMode.forNtimes: lang.REPEAT_FOR_N_TIMES,
-      },
-      LibraryTab: {
-        LibraryTab.albums: lang.ALBUMS,
-        LibraryTab.tracks: lang.TRACKS,
-        LibraryTab.artists: lang.ARTISTS,
-        LibraryTab.genres: lang.GENRES,
-        LibraryTab.playlists: lang.PLAYLISTS,
-        LibraryTab.folders: lang.FOLDERS,
-        LibraryTab.home: lang.HOME,
-        LibraryTab.search: lang.SEARCH,
-        LibraryTab.youtube: lang.YOUTUBE,
-      },
-      MediaType: {
-        MediaType.album: lang.ALBUMS,
-        MediaType.track: lang.TRACKS,
-        MediaType.artist: lang.ARTISTS,
-        MediaType.albumArtist: lang.ALBUM_ARTISTS,
-        MediaType.composer: lang.COMPOSER,
-        MediaType.genre: lang.GENRES,
-        MediaType.playlist: lang.PLAYLISTS,
-        MediaType.folder: lang.FOLDERS,
-      },
-      AlbumIdentifier: {
-        AlbumIdentifier.albumName: lang.NAME,
-        AlbumIdentifier.albumArtist: lang.ALBUM_ARTIST,
-        AlbumIdentifier.year: lang.YEAR,
-      },
-      SortType: {
-        SortType.title: lang.TITLE,
-        SortType.album: lang.ALBUM,
-        SortType.albumArtist: lang.ALBUM_ARTIST,
-        SortType.artistsList: lang.ARTISTS,
-        SortType.bitrate: lang.BITRATE,
-        SortType.composer: lang.COMPOSER,
-        SortType.dateAdded: lang.DATE_ADDED,
-        SortType.dateModified: lang.DATE_MODIFIED,
-        SortType.discNo: lang.DISC_NUMBER,
-        SortType.trackNo: lang.TRACK_NUMBER,
-        SortType.filename: lang.FILE_NAME,
-        SortType.duration: lang.DURATION,
-        SortType.genresList: lang.GENRES,
-        SortType.sampleRate: lang.SAMPLE_RATE,
-        SortType.size: lang.SIZE,
-        SortType.year: lang.YEAR,
-        SortType.rating: lang.RATING,
-        SortType.shuffle: lang.SHUFFLE,
-        SortType.mostPlayed: lang.MOST_PLAYED,
-        SortType.latestPlayed: lang.RECENT_LISTENS,
-      },
-      GroupSortType: {
-        GroupSortType.title: lang.TITLE,
-        GroupSortType.album: lang.ALBUM,
-        GroupSortType.albumArtist: lang.ALBUM_ARTIST,
-        GroupSortType.artistsList: lang.ARTIST,
-        GroupSortType.genresList: lang.GENRES,
-        GroupSortType.composer: lang.COMPOSER,
-        GroupSortType.dateModified: lang.DATE_MODIFIED,
-        GroupSortType.duration: lang.DURATION,
-        GroupSortType.numberOfTracks: lang.NUMBER_OF_TRACKS,
-        GroupSortType.albumsCount: lang.ALBUMS_COUNT,
-        GroupSortType.year: lang.YEAR,
-        GroupSortType.creationDate: lang.DATE_CREATED,
-        GroupSortType.modifiedDate: lang.DATE_MODIFIED,
-        GroupSortType.shuffle: lang.SHUFFLE,
-      },
-      TrackTileItem: {
-        TrackTileItem.none: lang.NONE,
-        TrackTileItem.title: lang.TITLE,
-        TrackTileItem.artists: lang.ARTISTS,
-        TrackTileItem.album: lang.ALBUM,
-        TrackTileItem.albumArtist: lang.ALBUM_ARTIST,
-        TrackTileItem.genres: lang.GENRES,
-        TrackTileItem.composer: lang.COMPOSER,
-        TrackTileItem.year: lang.YEAR,
-        TrackTileItem.bitrate: lang.BITRATE,
-        TrackTileItem.channels: lang.CHANNELS,
-        TrackTileItem.comment: lang.COMMENT,
-        TrackTileItem.dateAdded: lang.DATE_ADDED,
-        TrackTileItem.dateModified: lang.DATE_MODIFIED,
-        TrackTileItem.dateModifiedClock: "${lang.DATE_MODIFIED} (${lang.CLOCK})",
-        TrackTileItem.dateModifiedDate: "${lang.DATE_MODIFIED} (${lang.DATE})",
-        TrackTileItem.discNumber: lang.DISC_NUMBER,
-        TrackTileItem.trackNumber: lang.TRACK_NUMBER,
-        TrackTileItem.duration: lang.DURATION,
-        TrackTileItem.fileName: lang.FILE_NAME,
-        TrackTileItem.fileNameWOExt: lang.FILE_NAME_WO_EXT,
-        TrackTileItem.extension: lang.EXTENSION,
-        TrackTileItem.folder: lang.FOLDER_NAME,
-        TrackTileItem.format: lang.FORMAT,
-        TrackTileItem.path: lang.PATH,
-        TrackTileItem.sampleRate: lang.SAMPLE_RATE,
-        TrackTileItem.size: lang.SIZE,
-        TrackTileItem.rating: lang.RATING,
-        TrackTileItem.moods: lang.MOODS,
-        TrackTileItem.tags: lang.TAGS,
-      },
-      QueueSource: {
-        QueueSource.allTracks: lang.TRACKS,
-        QueueSource.album: lang.ALBUM,
-        QueueSource.artist: lang.ARTIST,
-        QueueSource.genre: lang.GENRE,
-        QueueSource.playlist: lang.PLAYLIST,
-        QueueSource.favourites: lang.FAVOURITES,
-        QueueSource.history: lang.HISTORY,
-        QueueSource.mostPlayed: lang.MOST_PLAYED,
-        QueueSource.folder: lang.FOLDER,
-        QueueSource.search: lang.SEARCH,
-        QueueSource.playerQueue: lang.QUEUE,
-        QueueSource.queuePage: lang.QUEUES,
-        QueueSource.selectedTracks: lang.SELECTED_TRACKS,
-        QueueSource.externalFile: lang.EXTERNAL_FILES,
-        QueueSource.recentlyAdded: lang.RECENTLY_ADDED,
-        QueueSource.homePageItem: '',
-        QueueSource.others: lang.OTHERS,
-      },
-      TagField: {
-        TagField.title: lang.TITLE,
-        TagField.album: lang.ALBUM,
-        TagField.artist: lang.ARTIST,
-        TagField.albumArtist: lang.ALBUM_ARTIST,
-        TagField.genre: lang.GENRE,
-        TagField.mood: lang.MOOD,
-        TagField.composer: lang.COMPOSER,
-        TagField.comment: lang.COMMENT,
-        TagField.lyrics: lang.LYRICS,
-        TagField.trackNumber: lang.TRACK_NUMBER,
-        TagField.discNumber: lang.DISC_NUMBER,
-        TagField.year: lang.YEAR,
-        TagField.remixer: lang.REMIXER,
-        TagField.trackTotal: lang.TRACK_NUMBER_TOTAL,
-        TagField.discTotal: lang.DISC_NUMBER_TOTAL,
-        TagField.lyricist: lang.LYRICIST,
-        TagField.language: lang.LANGUAGE,
-        TagField.recordLabel: lang.RECORD_LABEL,
-        TagField.country: lang.COUNTRY,
-      },
-      VideoPlaybackSource: {
-        VideoPlaybackSource.auto: lang.AUTO,
-        VideoPlaybackSource.youtube: lang.VIDEO_PLAYBACK_SOURCE_YOUTUBE,
-        VideoPlaybackSource.local: lang.VIDEO_PLAYBACK_SOURCE_LOCAL,
-      },
-      LyricsSource: {
-        LyricsSource.auto: lang.AUTO,
-        LyricsSource.local: lang.LOCAL,
-        LyricsSource.internet: lang.DATABASE,
-      },
-      WakelockMode: {
-        WakelockMode.none: lang.KEEP_SCREEN_AWAKE_NONE,
-        WakelockMode.expanded: lang.KEEP_SCREEN_AWAKE_MINIPLAYER_EXPANDED,
-        WakelockMode.expandedAndVideo: lang.KEEP_SCREEN_AWAKE_MINIPLAYER_EXPANDED_AND_VIDEO,
-      },
-      LocalVideoMatchingType: {
-        LocalVideoMatchingType.auto: lang.AUTO,
-        LocalVideoMatchingType.titleAndArtist: "${lang.TITLE} & ${lang.ARTIST}",
-        LocalVideoMatchingType.filename: lang.FILE_NAME,
-      },
-      TrackPlayMode: {
-        TrackPlayMode.selectedTrack: lang.TRACK_PLAY_MODE_SELECTED_ONLY,
-        TrackPlayMode.searchResults: lang.TRACK_PLAY_MODE_SEARCH_RESULTS,
-        TrackPlayMode.trackAlbum: lang.TRACK_PLAY_MODE_TRACK_ALBUM,
-        TrackPlayMode.trackArtist: lang.TRACK_PLAY_MODE_TRACK_ARTIST,
-        TrackPlayMode.trackGenre: lang.TRACK_PLAY_MODE_TRACK_GENRE,
-      },
-      InsertionSortingType: {
-        InsertionSortingType.listenCount: lang.TOTAL_LISTENS,
-        InsertionSortingType.random: lang.RANDOM,
-        InsertionSortingType.rating: lang.RATING,
-      },
-      MostPlayedTimeRange: {
-        MostPlayedTimeRange.custom: lang.CUSTOM,
-        MostPlayedTimeRange.day: lang.DAY,
-        MostPlayedTimeRange.day3: "3 ${lang.DAYS}",
-        MostPlayedTimeRange.week: lang.WEEK,
-        MostPlayedTimeRange.month: lang.MONTH,
-        MostPlayedTimeRange.month3: "3 ${lang.MONTHS}",
-        MostPlayedTimeRange.month6: "6 ${lang.MONTHS}",
-        MostPlayedTimeRange.year: lang.YEAR,
-        MostPlayedTimeRange.allTime: lang.ALL_TIME,
-      },
-      HomePageItems: {
-        HomePageItems.mixes: lang.MIXES,
-        HomePageItems.recentListens: lang.RECENT_LISTENS,
-        HomePageItems.topRecentListens: lang.TOP_RECENTS,
-        HomePageItems.lostMemories: lang.LOST_MEMORIES,
-        HomePageItems.recentlyAdded: lang.RECENTLY_ADDED,
-        HomePageItems.recentAlbums: lang.RECENT_ALBUMS,
-        HomePageItems.recentArtists: lang.RECENT_ARTISTS,
-        HomePageItems.topRecentAlbums: lang.TOP_RECENT_ALBUMS,
-        HomePageItems.topRecentArtists: lang.TOP_RECENT_ARTISTS,
-      },
-      NotificationTapAction: {
-        NotificationTapAction.openApp: lang.OPEN_APP,
-        NotificationTapAction.openMiniplayer: lang.OPEN_MINIPLAYER,
-        NotificationTapAction.openQueue: lang.OPEN_QUEUE,
-      },
-      OnYoutubeLinkOpenAction: {
-        OnYoutubeLinkOpenAction.showDownload: lang.DOWNLOAD,
-        OnYoutubeLinkOpenAction.play: lang.PLAY,
-        OnYoutubeLinkOpenAction.addToPlaylist: lang.ADD_TO_PLAYLIST,
-        OnYoutubeLinkOpenAction.alwaysAsk: lang.ALWAYS_ASK,
-      },
-      PerformanceMode: {
-        PerformanceMode.highPerformance: lang.HIGH_PERFORMANCE,
-        PerformanceMode.balanced: lang.BALANCED,
-        PerformanceMode.goodLooking: lang.GOOD_LOOKING,
-        PerformanceMode.custom: lang.CUSTOM,
-      },
-      KillAppMode: {
-        KillAppMode.never: lang.NEVER,
-        KillAppMode.ifNotPlaying: lang.IF_NOT_PLAYING,
-        KillAppMode.always: lang.ALWAYS,
-      },
-      FABType: {
-        FABType.none: lang.NONE,
-        FABType.search: lang.SEARCH,
-        FABType.shuffle: lang.SHUFFLE,
-        FABType.play: lang.PLAY,
-      },
-      YTHomePages: {
-        YTHomePages.home: lang.HOME,
-        YTHomePages.channels: lang.CHANNELS,
-        YTHomePages.playlists: lang.PLAYLISTS,
-        YTHomePages.downloads: lang.DOWNLOADS,
-      },
-      TrackSearchFilter: {
-        TrackSearchFilter.filename: lang.FILE_NAME,
-        TrackSearchFilter.title: lang.TITLE,
-        TrackSearchFilter.album: lang.ALBUM,
-        TrackSearchFilter.artist: lang.ARTIST,
-        TrackSearchFilter.albumartist: lang.ALBUM_ARTIST,
-        TrackSearchFilter.genre: lang.GENRE,
-        TrackSearchFilter.composer: lang.COMPOSER,
-        TrackSearchFilter.comment: lang.COMMENT,
-        TrackSearchFilter.year: lang.YEAR,
-      },
-      SetMusicAsAction: {
-        SetMusicAsAction.ringtone: lang.RINGTONE,
-        SetMusicAsAction.notification: lang.NOTIFICATION,
-        SetMusicAsAction.alarm: lang.ALARM,
-      },
-      PlaylistAddDuplicateAction: {
-        PlaylistAddDuplicateAction.justAddEverything: lang.ADD_ALL,
-        PlaylistAddDuplicateAction.addAllAndRemoveOldOnes: lang.ADD_ALL_AND_REMOVE_OLD_ONES,
-        PlaylistAddDuplicateAction.addOnlyMissing: lang.ADD_ONLY_MISSING,
-      },
-      YTSeekActionMode: {
-        YTSeekActionMode.none: lang.NONE,
-        YTSeekActionMode.minimizedMiniplayer: lang.MINIMIZED_MINIPLAYER,
-        YTSeekActionMode.expandedMiniplayer: lang.EXPANDED_MINIPLAYER,
-        YTSeekActionMode.all: lang.ALL,
-      },
+  IconData toIcon() => switch (this) {
+    InterruptionAction.doNothing => Broken.minus_cirlce,
+    InterruptionAction.duckAudio => Broken.volume_low_1,
+    InterruptionAction.pause => Broken.pause_circle,
+  };
+}
+
+extension InterruptionTypeL10n on InterruptionType {
+  String toText() => switch (this) {
+    InterruptionType.shouldPause => lang.shouldPause,
+    InterruptionType.shouldDuck => lang.shouldDuck,
+    InterruptionType.unknown => lang.others,
+  };
+
+  String? toSubtitle() => switch (this) {
+    InterruptionType.shouldPause => lang.shouldPauseNote,
+    InterruptionType.shouldDuck => lang.shouldDuckNote,
+    InterruptionType.unknown => null,
+  };
+
+  IconData toIcon() => switch (this) {
+    InterruptionType.shouldPause => Broken.pause_circle,
+    InterruptionType.shouldDuck => Broken.volume_low_1,
+    InterruptionType.unknown => Broken.status,
+  };
+}
+
+extension TrackSourceL10n on TrackSource {
+  String toText() => switch (this) {
+    TrackSource.local => lang.local,
+    TrackSource.youtube => lang.youtube,
+    TrackSource.youtubeMusic => lang.youtubeMusic,
+    TrackSource.lastfm => 'Last.fm',
+    TrackSource.spotify => 'Spotify',
+    TrackSource.listenbrainz => 'ListenBrainz',
+  };
+}
+
+extension SyncDataItemL10n on SyncDataItem {
+  String toText() => switch (this) {
+    SyncDataItem.history => lang.history,
+    SyncDataItem.historyYt => '${lang.history} (${lang.youtube})',
+    SyncDataItem.playlists => lang.playlists,
+    SyncDataItem.playlistsYt => '${lang.playlists} (${lang.youtube})',
+    SyncDataItem.favourites => lang.favourites,
+    SyncDataItem.favouritesYt => '${lang.favourites} (${lang.youtube})',
+    SyncDataItem.stats => lang.stats,
+    SyncDataItem.statsYt => '${lang.stats} (${lang.youtube})',
+    SyncDataItem.latestPlayedForSource => lang.lastPlayed,
+    SyncDataItem.audioConfigs => lang.audioConfigs,
+    SyncDataItem.smartPlaylists => lang.smartPlaylists,
+    SyncDataItem.videosPriority => '${lang.videoCache} • ${lang.priority}',
+    SyncDataItem.subscriptionsYt => '${lang.subscriptions} (${lang.youtube})',
+    SyncDataItem.queues => lang.queues,
+    SyncDataItem.lyrics => lang.lyrics,
+    SyncDataItem.videosCache => lang.videoCache,
+    SyncDataItem.audiosCache => lang.audioCache,
+    SyncDataItem.playlistsArtworks => '${lang.playlists} • ${lang.artworks}',
+    SyncDataItem.smartPlaylistsArtworks => '${lang.smartPlaylists} • ${lang.artworks}',
+    SyncDataItem.playlistsArtworksYt => '${lang.playlists} • ${lang.artworks} (${lang.youtube})',
+    SyncDataItem.artworksArtists => '${lang.artworks} • ${lang.artists}',
+    SyncDataItem.artworksAlbums => '${lang.artworks} • ${lang.albums}',
+    SyncDataItem.thumbnailsYt => '${lang.thumbnails} (${lang.youtube})',
+    SyncDataItem.thumbnailsChannelsYt => '${lang.thumbnails} • ${lang.channels} (${lang.youtube})',
+    SyncDataItem.playerQueue => lang.queue,
+    SyncDataItem.playback => lang.playbackSetting,
+    SyncDataItem.settingsGeneral => lang.settings,
+    SyncDataItem.settingsPlayer => '${lang.settings} (${lang.playbackSetting})',
+    SyncDataItem.settingsYoutube => '${lang.settings} (${lang.youtube})',
+  };
+
+  IconData toIcon() => switch (this) {
+    SyncDataItem.history => Broken.refresh,
+    SyncDataItem.historyYt => Broken.video_play,
+    SyncDataItem.playlists => Broken.music_library_2,
+    SyncDataItem.playlistsYt => Broken.video_square,
+    SyncDataItem.favourites => Broken.heart,
+    SyncDataItem.favouritesYt => Broken.like_1,
+    SyncDataItem.stats => Broken.chart_2,
+    SyncDataItem.statsYt => Broken.chart,
+    SyncDataItem.latestPlayedForSource => Broken.clock,
+    SyncDataItem.audioConfigs => Broken.sound,
+    SyncDataItem.smartPlaylists => Broken.magicpen,
+    SyncDataItem.videosPriority => Broken.ranking,
+    SyncDataItem.subscriptionsYt => Broken.user_tick,
+    SyncDataItem.queues => Broken.driver,
+    SyncDataItem.lyrics => Broken.document,
+    SyncDataItem.videosCache => Broken.video,
+    SyncDataItem.audiosCache => Broken.audio_square,
+    SyncDataItem.playlistsArtworks => Broken.image,
+    SyncDataItem.smartPlaylistsArtworks => Broken.image,
+    SyncDataItem.playlistsArtworksYt => Broken.image,
+    SyncDataItem.artworksArtists => Broken.image,
+    SyncDataItem.artworksAlbums => Broken.image,
+    SyncDataItem.thumbnailsYt => Broken.image,
+    SyncDataItem.thumbnailsChannelsYt => Broken.image,
+    SyncDataItem.playerQueue => Broken.rotate_left_1,
+    SyncDataItem.playback => Broken.play,
+    SyncDataItem.settingsGeneral => Broken.setting_2,
+    SyncDataItem.settingsPlayer => Broken.setting_2,
+    SyncDataItem.settingsYoutube => Broken.setting_2,
+  };
+}
+
+extension LibraryTabL10n on LibraryTab {
+  String toText() => switch (this) {
+    LibraryTab.albums => lang.albums,
+    LibraryTab.tracks => lang.tracks,
+    LibraryTab.tracksMusic => "${lang.tracks}: ${lang.audio}",
+    LibraryTab.tracksVideos => "${lang.tracks}: ${lang.videos}",
+    LibraryTab.artists => lang.artists,
+    LibraryTab.genres => lang.genres,
+    LibraryTab.playlists => lang.playlists,
+    LibraryTab.smartPlaylists => lang.smartPlaylists,
+    LibraryTab.folders => lang.folders,
+    LibraryTab.foldersMusic => "${lang.folders}: ${lang.tracks}",
+    LibraryTab.foldersVideos => "${lang.folders}: ${lang.videos}",
+    LibraryTab.home => lang.home,
+    LibraryTab.search => lang.search,
+    LibraryTab.youtube => lang.youtube,
+    LibraryTab.ytHome => YTHomePages.home._toLibraryTabText(),
+    LibraryTab.ytNotifications => YTHomePages.notifications._toLibraryTabText(),
+    LibraryTab.ytChannels => YTHomePages.channels._toLibraryTabText(),
+    LibraryTab.ytPlaylists => YTHomePages.playlists._toLibraryTabText(),
+    LibraryTab.ytDownloads => YTHomePages.downloads._toLibraryTabText(),
+    LibraryTab.queues => lang.queues,
+    LibraryTab.currentQueue => lang.queue,
+    LibraryTab.favourites => lang.favourites,
+    LibraryTab.history => lang.history,
+    LibraryTab.mostPlayed => lang.mostPlayed,
+    LibraryTab.moods => lang.moods,
+    LibraryTab.tags => lang.tags,
+    LibraryTab.languages => lang.languages,
+    LibraryTab.rating => lang.rating,
+    LibraryTab.stats => lang.stats,
+    LibraryTab.party => lang.partyListeningParty,
+  };
+
+  String toShortText() => isGroupHead ? toText() : toVariantText();
+
+  String toVariantText() => switch (this) {
+    LibraryTab.tracks || LibraryTab.folders => lang.all,
+    LibraryTab.tracksMusic => lang.audio,
+    LibraryTab.foldersMusic => lang.tracks,
+    LibraryTab.tracksVideos || LibraryTab.foldersVideos => lang.videos,
+    _ => toText(),
+  };
+
+  IconData toIcon() => switch (this) {
+    LibraryTab.albums => MediaType.album.toIcon(),
+    LibraryTab.tracks => MediaType.track.toIcon(),
+    LibraryTab.tracksMusic => Broken.musicnote,
+    LibraryTab.tracksVideos => Broken.video_circle,
+    LibraryTab.artists => Broken.profile_2user,
+    LibraryTab.genres => MediaType.genre.toIcon(),
+    LibraryTab.playlists => MediaType.playlist.toIcon(),
+    LibraryTab.smartPlaylists => Broken.magicpen,
+    LibraryTab.folders => MediaType.folder.toIcon(),
+    LibraryTab.foldersMusic => MediaType.folderMusic.toIcon(),
+    LibraryTab.foldersVideos => MediaType.folderVideo.toIcon(),
+    LibraryTab.home => Broken.home_2,
+    LibraryTab.search => Broken.search_normal_1,
+    LibraryTab.youtube => Broken.video_square,
+    LibraryTab.ytHome => YTHomePages.home.toIcon(),
+    LibraryTab.ytNotifications => YTHomePages.notifications.toIcon(),
+    LibraryTab.ytChannels => YTHomePages.channels.toIcon(),
+    LibraryTab.ytPlaylists => YTHomePages.playlists.toIcon(),
+    LibraryTab.ytDownloads => YTHomePages.downloads.toIcon(),
+    LibraryTab.queues => Broken.driver,
+    LibraryTab.currentQueue => Broken.row_vertical,
+    LibraryTab.favourites => Broken.heart,
+    LibraryTab.history => Broken.refresh,
+    LibraryTab.mostPlayed => Broken.award,
+    LibraryTab.moods => Broken.smileys,
+    LibraryTab.tags => MediaType.tag.toIcon(),
+    LibraryTab.languages => MediaType.language.toIcon(),
+    LibraryTab.rating => MediaType.rating.toIcon(),
+    LibraryTab.stats => Broken.chart_21,
+    LibraryTab.party => Broken.people,
+  };
+}
+
+extension MediaTypeL10n on MediaType {
+  String toText() => switch (this) {
+    MediaType.album => lang.albums,
+    MediaType.track => lang.tracks,
+    MediaType.artist => lang.artists,
+    MediaType.albumArtist => lang.albumArtists,
+    MediaType.composer => lang.composer,
+    MediaType.genre => lang.genres,
+    MediaType.style => lang.styles,
+    MediaType.language => lang.languages,
+    MediaType.playlist => lang.playlists,
+    MediaType.folder => lang.folders,
+    MediaType.mood => lang.moods,
+    MediaType.tag => lang.tags,
+    MediaType.rating => lang.rating,
+    MediaType.folderMusic => "${lang.folders}: ${lang.tracks}",
+    MediaType.folderVideo => "${lang.folders}: ${lang.videos}",
+  };
+
+  IconData toIcon() => switch (this) {
+    MediaType.album => Broken.music_dashboard,
+    MediaType.track => Broken.music_circle,
+    MediaType.artist => Broken.microphone,
+    MediaType.albumArtist => Broken.user,
+    MediaType.composer => Broken.profile_2user,
+    MediaType.genre => Broken.shapes,
+    MediaType.style => Broken.brush_1,
+    MediaType.language => Broken.language_square,
+    MediaType.playlist => Broken.music_library_2,
+    MediaType.folder => Broken.folder,
+    MediaType.mood => Broken.emoji_happy,
+    MediaType.tag => Broken.tag,
+    MediaType.rating => Broken.grammerly,
+    MediaType.folderMusic => Broken.folder_2,
+    MediaType.folderVideo => Broken.video_play,
+  };
+}
+
+extension SubpageInfoStyleL10n on SubpageInfoStyle {
+  String toText() => switch (this) {
+    SubpageInfoStyle.compact => 'Compact',
+    SubpageInfoStyle.banner => 'Banner',
+    SubpageInfoStyle.heroBanner => 'Hero Banner',
+    SubpageInfoStyle.overlay => 'Overlay',
+    SubpageInfoStyle.blurBackdrop => 'Blur Backdrop',
+  };
+
+  IconData toIcon() => switch (this) {
+    SubpageInfoStyle.compact => Broken.element_3,
+    SubpageInfoStyle.banner => Broken.card,
+    SubpageInfoStyle.heroBanner => Broken.maximize_4,
+    SubpageInfoStyle.overlay => Broken.layer,
+    SubpageInfoStyle.blurBackdrop => Broken.blur,
+  };
+}
+
+extension ArtworkCollageStyleL10n on ArtworkCollageStyle {
+  String toText() => switch (this) {
+    ArtworkCollageStyle.grid => 'Grid',
+    ArtworkCollageStyle.denseGrid => 'Dense Grid',
+    ArtworkCollageStyle.mosaic => 'Mosaic',
+    ArtworkCollageStyle.fanStack => 'Fan Stack',
+    ArtworkCollageStyle.flow => 'Flow',
+    ArtworkCollageStyle.stack => 'Stack',
+    ArtworkCollageStyle.collage => 'Collage',
+  };
+
+  IconData toIcon() => switch (this) {
+    ArtworkCollageStyle.grid => Broken.grid_2,
+    ArtworkCollageStyle.denseGrid => Broken.grid_1,
+    ArtworkCollageStyle.mosaic => Broken.element_4,
+    ArtworkCollageStyle.fanStack => Broken.note,
+    ArtworkCollageStyle.flow => Broken.slider_horizontal,
+    ArtworkCollageStyle.stack => Broken.cards,
+    ArtworkCollageStyle.collage => Broken.picture_frame,
+  };
+}
+
+extension AlbumIdentifierL10n on AlbumIdentifier {
+  String toText() => switch (this) {
+    AlbumIdentifier.albumName => lang.name,
+    AlbumIdentifier.albumArtist => lang.albumArtist,
+    AlbumIdentifier.year => lang.year,
+    AlbumIdentifier.mbAlbumId => 'MusicBrainz Album ID',
+    AlbumIdentifier.mbAlbumArtistId => 'MusicBrainz Album Artist ID',
+  };
+}
+
+extension SortTypeL10n on SortType {
+  String toText() => switch (this) {
+    SortType.title => lang.title,
+    SortType.album => lang.album,
+    SortType.albumArtist => lang.albumArtist,
+    SortType.artistsList => lang.artists,
+    SortType.bitrate => lang.bitrate,
+    SortType.composer => lang.composer,
+    SortType.dateAdded => lang.dateAdded,
+    SortType.dateModified => lang.dateModified,
+    SortType.discNo => lang.discNumber,
+    SortType.trackNo => lang.trackNumber,
+    SortType.filename => lang.fileName,
+    SortType.path => lang.path,
+    SortType.duration => lang.duration,
+    SortType.genresList => lang.genres,
+    SortType.sampleRate => lang.sampleRate,
+    SortType.bitDepth => lang.bitDepth,
+    SortType.bpm => 'BPM',
+    SortType.size => lang.size,
+    SortType.year => lang.year,
+    SortType.rating => lang.rating,
+    SortType.favourite => lang.favourites,
+    SortType.shuffle => lang.random,
+    SortType.shuffleDaily => '${lang.random} (${lang.daily})',
+    SortType.mostPlayed => lang.mostPlayed,
+    SortType.latestPlayed => lang.recentListens,
+    SortType.firstListen => lang.firstListen,
+    SortType.titleSort => '${lang.title} (${lang.sortBy})',
+    SortType.albumSort => '${lang.album} (${lang.sortBy})',
+    SortType.albumArtistSort => '${lang.albumArtist} (${lang.sortBy})',
+    SortType.artistSort => '${lang.artist} (${lang.sortBy})',
+    SortType.composerSort => '${lang.composer} (${lang.sortBy})',
+  };
+
+  IconData toIcon() => switch (this) {
+    SortType.title => Broken.music,
+    SortType.album => MediaType.album.toIcon(),
+    SortType.artistsList => MediaType.artist.toIcon(),
+    SortType.albumArtist => MediaType.albumArtist.toIcon(),
+    SortType.genresList => MediaType.genre.toIcon(),
+    SortType.composer => MediaType.composer.toIcon(),
+    SortType.trackNo => Broken.hashtag,
+    SortType.discNo => Broken.hashtag,
+    SortType.year => Broken.calendar,
+    SortType.duration => Broken.timer_1,
+    SortType.dateAdded => Broken.calendar_add,
+    SortType.dateModified => Broken.calendar_edit,
+    SortType.rating => MediaType.rating.toIcon(),
+    SortType.favourite => Broken.heart,
+    SortType.bitrate => Broken.voice_cricle,
+    SortType.filename => Broken.quote_up_circle,
+    SortType.path => Broken.location,
+    SortType.sampleRate => Broken.voice_cricle,
+    SortType.bitDepth => Broken.voice_cricle,
+    SortType.bpm => Broken.alarm,
+    SortType.size => Broken.size,
+    SortType.shuffle => Broken.shuffle,
+    SortType.shuffleDaily => Broken.calendar_tick,
+    SortType.mostPlayed => Broken.award,
+    SortType.latestPlayed => Broken.clock,
+    SortType.firstListen => Broken.calendar_search,
+    SortType.titleSort => Broken.music,
+    SortType.albumSort => MediaType.album.toIcon(),
+    SortType.albumArtistSort => MediaType.albumArtist.toIcon(),
+    SortType.artistSort => MediaType.artist.toIcon(),
+    SortType.composerSort => MediaType.composer.toIcon(),
+  };
+}
+
+extension YTSortTypeL10n on YTSortType {
+  String toText() => switch (this) {
+    YTSortType.title => lang.title,
+    YTSortType.channelTitle => lang.channel,
+    YTSortType.duration => lang.duration,
+    YTSortType.date => lang.date,
+    YTSortType.dateAdded => lang.dateAdded,
+    YTSortType.shuffle => lang.random,
+    YTSortType.mostPlayed => lang.mostPlayed,
+    YTSortType.latestPlayed => lang.recentListens,
+    YTSortType.firstListen => lang.firstListen,
+  };
+
+  IconData toIcon() => switch (this) {
+    YTSortType.title => Broken.music,
+    YTSortType.channelTitle => Broken.user,
+    YTSortType.duration => Broken.timer_1,
+    YTSortType.date => Broken.calendar,
+    YTSortType.dateAdded => Broken.calendar_add,
+    YTSortType.shuffle => Broken.shuffle,
+    YTSortType.mostPlayed => Broken.award,
+    YTSortType.latestPlayed => Broken.clock,
+    YTSortType.firstListen => Broken.calendar_search,
+  };
+}
+
+extension CacheVideoPriorityL10n on CacheVideoPriority {
+  String toText() => switch (this) {
+    CacheVideoPriority.VIP => 'VIP',
+    CacheVideoPriority.high => 'High',
+    CacheVideoPriority.normal => 'Normal',
+    CacheVideoPriority.low => 'Low',
+    CacheVideoPriority.GETOUT => 'Disable',
+  };
+}
+
+extension GroupSortTypeL10n on GroupSortType {
+  String toText() => switch (this) {
+    GroupSortType.title => lang.title,
+    GroupSortType.album => lang.album,
+    GroupSortType.albumArtist => lang.albumArtist,
+    GroupSortType.artistsList => lang.artist,
+    GroupSortType.genresList => lang.genres,
+    GroupSortType.composer => lang.composer,
+    GroupSortType.label => lang.recordLabel,
+    GroupSortType.releaseType => lang.releaseType,
+    GroupSortType.bpm => 'BPM',
+    GroupSortType.dateAdded => lang.dateAdded,
+    GroupSortType.dateModified => lang.dateModified,
+    GroupSortType.duration => lang.duration,
+    GroupSortType.numberOfTracks => lang.numberOfTracks,
+    GroupSortType.lastPlayed => lang.lastPlayed,
+    GroupSortType.playCount => '${lang.totalListens} (${lang.tracks})',
+    GroupSortType.firstListen => '${lang.firstListen} (${lang.tracks})',
+    GroupSortType.latestPlayed => '${lang.recentListens} (${lang.tracks})',
+    GroupSortType.albumsCount => lang.albumsCount,
+    GroupSortType.year => lang.year,
+    GroupSortType.creationDate => lang.dateCreated,
+    GroupSortType.modifiedDate => lang.dateModified,
+    GroupSortType.albumSort => '${lang.album} (${lang.sortBy})',
+    GroupSortType.albumArtistSort => '${lang.albumArtist} (${lang.sortBy})',
+    GroupSortType.artistSort => '${lang.artist} (${lang.sortBy})',
+    GroupSortType.composerSort => '${lang.composer} (${lang.sortBy})',
+    GroupSortType.shuffle => lang.random,
+    GroupSortType.shuffleDaily => '${lang.random} (${lang.daily})',
+    GroupSortType.custom => lang.custom,
+  };
+
+  IconData toIcon() => switch (this) {
+    GroupSortType.title => Broken.music,
+    GroupSortType.album => MediaType.album.toIcon(),
+    GroupSortType.artistsList => MediaType.artist.toIcon(),
+    GroupSortType.albumArtist => MediaType.albumArtist.toIcon(),
+    GroupSortType.genresList => MediaType.genre.toIcon(),
+    GroupSortType.composer => MediaType.composer.toIcon(),
+    GroupSortType.numberOfTracks => Broken.hashtag,
+    GroupSortType.year => Broken.calendar,
+    GroupSortType.duration => Broken.timer_1,
+    GroupSortType.creationDate => Broken.calendar_add,
+    GroupSortType.dateAdded => Broken.calendar_add,
+    GroupSortType.dateModified => Broken.calendar_edit,
+    GroupSortType.modifiedDate => Broken.calendar_edit,
+    GroupSortType.label => Broken.ticket,
+    GroupSortType.releaseType => Broken.cd,
+    GroupSortType.bpm => Broken.alarm,
+    GroupSortType.albumsCount => Broken.cards,
+    GroupSortType.custom => Broken.format_circle,
+    GroupSortType.shuffle => Broken.shuffle,
+    GroupSortType.shuffleDaily => Broken.calendar_tick,
+    GroupSortType.lastPlayed => Broken.play_circle,
+    GroupSortType.playCount => Broken.award,
+    GroupSortType.latestPlayed => Broken.clock,
+    GroupSortType.firstListen => Broken.calendar_search,
+    GroupSortType.albumSort => MediaType.album.toIcon(),
+    GroupSortType.albumArtistSort => MediaType.albumArtist.toIcon(),
+    GroupSortType.artistSort => MediaType.artist.toIcon(),
+    GroupSortType.composerSort => MediaType.composer.toIcon(),
+  };
+}
+
+extension TrackTileItemL10n on TrackTileItem {
+  String toText() => switch (this) {
+    TrackTileItem.none => lang.none,
+    TrackTileItem.title => lang.title,
+    TrackTileItem.artists => lang.artists,
+    TrackTileItem.album => lang.album,
+    TrackTileItem.albumArtist => lang.albumArtist,
+    TrackTileItem.genres => lang.genres,
+    TrackTileItem.styles => lang.styles,
+    TrackTileItem.languages => lang.languages,
+    TrackTileItem.composer => lang.composer,
+    TrackTileItem.year => lang.year,
+    TrackTileItem.bitrate => lang.bitrate,
+    TrackTileItem.channels => lang.channels,
+    TrackTileItem.comment => lang.comment,
+    TrackTileItem.dateAdded => lang.dateAdded,
+    TrackTileItem.dateModified => lang.dateModified,
+    TrackTileItem.dateModifiedClock => "${lang.dateModified} (${lang.clock})",
+    TrackTileItem.dateModifiedDate => "${lang.dateModified} (${lang.date})",
+    TrackTileItem.discNumber => lang.discNumber,
+    TrackTileItem.trackNumber => lang.trackNumber,
+    TrackTileItem.duration => lang.duration,
+    TrackTileItem.fileName => lang.fileName,
+    TrackTileItem.fileNameWOExt => lang.fileNameWoExt,
+    TrackTileItem.extension => lang.extension,
+    TrackTileItem.folder => lang.folderName,
+    TrackTileItem.format => lang.format,
+    TrackTileItem.path => lang.path,
+    TrackTileItem.sampleRate => lang.sampleRate,
+    TrackTileItem.bitDepth => lang.bitDepth,
+    TrackTileItem.lossless => lang.lossless,
+    TrackTileItem.bpm => 'BPM',
+    TrackTileItem.size => lang.size,
+    TrackTileItem.rating => lang.rating,
+    TrackTileItem.moods => lang.moods,
+    TrackTileItem.tags => lang.tags,
+    TrackTileItem.listenCount => lang.totalListens,
+    TrackTileItem.latestListenDate => lang.recentListens,
+    TrackTileItem.firstListenDate => lang.firstListen,
+  };
+
+  IconData toIcon() => switch (this) {
+    TrackTileItem.none => Broken.minus_cirlce,
+    TrackTileItem.title => Broken.music,
+    TrackTileItem.artists => MediaType.artist.toIcon(),
+    TrackTileItem.album => MediaType.album.toIcon(),
+    TrackTileItem.albumArtist => MediaType.albumArtist.toIcon(),
+    TrackTileItem.genres => MediaType.genre.toIcon(),
+    TrackTileItem.styles => MediaType.style.toIcon(),
+    TrackTileItem.languages => MediaType.language.toIcon(),
+    TrackTileItem.composer => MediaType.composer.toIcon(),
+    TrackTileItem.year => Broken.calendar,
+    TrackTileItem.bitrate => Broken.voice_cricle,
+    TrackTileItem.channels => Broken.airpods,
+    TrackTileItem.comment => Broken.message_text,
+    TrackTileItem.dateAdded => Broken.calendar_add,
+    TrackTileItem.dateModified => Broken.calendar_edit,
+    TrackTileItem.dateModifiedClock => Broken.clock,
+    TrackTileItem.dateModifiedDate => Broken.calendar_edit,
+    TrackTileItem.discNumber => Broken.hashtag,
+    TrackTileItem.trackNumber => Broken.hashtag,
+    TrackTileItem.duration => Broken.timer_1,
+    TrackTileItem.fileName => Broken.quote_up_circle,
+    TrackTileItem.fileNameWOExt => Broken.quote_up_circle,
+    TrackTileItem.extension => Broken.document,
+    TrackTileItem.folder => MediaType.folder.toIcon(),
+    TrackTileItem.format => Broken.voice_cricle,
+    TrackTileItem.path => Broken.location,
+    TrackTileItem.sampleRate => Broken.voice_cricle,
+    TrackTileItem.bitDepth => Broken.voice_cricle,
+    TrackTileItem.lossless => Broken.voice_cricle,
+    TrackTileItem.bpm => Broken.alarm,
+    TrackTileItem.size => Broken.size,
+    TrackTileItem.rating => MediaType.rating.toIcon(),
+    TrackTileItem.moods => Broken.smileys,
+    TrackTileItem.tags => MediaType.tag.toIcon(),
+    TrackTileItem.listenCount => Broken.award,
+    TrackTileItem.latestListenDate => Broken.clock,
+    TrackTileItem.firstListenDate => Broken.calendar_search,
+  };
+}
+
+extension QueueSourceL10n on QueueSourceEnum {
+  String toText() => switch (this) {
+    QueueSourceEnum.allTracksAll => lang.tracks,
+    QueueSourceEnum.allTracks => lang.tracks,
+    QueueSourceEnum.album => lang.album,
+    QueueSourceEnum.artist => lang.artist,
+    QueueSourceEnum.albumArtist => lang.albumArtist,
+    QueueSourceEnum.composer => lang.composer,
+    QueueSourceEnum.genre => lang.genre,
+    QueueSourceEnum.style => lang.style,
+    QueueSourceEnum.language => lang.language,
+    QueueSourceEnum.playlist => lang.playlist,
+    QueueSourceEnum.favourites => lang.favourites,
+    QueueSourceEnum.history => lang.history,
+    QueueSourceEnum.mostPlayed => lang.mostPlayed,
+    QueueSourceEnum.folder => lang.folder,
+    QueueSourceEnum.folderMusic => "${lang.folder} (${lang.tracks})",
+    QueueSourceEnum.folderVideos => "${lang.folder} (${lang.videos})",
+    QueueSourceEnum.search => lang.search,
+    QueueSourceEnum.playerQueue => lang.queue,
+    QueueSourceEnum.queuePage => lang.queues,
+    QueueSourceEnum.selectedTracks => lang.selectedTracks,
+    QueueSourceEnum.externalFile => lang.externalFiles,
+    QueueSourceEnum.recentlyAdded => lang.recentlyAdded,
+    QueueSourceEnum.smartPlaylist => lang.smartPlaylist,
+    QueueSourceEnum.moods => lang.moods,
+    QueueSourceEnum.tags => lang.tags,
+    QueueSourceEnum.rating => lang.rating,
+    QueueSourceEnum.playlistTags => lang.playlistTags,
+    QueueSourceEnum.homePageItem => lang.home,
+    QueueSourceEnum.others => lang.others,
+  };
+}
+
+extension QueueSourceYoutubeIDL10n on QueueSourceYoutubeIDEnum {
+  String toText() => switch (this) {
+    QueueSourceYoutubeIDEnum.ytChannel => lang.channel,
+    QueueSourceYoutubeIDEnum.ytPlaylist => lang.playlist,
+    QueueSourceYoutubeIDEnum.ytSearch => lang.search,
+    QueueSourceYoutubeIDEnum.ytPlayerQueue => lang.queue,
+    QueueSourceYoutubeIDEnum.ytMostPlayed => lang.mostPlayed,
+    QueueSourceYoutubeIDEnum.ytHistory => lang.history,
+    QueueSourceYoutubeIDEnum.ytHistoryFiltered => lang.history,
+    QueueSourceYoutubeIDEnum.ytFavourites => lang.favourites,
+    QueueSourceYoutubeIDEnum.ytExternalLink => lang.externalFiles,
+    QueueSourceYoutubeIDEnum.ytHomeFeed => lang.home,
+    QueueSourceYoutubeIDEnum.ytHomePageItem => lang.home,
+    QueueSourceYoutubeIDEnum.ytHashtag => lang.hashtag,
+    QueueSourceYoutubeIDEnum.ytRelatedVideos => lang.relatedVideos,
+    QueueSourceYoutubeIDEnum.ytHistoryFilteredHosted => lang.history,
+    QueueSourceYoutubeIDEnum.ytSearchHosted => lang.search,
+    QueueSourceYoutubeIDEnum.ytChannelHosted => lang.channel,
+    QueueSourceYoutubeIDEnum.ytHistoryHosted => lang.history,
+    QueueSourceYoutubeIDEnum.ytPlaylistHosted => lang.playlist,
+    QueueSourceYoutubeIDEnum.ytDownloadTask => lang.downloads,
+    QueueSourceYoutubeIDEnum.ytVideoEndCard => lang.video,
+    QueueSourceYoutubeIDEnum.ytVideoDescription => lang.description,
+    QueueSourceYoutubeIDEnum.ytNotificationsHosted => lang.notifications,
+  };
+}
+
+extension TagFieldL10n on TagField {
+  String toText() => switch (this) {
+    TagField.title => lang.title,
+    TagField.album => lang.album,
+    TagField.artist => lang.artist,
+    TagField.albumArtist => lang.albumArtist,
+    TagField.genre => lang.genre,
+    TagField.style => lang.style,
+    TagField.mood => lang.mood,
+    TagField.composer => lang.composer,
+    TagField.comment => lang.comment,
+    TagField.description => lang.description,
+    TagField.synopsis => lang.synopsis,
+    TagField.lyrics => lang.lyrics,
+    TagField.trackNumber => lang.trackNumber,
+    TagField.discNumber => lang.discNumber,
+    TagField.year => lang.year,
+    TagField.remixer => lang.remixer,
+    TagField.trackTotal => lang.trackNumberTotal,
+    TagField.discTotal => lang.discNumberTotal,
+    TagField.lyricist => lang.lyricist,
+    TagField.language => lang.language,
+    TagField.recordLabel => lang.recordLabel,
+    TagField.releaseType => lang.releaseType,
+    TagField.country => lang.country,
+    TagField.rating => lang.rating,
+    TagField.tags => lang.tags,
+    TagField.titleSort => '${lang.title} (${lang.sortBy})',
+    TagField.albumSort => '${lang.album} (${lang.sortBy})',
+    TagField.albumArtistSort => '${lang.albumArtist} (${lang.sortBy})',
+    TagField.artistSort => '${lang.artist} (${lang.sortBy})',
+    TagField.composerSort => '${lang.composer} (${lang.sortBy})',
+  };
+
+  IconData toIcon() => switch (this) {
+    TagField.title => Broken.music,
+    TagField.album => MediaType.album.toIcon(),
+    TagField.artist => MediaType.artist.toIcon(),
+    TagField.albumArtist => MediaType.albumArtist.toIcon(),
+    TagField.genre => MediaType.genre.toIcon(),
+    TagField.style => MediaType.style.toIcon(),
+    TagField.mood => MediaType.mood.toIcon(),
+    TagField.composer => MediaType.composer.toIcon(),
+    TagField.comment => Broken.text_block,
+    TagField.description => Broken.note_text,
+    TagField.synopsis => Broken.text,
+    TagField.lyrics => Broken.message_text,
+    TagField.trackNumber => Broken.hashtag,
+    TagField.discNumber => Broken.hashtag,
+    TagField.year => Broken.calendar,
+    TagField.remixer => Broken.radio,
+    TagField.trackTotal => Broken.hashtag,
+    TagField.discTotal => Broken.hashtag,
+    TagField.lyricist => Broken.pen_add,
+    TagField.language => MediaType.language.toIcon(),
+    TagField.recordLabel => Broken.ticket,
+    TagField.releaseType => Broken.cd,
+    TagField.country => Broken.house,
+    TagField.rating => MediaType.rating.toIcon(),
+    TagField.tags => MediaType.tag.toIcon(),
+    TagField.titleSort => Broken.music,
+    TagField.albumSort => MediaType.album.toIcon(),
+    TagField.albumArtistSort => MediaType.albumArtist.toIcon(),
+    TagField.artistSort => MediaType.artist.toIcon(),
+    TagField.composerSort => MediaType.composer.toIcon(),
+  };
+}
+
+extension VideoPlaybackSourceL10n on VideoPlaybackSource {
+  String toText() => switch (this) {
+    VideoPlaybackSource.auto => lang.auto,
+    VideoPlaybackSource.youtube => lang.videoPlaybackSourceYoutube,
+    VideoPlaybackSource.local => lang.videoPlaybackSourceLocal,
+  };
+
+  String toSubtitle() => switch (this) {
+    VideoPlaybackSource.auto => lang.videoPlaybackSourceAutoSubtitle,
+    VideoPlaybackSource.youtube => lang.videoPlaybackSourceYoutubeSubtitle,
+    VideoPlaybackSource.local => lang.videoPlaybackSourceLocalSubtitle,
+  };
+}
+
+extension LyricsSourceL10n on LyricsSource {
+  String toText() => switch (this) {
+    LyricsSource.auto => lang.auto,
+    LyricsSource.local => lang.local,
+    LyricsSource.internet => lang.database,
+  };
+}
+
+extension EmbeddedLyricsPriorityL10n on EmbeddedLyricsPriority {
+  String toText() => switch (this) {
+    EmbeddedLyricsPriority.off => lang.never,
+    EmbeddedLyricsPriority.onlyWhenSynced => lang.synced,
+    EmbeddedLyricsPriority.always => lang.always,
+  };
+}
+
+extension LyricsSaveLocationL10n on LyricsSaveLocation {
+  String toText() => switch (this) {
+    LyricsSaveLocation.cache => lang.cache,
+    LyricsSaveLocation.trackFolder => lang.trackFolder,
+    LyricsSaveLocation.customFolder => lang.lyricsFolders,
+  };
+}
+
+extension LyricsProviderL10n on LyricsProvider {
+  String toText() => switch (this) {
+    LyricsProvider.lrclib => 'LRCLIB',
+    LyricsProvider.kugou => 'KuGou',
+  };
+}
+
+extension WakelockModeL10n on WakelockMode {
+  String toText() => switch (this) {
+    WakelockMode.none => lang.keepScreenAwakeNone,
+    WakelockMode.expanded => lang.keepScreenAwakeMiniplayerExpanded,
+    WakelockMode.expandedAndVideo => lang.keepScreenAwakeMiniplayerExpandedAndVideo,
+  };
+}
+
+extension CrossfadeModeL10n on CrossfadeMode {
+  String toText() => switch (this) {
+    CrossfadeMode.standard => lang.defaultLabel,
+    CrossfadeMode.smart => lang.smart,
+    CrossfadeMode.beatMatched => lang.beatMatching,
+  };
+
+  IconData toIcon() => switch (this) {
+    CrossfadeMode.standard => Broken.blend,
+    CrossfadeMode.smart => Broken.magicpen,
+    CrossfadeMode.beatMatched => Broken.buy_crypto,
+  };
+}
+
+extension LocalVideoMatchingTypeL10n on LocalVideoMatchingType {
+  String toText() => switch (this) {
+    LocalVideoMatchingType.auto => lang.auto,
+    LocalVideoMatchingType.titleAndArtist => "${lang.title} & ${lang.artist}",
+    LocalVideoMatchingType.filename => lang.fileName,
+    LocalVideoMatchingType.youtubeID => "${lang.fileName} (${lang.youtube})",
+  };
+}
+
+extension TrackPlayModeL10n on TrackPlayMode {
+  String toText() => switch (this) {
+    TrackPlayMode.selectedTrack => lang.trackPlayModeSelectedOnly,
+    TrackPlayMode.searchResults => lang.trackPlayModeSearchResults,
+    TrackPlayMode.trackAlbum => lang.trackPlayModeTrackAlbum,
+    TrackPlayMode.trackArtist => lang.trackPlayModeTrackArtist,
+    TrackPlayMode.trackGenre => lang.trackPlayModeTrackGenre,
+    TrackPlayMode.trackStyle => lang.trackPlayModeTrackStyle,
+  };
+
+  IconData toIcon() => switch (this) {
+    TrackPlayMode.selectedTrack => Broken.music_circle,
+    TrackPlayMode.searchResults => Broken.search_normal_1,
+    TrackPlayMode.trackAlbum => MediaType.album.toIcon(),
+    TrackPlayMode.trackArtist => MediaType.artist.toIcon(),
+    TrackPlayMode.trackGenre => MediaType.genre.toIcon(),
+    TrackPlayMode.trackStyle => MediaType.style.toIcon(),
+  };
+}
+
+extension MostPlayedTimeRangeL10n on MostPlayedTimeRange {
+  String toText() => switch (this) {
+    MostPlayedTimeRange.custom => lang.custom,
+    MostPlayedTimeRange.day => lang.day,
+    MostPlayedTimeRange.day3 => lang.countDays(count: 3),
+    MostPlayedTimeRange.week => lang.week,
+    MostPlayedTimeRange.month => lang.month,
+    MostPlayedTimeRange.month3 => lang.countMonths(count: 3),
+    MostPlayedTimeRange.month6 => lang.countMonths(count: 6),
+    MostPlayedTimeRange.year => lang.year,
+    MostPlayedTimeRange.allTime => lang.allTime,
+  };
+
+  IconData toIcon() => switch (this) {
+    MostPlayedTimeRange.custom => Broken.calendar_edit,
+    MostPlayedTimeRange.allTime => Broken.calendar,
+    MostPlayedTimeRange.day || MostPlayedTimeRange.day3 || MostPlayedTimeRange.week => Broken.calendar_1,
+    MostPlayedTimeRange.month || MostPlayedTimeRange.month3 || MostPlayedTimeRange.month6 || MostPlayedTimeRange.year => Broken.calendar_2,
+  };
+}
+
+extension HomePageItemsL10n on HomePageItems {
+  String toText() => switch (this) {
+    HomePageItems.mixes => lang.mixes,
+    HomePageItems.recentListens => lang.recentListens,
+    HomePageItems.topRecentListens => lang.topRecents,
+    HomePageItems.lostMemories => lang.lostMemories,
+    HomePageItems.recentQueues => lang.recentQueues,
+    HomePageItems.recentlyAdded => lang.recentlyAdded,
+    HomePageItems.recentAlbums => lang.recentAlbums,
+    HomePageItems.recentArtists => lang.recentArtists,
+    HomePageItems.topRecentAlbums => lang.topRecentAlbums,
+    HomePageItems.topRecentArtists => lang.topRecentArtists,
+    HomePageItems.pinnedPlaylists => lang.pinnedPlaylists,
+  };
+
+  IconData toMainIcon() => switch (this) {
+    HomePageItems.mixes => Broken.scanning,
+    HomePageItems.recentListens => Broken.command_square,
+    HomePageItems.topRecentListens => Broken.crown_1,
+    HomePageItems.lostMemories => Broken.link_21,
+    HomePageItems.recentQueues => Broken.undo,
+    HomePageItems.recentlyAdded => Broken.back_square,
+    HomePageItems.recentAlbums => Broken.undo,
+    HomePageItems.recentArtists => Broken.undo,
+    HomePageItems.topRecentAlbums => Broken.crown_1,
+    HomePageItems.topRecentArtists => Broken.crown_1,
+    HomePageItems.pinnedPlaylists => Broken.paperclip,
+  };
+
+  IconData? toIcon() => switch (this) {
+    HomePageItems.mixes => null,
+    HomePageItems.recentListens => null,
+    HomePageItems.topRecentListens => null,
+    HomePageItems.lostMemories => null,
+    HomePageItems.recentQueues => Broken.driver,
+    HomePageItems.recentlyAdded => null,
+    HomePageItems.recentAlbums => Broken.music_dashboard,
+    HomePageItems.topRecentAlbums => Broken.music_dashboard,
+    HomePageItems.recentArtists => Broken.user,
+    HomePageItems.topRecentArtists => Broken.user,
+    HomePageItems.pinnedPlaylists => Broken.music_playlist,
+  };
+}
+
+extension NotificationTapActionL10n on NotificationTapAction {
+  String toText() => switch (this) {
+    NotificationTapAction.openApp => lang.openApp,
+    NotificationTapAction.openMiniplayer => lang.openMiniplayer,
+    NotificationTapAction.openQueue => lang.openQueue,
+  };
+}
+
+extension NotificationButtonUtils on NotificationButton {
+  String toText() => switch (this) {
+    NotificationButton.previous => lang.previous,
+    NotificationButton.playPause => "${lang.play}/${lang.pause}",
+    NotificationButton.next => lang.next,
+    NotificationButton.favourite => lang.favourite,
+    NotificationButton.stop => lang.stop,
+    NotificationButton.shuffle => lang.shuffle,
+    NotificationButton.repeatMode => lang.repeatMode,
+    NotificationButton.seekBackward => lang.seekBackward,
+    NotificationButton.seekForward => lang.seekForward,
+    NotificationButton.previousChapter => lang.previousChapter,
+    NotificationButton.nextChapter => lang.nextChapter,
+    NotificationButton.sleepTimer => lang.sleepTimer,
+    NotificationButton.stopAfterCurrent => lang.stopAfterThisTrack,
+    NotificationButton.addToPlaylist => lang.addToPlaylist,
+    NotificationButton.bookmark => lang.addBookmark,
+  };
+
+  IconData toIcon() => switch (this) {
+    NotificationButton.previous => Broken.previous,
+    NotificationButton.playPause => Broken.play,
+    NotificationButton.next => Broken.next,
+    NotificationButton.favourite => Broken.heart,
+    NotificationButton.stop => Broken.close_circle,
+    NotificationButton.shuffle => Broken.shuffle,
+    NotificationButton.repeatMode => Broken.repeat,
+    NotificationButton.seekBackward => Broken.backward,
+    NotificationButton.seekForward => Broken.forward,
+    NotificationButton.previousChapter => Broken.arrow_square_left,
+    NotificationButton.nextChapter => Broken.arrow_square_right,
+    NotificationButton.sleepTimer => Broken.timer_1,
+    NotificationButton.stopAfterCurrent => Broken.pause_circle,
+    NotificationButton.addToPlaylist => Broken.music_library_2,
+    NotificationButton.bookmark => Broken.bookmark,
+  };
+}
+
+extension NotificationButtonListUtils on List<NotificationButton> {
+  /// play/pause can't be removed, it goes back after previous when missing.
+  List<NotificationButton> ensurePlayPause() {
+    if (contains(NotificationButton.playPause)) return this;
+    final previousIndex = indexOf(NotificationButton.previous);
+    final buttons = [...this];
+    buttons.insert(previousIndex + 1, NotificationButton.playPause);
+    return buttons;
+  }
+}
+
+extension OnYoutubeLinkOpenActionL10n on OnYoutubeLinkOpenAction {
+  String toText() => switch (this) {
+    OnYoutubeLinkOpenAction.showDownload => lang.download,
+    OnYoutubeLinkOpenAction.play => lang.play,
+    OnYoutubeLinkOpenAction.playNext => lang.playNext,
+    OnYoutubeLinkOpenAction.playAfter => lang.playAfter,
+    OnYoutubeLinkOpenAction.playLast => lang.playLast,
+    OnYoutubeLinkOpenAction.addToPlaylist => lang.addToPlaylist,
+    OnYoutubeLinkOpenAction.alwaysAsk => lang.alwaysAsk,
+  };
+
+  IconData toIcon() => switch (this) {
+    OnYoutubeLinkOpenAction.showDownload => Broken.import,
+    OnYoutubeLinkOpenAction.play => Broken.play,
+    OnYoutubeLinkOpenAction.playNext => Broken.next,
+    OnYoutubeLinkOpenAction.playAfter => Broken.hierarchy_square,
+    OnYoutubeLinkOpenAction.playLast => Broken.play_cricle,
+    OnYoutubeLinkOpenAction.addToPlaylist => Broken.music_library_2,
+    OnYoutubeLinkOpenAction.alwaysAsk => Broken.message_question,
+  };
+}
+
+extension PerformanceModeL10n on PerformanceMode {
+  String toText() => switch (this) {
+    PerformanceMode.highPerformance => lang.highPerformance,
+    PerformanceMode.balanced => lang.balanced,
+    PerformanceMode.goodLooking => lang.goodLooking,
+    PerformanceMode.custom => lang.custom,
+  };
+
+  IconData toIcon() => switch (this) {
+    PerformanceMode.highPerformance => Broken.activity,
+    PerformanceMode.balanced => Broken.cd,
+    PerformanceMode.goodLooking => Broken.buy_crypto,
+    PerformanceMode.custom => Broken.candle,
+  };
+}
+
+extension MiniplayerVisualizerL10n on MiniplayerVisualizer {
+  String toText() => switch (this) {
+    MiniplayerVisualizer.bars => lang.bars,
+    MiniplayerVisualizer.mirroredBars => lang.mirroredBars,
+    MiniplayerVisualizer.waves => lang.waves,
+    MiniplayerVisualizer.edgeLights => lang.edgeLights,
+    MiniplayerVisualizer.glow => lang.glow,
+    MiniplayerVisualizer.outline => lang.outline,
+    MiniplayerVisualizer.beatRings => lang.beatRings,
+    MiniplayerVisualizer.reactiveParticles => lang.reactiveParticles,
+  };
+
+  IconData toIcon() => switch (this) {
+    MiniplayerVisualizer.bars => Broken.chart_2,
+    MiniplayerVisualizer.mirroredBars => Broken.sound,
+    MiniplayerVisualizer.waves => Broken.wind_2,
+    MiniplayerVisualizer.edgeLights => Broken.slider,
+    MiniplayerVisualizer.glow => Broken.sun_1,
+    MiniplayerVisualizer.outline => Broken.record_circle,
+    MiniplayerVisualizer.beatRings => Broken.radar,
+    MiniplayerVisualizer.reactiveParticles => Broken.flash_1,
+  };
+}
+
+extension PlayerBackgroundL10n on PlayerBackground {
+  String toText() => switch (this) {
+    PlayerBackground.none => lang.none,
+    PlayerBackground.artwork => lang.artwork,
+    PlayerBackground.image => lang.custom,
+  };
+
+  IconData toIcon() => switch (this) {
+    PlayerBackground.none => Broken.slash,
+    PlayerBackground.artwork => Broken.music_square,
+    PlayerBackground.image => Broken.gallery,
+  };
+}
+
+extension EffectThemeL10n on EffectTheme {
+  String toText() => switch (this) {
+    EffectTheme.auto => lang.auto,
+    EffectTheme.none => lang.none,
+    EffectTheme.particles => lang.particles,
+    EffectTheme.fireflies => lang.fireflies,
+    EffectTheme.starfield => lang.starfield,
+    EffectTheme.galaxy => lang.galaxy,
+    EffectTheme.aurora => lang.aurora,
+    EffectTheme.deepOcean => lang.deepOcean,
+    EffectTheme.rain => lang.rain,
+    EffectTheme.sakura => lang.sakura,
+    EffectTheme.fireworks => lang.fireworks,
+    EffectTheme.halloween => lang.halloween,
+    EffectTheme.christmas => lang.christmas,
+    EffectTheme.ramadan => lang.ramadan,
+  };
+
+  IconData toIcon() => switch (this) {
+    EffectTheme.auto => Broken.magicpen,
+    EffectTheme.none => Broken.slash,
+    EffectTheme.particles => Broken.buy_crypto,
+    EffectTheme.fireflies => Broken.lamp_on,
+    EffectTheme.starfield => Broken.star_1,
+    EffectTheme.galaxy => Broken.global,
+    EffectTheme.aurora => Broken.wind,
+    EffectTheme.deepOcean => Broken.bubble,
+    EffectTheme.rain => Broken.cloud_drizzle,
+    EffectTheme.sakura => Broken.tree,
+    EffectTheme.fireworks => Broken.magic_star,
+    EffectTheme.halloween => Broken.ghost,
+    EffectTheme.christmas => Broken.sun,
+    EffectTheme.ramadan => Broken.moon,
+  };
+}
+
+extension KillAppModeL10n on KillAppMode {
+  String toText() => switch (this) {
+    KillAppMode.never => lang.never,
+    KillAppMode.ifNotPlaying => lang.ifNotPlaying,
+    KillAppMode.always => lang.always,
+  };
+}
+
+extension FABTypeL10n on FABType {
+  String toText() => switch (this) {
+    FABType.none => lang.none,
+    FABType.search => lang.search,
+    FABType.shuffle => lang.shuffle,
+    FABType.play => lang.play,
+  };
+
+  IconData toIcon() => switch (this) {
+    FABType.none => Broken.status,
+    FABType.search => Broken.search_normal,
+    FABType.shuffle => Broken.shuffle,
+    FABType.play => Broken.play_cricle,
+  };
+}
+
+extension YTHomeSourceL10n on YTHomeSource {
+  String toText() => switch (this) {
+    YTHomeSource.local => lang.local,
+    YTHomeSource.youtube => lang.youtube,
+  };
+
+  IconData toIcon() => switch (this) {
+    YTHomeSource.local => Broken.driver,
+    YTHomeSource.youtube => Broken.video_square,
+  };
+}
+
+extension YTHomePagesL10n on YTHomePages {
+  String toText() => switch (this) {
+    YTHomePages.home => lang.home,
+    YTHomePages.notifications => lang.notifications,
+    YTHomePages.channels => lang.channels,
+    YTHomePages.playlists => lang.playlists,
+    YTHomePages.downloads => lang.downloads,
+  };
+
+  String _toLibraryTabText() => '${toText()} (${lang.youtube})';
+
+  IconData toIcon() => switch (this) {
+    YTHomePages.home => Broken.home_1,
+    YTHomePages.notifications => Broken.notification_bing,
+    YTHomePages.channels => Broken.profile_2user,
+    YTHomePages.playlists => Broken.music_library_2,
+    YTHomePages.downloads => Broken.import,
+  };
+}
+
+extension TrackSearchFilterL10n on TrackSearchFilter {
+  String toText() => switch (this) {
+    TrackSearchFilter.filename => lang.fileName,
+    TrackSearchFilter.folder => lang.folder,
+    TrackSearchFilter.title => lang.title,
+    TrackSearchFilter.album => lang.album,
+    TrackSearchFilter.artist => lang.artist,
+    TrackSearchFilter.albumartist => lang.albumArtist,
+    TrackSearchFilter.genre => lang.genre,
+    TrackSearchFilter.style => lang.style,
+    TrackSearchFilter.language => lang.language,
+    TrackSearchFilter.composer => lang.composer,
+    TrackSearchFilter.comment => lang.comment,
+    TrackSearchFilter.description => lang.description,
+    TrackSearchFilter.year => lang.year,
+    TrackSearchFilter.moods => lang.moods,
+    TrackSearchFilter.tags => lang.tags,
+    TrackSearchFilter.lyrics => lang.lyrics,
+  };
+}
+
+extension VibrationTypeL10n on VibrationType {
+  String toText() => switch (this) {
+    VibrationType.none => lang.none,
+    VibrationType.vibration => lang.vibration,
+    VibrationType.haptic_feedback => lang.hapticFeedback,
+  };
+
+  IconData toIcon() => switch (this) {
+    VibrationType.none => Broken.slash,
+    VibrationType.vibration => Broken.alarm,
+    VibrationType.haptic_feedback => Broken.wind_2,
+  };
+}
+
+extension ReplayGainTypeL10n on ReplayGainType {
+  String toText() => switch (this) {
+    ReplayGainType.off => lang.none,
+    ReplayGainType.platform_default => lang.defaultLabel,
+    ReplayGainType.loudness_enhancer => lang.loudnessEnhancer,
+    ReplayGainType.volume => lang.volume,
+  };
+}
+
+extension EqualizerBandTypeL10n on EqualizerBandType {
+  String toText() => switch (this) {
+    EqualizerBandType.peak => lang.eqPeak,
+    EqualizerBandType.lowShelf => lang.eqLowShelf,
+    EqualizerBandType.highShelf => lang.eqHighShelf,
+    EqualizerBandType.lowPass => lang.eqLowPass,
+    EqualizerBandType.highPass => lang.eqHighPass,
+    EqualizerBandType.bandPass => lang.eqBandPass,
+    EqualizerBandType.notch => lang.eqNotch,
+    EqualizerBandType.allPass => lang.eqAllPass,
+  };
+}
+
+extension EqualizerChannelL10n on EqualizerChannel {
+  String toText() => switch (this) {
+    EqualizerChannel.all => lang.all,
+    EqualizerChannel.left => lang.left,
+    EqualizerChannel.right => lang.right,
+  };
+}
+
+extension AudioOutputDeviceTypeUtils on AudioOutputDeviceType {
+  IconData toIcon() => switch (this) {
+    AudioOutputDeviceType.speaker => Broken.speaker,
+    AudioOutputDeviceType.wired => Broken.headphone,
+    AudioOutputDeviceType.bluetooth => Broken.bluetooth,
+    AudioOutputDeviceType.usb => Broken.cpu,
+    AudioOutputDeviceType.digital => Broken.monitor,
+    AudioOutputDeviceType.other => Broken.radar_1,
+  };
+}
+
+extension AudioOutputForcedOffCauseUtils on AudioOutputForcedOffCause {
+  String toText() => switch (this) {
+    AudioOutputForcedOffCause.bitPerfect => lang.bitPerfect,
+    AudioOutputForcedOffCause.usbDirect => lang.usbDirect,
+    AudioOutputForcedOffCause.exclusiveMode => lang.exclusiveMode,
+  };
+
+  IconData toIcon() => switch (this) {
+    AudioOutputForcedOffCause.bitPerfect => Broken.flash,
+    AudioOutputForcedOffCause.usbDirect => Broken.cpu,
+    AudioOutputForcedOffCause.exclusiveMode => Broken.lock,
+  };
+
+  bool isAvailable() => switch (this) {
+    AudioOutputForcedOffCause.bitPerfect => true,
+    AudioOutputForcedOffCause.usbDirect => Platform.isAndroid,
+    AudioOutputForcedOffCause.exclusiveMode => !Platform.isAndroid,
+  };
+}
+
+extension AudioOutputForcedOffUtils on AudioOutputForcedOff {
+  String toText() => switch (this) {
+    AudioOutputForcedOff.equalizer => lang.equalizer,
+    AudioOutputForcedOff.loudnessEnhancer => lang.loudnessEnhancer,
+    AudioOutputForcedOff.speed => lang.speed,
+    AudioOutputForcedOff.pitch => lang.pitch,
+    AudioOutputForcedOff.skipSilence => lang.skipSilence,
+    AudioOutputForcedOff.monoAudio => lang.monoAudio,
+    AudioOutputForcedOff.soundEffects => lang.soundEffects,
+    AudioOutputForcedOff.volume => lang.volume,
+    AudioOutputForcedOff.fadeOnPlayPause => lang.fadeOnPlayPause,
+    AudioOutputForcedOff.crossfade => lang.crossfade,
+    AudioOutputForcedOff.systemEffects => lang.systemAudioEffects,
+    AudioOutputForcedOff.systemVolume => lang.volumeKeys,
+    AudioOutputForcedOff.otherSounds => lang.otherAppsSounds,
+  };
+
+  bool isAvailable() => switch (this) {
+    AudioOutputForcedOff.equalizer => NamidaFeaturesVisibility.equalizerAvailable,
+    AudioOutputForcedOff.loudnessEnhancer => NamidaFeaturesVisibility.loudnessEnhancerAvailable,
+    AudioOutputForcedOff.skipSilence => NamidaFeaturesVisibility.skipSilenceAvailable,
+    AudioOutputForcedOff.soundEffects => NamidaFeaturesVisibility.soundEffectsAvailable,
+    AudioOutputForcedOff.systemEffects || AudioOutputForcedOff.systemVolume => Platform.isAndroid,
+    _ => true,
+  };
+}
+
+extension SoundEffectTypeUtils on SoundEffectType {
+  String toText() => switch (this) {
+    SoundEffectType.crossfeed => lang.crossfeed,
+    SoundEffectType.virtualSurround => lang.virtualSurround,
+    SoundEffectType.echo => lang.echo,
+    SoundEffectType.chorus => lang.chorus,
+    SoundEffectType.autoPan => lang.autoPan,
+    SoundEffectType.compressor => lang.compressor,
+    SoundEffectType.instrumental => lang.instrumental,
+    SoundEffectType.bassEnhancer => lang.bassEnhancer,
+    SoundEffectType.tubeWarmth => lang.tubeWarmth,
+    SoundEffectType.reverb => lang.reverb,
+  };
+
+  IconData toIcon() => switch (this) {
+    SoundEffectType.crossfeed => Broken.headphone,
+    SoundEffectType.virtualSurround => Broken.alarm,
+    SoundEffectType.echo => Broken.radar_1,
+    SoundEffectType.chorus => Broken.voice_cricle,
+    SoundEffectType.autoPan => Broken.d_rotate,
+    SoundEffectType.compressor => Broken.pharagraphspacing,
+    SoundEffectType.instrumental => Broken.microphone_slash,
+    SoundEffectType.bassEnhancer => Broken.speaker,
+    SoundEffectType.tubeWarmth => Broken.lamp_on,
+    SoundEffectType.reverb => Broken.airdrop,
+  };
+}
+
+extension LibraryImageSourceL10n on LibraryImageSource {
+  String toText() => switch (this) {
+    LibraryImageSource.local => lang.local,
+    LibraryImageSource.lastfm => 'last.fm',
+  };
+
+  IconData toIcon() => switch (this) {
+    LibraryImageSource.local => Broken.music_library_2,
+    LibraryImageSource.lastfm => Broken.cloud,
+  };
+}
+
+extension SetMusicAsActionL10n on SetMusicAsAction {
+  String toText() => switch (this) {
+    SetMusicAsAction.ringtone => lang.ringtone,
+    SetMusicAsAction.notification => lang.notification,
+    SetMusicAsAction.alarm => lang.alarm,
+  };
+}
+
+extension PlaylistAddDuplicateActionL10n on PlaylistAddDuplicateAction {
+  String toText() => switch (this) {
+    PlaylistAddDuplicateAction.justAddEverything => lang.addAll,
+    PlaylistAddDuplicateAction.addAllAndRemoveOldOnes => lang.addAllAndRemoveOldOnes,
+    PlaylistAddDuplicateAction.addOnlyMissing => lang.addOnlyMissing,
+    PlaylistAddDuplicateAction.mergeAndSortByAddedDate => '${lang.merge} + ${lang.sortBy}: ${lang.dateAdded}',
+    PlaylistAddDuplicateAction.deleteAndCreateNewPlaylist => '${lang.deletePlaylist} + ${lang.createNewPlaylist}',
+  };
+}
+
+extension PlaylistTagsSelectionL10n on PlaylistTagsSelection {
+  /// ex: `gym + rock - live`
+  String toText() {
+    final includedText = included.map((e) => e.toText()).join(' + ');
+    if (excluded.isEmpty) return includedText;
+    final excludedText = excluded.map((e) => e.toText()).join(' - ');
+    return '$includedText - $excludedText';
+  }
+}
+
+extension PlaylistTagKeyL10n on PlaylistTagKey {
+  String toText() {
+    final key = this;
+    return switch (key) {
+      PlaylistUserTag() => key.path,
+      PlaylistVirtualTag() => key.toVirtualText(),
     };
-
-    // ====================================================
-    // ====================== Subtitle ====================
-    // ====================================================
-    _toSubtitle = <Type, Map<Enum, String?>>{
-      InterruptionType: {
-        InterruptionType.shouldPause: lang.SHOULD_PAUSE_NOTE,
-        InterruptionType.shouldDuck: lang.SHOULD_DUCK_NOTE,
-        InterruptionType.unknown: null,
-      },
-      VideoPlaybackSource: {
-        VideoPlaybackSource.auto: lang.VIDEO_PLAYBACK_SOURCE_AUTO_SUBTITLE,
-        VideoPlaybackSource.youtube: lang.VIDEO_PLAYBACK_SOURCE_YOUTUBE_SUBTITLE,
-        VideoPlaybackSource.local: lang.VIDEO_PLAYBACK_SOURCE_LOCAL_SUBTITLE,
-      }
-    };
-
-    // =================================================
-    // ====================== Icons ====================
-    // =================================================
-    _toIcon = <Type, Map<Enum, IconData>>{
-      InterruptionAction: {
-        InterruptionAction.doNothing: Broken.minus_cirlce,
-        InterruptionAction.duckAudio: Broken.volume_low_1,
-        InterruptionAction.pause: Broken.pause_circle,
-      },
-      InterruptionType: {
-        InterruptionType.shouldPause: Broken.pause_circle,
-        InterruptionType.shouldDuck: Broken.volume_low_1,
-        InterruptionType.unknown: Broken.status,
-      },
-      RepeatMode: {
-        RepeatMode.none: Broken.repeate_music,
-        RepeatMode.one: Broken.repeate_one,
-        RepeatMode.all: Broken.repeat,
-        RepeatMode.forNtimes: Broken.status,
-      },
-      ThemeMode: {
-        ThemeMode.light: Broken.sun_1,
-        ThemeMode.dark: Broken.moon,
-        ThemeMode.system: Broken.autobrightness,
-      },
-      LibraryTab: {
-        LibraryTab.albums: Broken.music_dashboard,
-        LibraryTab.tracks: Broken.music_circle,
-        LibraryTab.artists: Broken.profile_2user,
-        LibraryTab.genres: Broken.smileys,
-        LibraryTab.playlists: Broken.music_library_2,
-        LibraryTab.folders: Broken.folder,
-        LibraryTab.home: Broken.home_2,
-        LibraryTab.search: Broken.search_normal_1,
-        LibraryTab.youtube: Broken.video_square,
-      },
-      TagField: {
-        TagField.title: Broken.music,
-        TagField.album: Broken.music_dashboard,
-        TagField.artist: Broken.microphone,
-        TagField.albumArtist: Broken.user,
-        TagField.genre: Broken.smileys,
-        TagField.mood: Broken.happyemoji,
-        TagField.composer: Broken.profile_2user,
-        TagField.comment: Broken.text_block,
-        TagField.lyrics: Broken.message_text,
-        TagField.trackNumber: Broken.hashtag,
-        TagField.discNumber: Broken.hashtag,
-        TagField.year: Broken.calendar,
-        TagField.remixer: Broken.radio,
-        TagField.trackTotal: Broken.hashtag,
-        TagField.discTotal: Broken.hashtag,
-        TagField.lyricist: Broken.pen_add,
-        TagField.language: Broken.language_circle,
-        TagField.recordLabel: Broken.ticket,
-        TagField.country: Broken.house,
-      },
-      InsertionSortingType: {
-        InsertionSortingType.listenCount: Broken.award,
-        InsertionSortingType.random: Broken.format_circle,
-        InsertionSortingType.rating: Broken.grammerly,
-      },
-      OnYoutubeLinkOpenAction: {
-        OnYoutubeLinkOpenAction.showDownload: Broken.import,
-        OnYoutubeLinkOpenAction.play: Broken.play,
-        OnYoutubeLinkOpenAction.addToPlaylist: Broken.music_library_2,
-        OnYoutubeLinkOpenAction.alwaysAsk: Broken.message_question,
-      },
-      PerformanceMode: {
-        PerformanceMode.highPerformance: Broken.activity,
-        PerformanceMode.balanced: Broken.cd,
-        PerformanceMode.goodLooking: Broken.buy_crypto,
-        PerformanceMode.custom: Broken.candle,
-      },
-      FABType: {
-        FABType.none: Broken.status,
-        FABType.search: Broken.search_normal,
-        FABType.shuffle: Broken.shuffle,
-        FABType.play: Broken.play_cricle,
-      },
-    };
-
-    _ffmpegToTitle = {
-      FFMPEGTagField.title: lang.TITLE,
-      FFMPEGTagField.album: lang.ALBUM,
-      FFMPEGTagField.artist: lang.ARTIST,
-      FFMPEGTagField.albumArtist: lang.ALBUM_ARTIST,
-      FFMPEGTagField.genre: lang.GENRE,
-      FFMPEGTagField.mood: lang.MOOD,
-      FFMPEGTagField.composer: lang.COMPOSER,
-      FFMPEGTagField.synopsis: lang.SYNOPSIS,
-      FFMPEGTagField.comment: lang.COMMENT,
-      FFMPEGTagField.description: lang.DESCRIPTION,
-      FFMPEGTagField.lyrics: lang.LYRICS,
-      FFMPEGTagField.trackNumber: lang.TRACK_NUMBER,
-      FFMPEGTagField.discNumber: lang.DISC_NUMBER,
-      FFMPEGTagField.trackTotal: lang.TRACK_NUMBER_TOTAL,
-      FFMPEGTagField.discTotal: lang.DISC_NUMBER_TOTAL,
-      FFMPEGTagField.year: lang.YEAR,
-      FFMPEGTagField.remixer: lang.REMIXER,
-      FFMPEGTagField.lyricist: lang.LYRICIST,
-      FFMPEGTagField.language: lang.LANGUAGE,
-      FFMPEGTagField.recordLabel: lang.RECORD_LABEL,
-      FFMPEGTagField.country: lang.COUNTRY,
-    };
-    _ffmpegToIcon = {
-      FFMPEGTagField.title: Broken.music,
-      FFMPEGTagField.album: Broken.music_dashboard,
-      FFMPEGTagField.artist: Broken.microphone,
-      FFMPEGTagField.albumArtist: Broken.user,
-      FFMPEGTagField.genre: Broken.smileys,
-      FFMPEGTagField.mood: Broken.happyemoji,
-      FFMPEGTagField.composer: Broken.profile_2user,
-      FFMPEGTagField.synopsis: Broken.text,
-      FFMPEGTagField.comment: Broken.text_block,
-      FFMPEGTagField.description: Broken.note_text,
-      FFMPEGTagField.lyrics: Broken.message_text,
-      FFMPEGTagField.trackNumber: Broken.hashtag,
-      FFMPEGTagField.discNumber: Broken.hashtag,
-      FFMPEGTagField.trackTotal: Broken.hashtag,
-      FFMPEGTagField.discTotal: Broken.hashtag,
-      FFMPEGTagField.year: Broken.calendar,
-      FFMPEGTagField.remixer: Broken.radio,
-      FFMPEGTagField.lyricist: Broken.pen_add,
-      FFMPEGTagField.language: Broken.language_circle,
-      FFMPEGTagField.recordLabel: Broken.ticket,
-      FFMPEGTagField.country: Broken.house,
-    };
   }
+}
 
-  var _toTitle = <Type, Map<Enum, String>>{};
-  var _toSubtitle = <Type, Map<Enum, String?>>{};
-  var _toIcon = <Type, Map<Enum, IconData>>{};
+extension PlaylistVirtualTagL10n on PlaylistVirtualTag {
+  String toVirtualText() => switch (this) {
+    PlaylistVirtualTag.pinned => lang.pinned,
+    PlaylistVirtualTag.untagged => lang.untagged,
+    PlaylistVirtualTag.m3u => lang.m3uPlaylist,
+    PlaylistVirtualTag.remote => lang.server,
+  };
 
-  var _ffmpegToTitle = <String, String>{};
-  var _ffmpegToIcon = <String, IconData>{};
+  IconData toIcon() => switch (this) {
+    PlaylistVirtualTag.pinned => Broken.paperclip,
+    PlaylistVirtualTag.untagged => Broken.tag_cross,
+    PlaylistVirtualTag.m3u => Broken.music_filter,
+    PlaylistVirtualTag.remote => Broken.cloud,
+  };
+}
 
-  String getTitle(Enum enumValue) {
-    return _toTitle[enumValue.runtimeType]![enumValue]!;
-  }
+extension YTSeekActionModeL10n on YTSeekActionMode {
+  String toText() => switch (this) {
+    YTSeekActionMode.none => lang.none,
+    YTSeekActionMode.minimizedMiniplayer => lang.minimizedMiniplayer,
+    YTSeekActionMode.expandedMiniplayer => lang.expandedMiniplayer,
+    YTSeekActionMode.all => lang.all,
+  };
+}
 
-  String? getSubtitle(Enum enumValue) {
-    return _toSubtitle[enumValue.runtimeType]?[enumValue];
-  }
+extension YTHorizontalDragModeL10n on YTHorizontalDragMode {
+  String toText() => switch (this) {
+    YTHorizontalDragMode.never => lang.never,
+    YTHorizontalDragMode.expandedMiniplayer => lang.expandedMiniplayer,
+    YTHorizontalDragMode.fullscreen => lang.fullscreen,
+    YTHorizontalDragMode.always => lang.always,
+  };
+}
 
-  IconData getIcon(Enum enumValue) {
-    return _toIcon[enumValue.runtimeType]![enumValue]!;
-  }
+extension CommentsSortTypeL10n on CommentsSortType {
+  String toText() => switch (this) {
+    CommentsSortType.top => lang.top,
+    CommentsSortType.newest => lang.newest,
+  };
+}
 
-  String ffmpegTagFieldName(String tag) {
-    return _ffmpegToTitle[tag]!;
-  }
+extension ChannelNotificationsL10n on ChannelNotifications {
+  String toText() => switch (this) {
+    ChannelNotifications.all => lang.all,
+    ChannelNotifications.personalized => lang.personalized,
+    ChannelNotifications.none => lang.none,
+  };
+}
 
-  IconData ffmpegTagFieldIcon(String tag) {
-    return _ffmpegToIcon[tag]!;
-  }
+extension YTVisibleShortPlacesL10n on YTVisibleShortPlaces {
+  String toText() => switch (this) {
+    YTVisibleShortPlaces.homeFeed => lang.home,
+    YTVisibleShortPlaces.relatedVideos => lang.relatedVideos,
+    YTVisibleShortPlaces.history => lang.history,
+    YTVisibleShortPlaces.search => lang.search,
+  };
+}
+
+extension YTVisibleMixesPlacesL10n on YTVisibleMixesPlaces {
+  String toText() => switch (this) {
+    YTVisibleMixesPlaces.homeFeed => lang.home,
+    YTVisibleMixesPlaces.relatedVideos => lang.relatedVideos,
+    YTVisibleMixesPlaces.search => lang.search,
+  };
+}
+
+extension PlaylistPrivacyL10n on PlaylistPrivacy {
+  String toText() => switch (this) {
+    PlaylistPrivacy.public => lang.public,
+    PlaylistPrivacy.unlisted => lang.unlisted,
+    PlaylistPrivacy.private => lang.private,
+  };
+}
+
+extension DownloadNotificationsL10n on DownloadNotifications {
+  String toText() => switch (this) {
+    DownloadNotifications.disableAll => lang.disableAll,
+    DownloadNotifications.showAll => lang.showAll,
+    DownloadNotifications.showFailedOnly => lang.showFailedOnly,
+  };
+}
+
+extension PlayerRepeatModeL10n on PlayerRepeatMode {
+  IconData toMainIcon() => switch (this) {
+    PlayerRepeatMode.none => Broken.repeate_music,
+    PlayerRepeatMode.one => Broken.repeate_one,
+    PlayerRepeatMode.all => Broken.repeat,
+    PlayerRepeatMode.allShuffle => Broken.repeat,
+    // PlayerRepeatMode.shuffle => Broken.shuffle,
+    PlayerRepeatMode.forNtimes => Broken.status,
+  };
+
+  // IconData? toSecondaryIcon({bool shuffleReflectInQueue = false}) => switch (this) {
+  IconData? toSecondaryIcon() => switch (this) {
+    PlayerRepeatMode.none => null,
+    PlayerRepeatMode.one => null,
+    PlayerRepeatMode.all => null,
+    PlayerRepeatMode.allShuffle => Broken.shuffle,
+    // PlayerRepeatMode.shuffle => shuffleReflectInQueue ? Broken.task : null,
+    PlayerRepeatMode.forNtimes => null,
+  };
+}
+
+extension ThemeModeL10n on ThemeMode {
+  IconData toIcon() => switch (this) {
+    ThemeMode.light => Broken.sun_1,
+    ThemeMode.dark => Broken.moon,
+    ThemeMode.system => Broken.autobrightness,
+  };
+}
+
+extension WebhookEventL10n on WebhookEvent {
+  String toText() => switch (this) {
+    WebhookEvent.trackChanged => 'Track changed',
+    WebhookEvent.play => lang.play,
+    WebhookEvent.pause => lang.pause,
+  };
+}
+
+extension WebhookEventUtils on WebhookEvent {
+  IconData toIcon() => switch (this) {
+    WebhookEvent.trackChanged => Broken.music,
+    WebhookEvent.play => Broken.play,
+    WebhookEvent.pause => Broken.pause,
+  };
+}
+
+extension LyricsIntegrationL10n on LyricsIntegration {
+  String toText() => switch (this) {
+    LyricsIntegration.lyricInfo => 'ColorOS & HyperLyric',
+    LyricsIntegration.superLyric => 'SuperLyric',
+    LyricsIntegration.flymeTicker => 'Flyme & Lyricon',
+  };
+}
+
+extension LyricsIntegrationUtils on LyricsIntegration {
+  IconData toIcon() => switch (this) {
+    LyricsIntegration.lyricInfo => Broken.mobile,
+    LyricsIntegration.superLyric => Broken.status,
+    LyricsIntegration.flymeTicker => Broken.notification_status,
+  };
 }

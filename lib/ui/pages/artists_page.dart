@@ -1,8 +1,13 @@
 import 'package:flutter/material.dart';
 
+import 'package:flutter_scrollbar_modified/flutter_scrollbar_modified.dart';
 import 'package:flutter_staggered_animations/flutter_staggered_animations.dart';
-import 'package:get/get.dart';
 
+import 'package:namida/class/count_per_row.dart';
+import 'package:namida/class/route.dart';
+import 'package:namida/class/sort_chain.dart';
+import 'package:namida/controller/history_controller.dart';
+import 'package:namida/controller/indexer_controller.dart';
 import 'package:namida/controller/scroll_search_controller.dart';
 import 'package:namida/controller/search_sort_controller.dart';
 import 'package:namida/controller/settings_controller.dart';
@@ -12,15 +17,22 @@ import 'package:namida/core/extensions.dart';
 import 'package:namida/core/icon_fonts/broken_icons.dart';
 import 'package:namida/core/namida_converter_ext.dart';
 import 'package:namida/core/translations/language.dart';
+import 'package:namida/core/utils.dart';
+import 'package:namida/ui/pages/discover_page.dart';
 import 'package:namida/ui/widgets/custom_widgets.dart';
 import 'package:namida/ui/widgets/expandable_box.dart';
 import 'package:namida/ui/widgets/library/artist_card.dart';
 import 'package:namida/ui/widgets/library/artist_tile.dart';
+import 'package:namida/ui/widgets/sliver_cross_axis_extent_builder.dart';
 import 'package:namida/ui/widgets/sort_by_button.dart';
 
-class ArtistsPage extends StatelessWidget {
-  final List<String>? artists;
-  final int countPerRow;
+class ArtistsPage extends StatelessWidget with NamidaRouteWidget {
+  @override
+  RouteType get route => RouteType.PAGE_artists;
+
+  final RxList<String>? artists;
+  final CountPerRow countPerRow;
+  final bool enableGridIconButton;
   final bool animateTiles;
   final bool enableHero;
   final MediaType? customType;
@@ -29,6 +41,7 @@ class ArtistsPage extends StatelessWidget {
     super.key,
     this.artists,
     required this.countPerRow,
+    this.enableGridIconButton = true,
     this.animateTiles = true,
     required this.enableHero,
     this.customType,
@@ -39,9 +52,10 @@ class ArtistsPage extends StatelessWidget {
   List<NamidaPopupItem> _getTypeChooserChildren() {
     void onTap(MediaType type) {
       GroupSortType? newArtistSort;
-      final currentArtistSort = settings.artistSort.value;
+      final currentSorting = settings.groupSortingOf(MediaType.artist);
+      final firstEntry = currentSorting.entries.first;
       // -- automatically resorting by the new type
-      switch (currentArtistSort) {
+      switch (firstEntry.type) {
         case GroupSortType.artistsList:
         case GroupSortType.albumArtist:
         case GroupSortType.composer:
@@ -54,62 +68,101 @@ class ArtistsPage extends StatelessWidget {
         default:
           null;
       }
-      settings.save(activeArtistType: type);
-      SearchSortController.inst.sortMedia(type, groupSortBy: newArtistSort, reverse: null);
+      SortChain<GroupSortType>? newSorting;
+      if (newArtistSort != null) {
+        final otherEntries = currentSorting.entries.skip(1).where((e) => e.type != newArtistSort);
+        final newFirstEntry = SortEntry(newArtistSort, reverse: firstEntry.reverse);
+        newSorting = currentSorting.copyWith(entries: [newFirstEntry, ...otherEntries]);
+      }
+      settings.activeArtistType.save(type);
+      SearchSortController.inst.sortMedia(type, groupSorting: newSorting);
     }
 
     return [
       NamidaPopupItem(
         icon: Broken.microphone,
-        title: lang.ARTIST,
+        title: lang.artist,
+        selected: MediaType.artist == settings.activeArtistType.value,
         onTap: () => onTap(MediaType.artist),
       ),
       NamidaPopupItem(
         icon: Broken.user,
-        title: lang.ALBUM_ARTIST,
+        title: lang.albumArtist,
+        selected: MediaType.albumArtist == settings.activeArtistType.value,
         onTap: () => onTap(MediaType.albumArtist),
       ),
       NamidaPopupItem(
         icon: Broken.profile_2user,
-        title: lang.COMPOSER,
+        title: lang.composer,
+        selected: MediaType.composer == settings.activeArtistType.value,
         onTap: () => onTap(MediaType.composer),
       ),
     ];
   }
 
+  ScrollbarThumbLabelResolver? _createThumbLabel() {
+    final artistType = settings.activeArtistType.value;
+    final artists = SearchSortController.inst.artistSearchList.value;
+    final labelOf = SearchSortController.inst.getArtistsSortLabelResolver(artistType);
+    return NamidaScrollbar.createListThumbLabel(artists, labelOf);
+  }
+
   @override
   Widget build(BuildContext context) {
-    final finalArtists = artists ?? SearchSortController.inst.artistSearchList;
-    final scrollController = LibraryTab.artists.scrollController;
-    final artistDimensions = Dimensions.inst.getArtistCardDimensions(countPerRow);
+    final textTheme = context.textTheme;
+    const libraryTab = LibraryTab.artists;
+    final scrollController = libraryTab.scrollController;
+    final countPerRowResolved = countPerRow.resolve(context);
+    final artistTypeColor = context.theme.colorScheme.onSecondaryContainer.withOpacityExt(0.8);
+    final isCustomList = artists != null;
 
-    final artistTypeColor = context.theme.colorScheme.onSecondaryContainer.withOpacity(0.8);
+    const listHeader = ExpandableBoxEmptyAnimatedPadding(tab: libraryTab);
+
     return BackgroundWrapper(
       child: NamidaScrollbar(
         controller: scrollController,
+        thumbLabel: isCustomList ? null : _createThumbLabel,
         child: AnimationLimiter(
-          child: Obx(
-            () {
-              final artistTypeSettings = settings.activeArtistType.value;
-              final artistType = customType ?? artistTypeSettings;
-              final artistTypeText = artistType.toText();
-              final artistLeftText = finalArtists.length.displayKeyword(artistTypeText, artistTypeText);
-              return Column(
-                children: [
-                  ExpandableBox(
+          child: ObxO(
+            rx: artists ?? SearchSortController.inst.artistSearchList,
+            builder: (context, finalArtists) => Obx(
+              (context) {
+                final artistTypeSettings = settings.activeArtistType.valueR;
+                final artistType = customType ?? artistTypeSettings;
+                final Function({required int count}) countToText = switch (artistType) {
+                  MediaType.artist => lang.countArtists,
+                  MediaType.albumArtist => lang.countAlbumArtists,
+                  MediaType.composer => lang.countComposers,
+                  _ => ({required int count}) => '',
+                };
+                final finalArtistsLength = finalArtists.length;
+                final totalArtistsLength = Indexer.inst.getArtistMapFor(artistType).valueR.length;
+                String artistLeftText = finalArtistsLength != totalArtistsLength
+                    ? '$finalArtistsLength/${countToText(count: totalArtistsLength)}'
+                    : countToText(count: finalArtistsLength);
+
+                final sorting = settings.groupSortingOfR(artistType);
+                final sort = sorting.entries.first.type;
+                final sortReverse = sorting.reverse;
+
+                final sortTextIsUseless =
+                    sort == GroupSortType.artistsList ||
+                    (countPerRowResolved == 1 && (sort == GroupSortType.albumsCount || sort == GroupSortType.numberOfTracks || sort == GroupSortType.duration));
+                final extraTextResolver = sortTextIsUseless ? null : SearchSortController.inst.getArtistsExtraTextResolver(artistType, sort);
+
+                return ExpandableBoxColumn(
+                  tab: libraryTab,
+                  header: ExpandableBox(
                     enableHero: enableHero,
-                    gridWidget: ChangeGridCountWidget(
-                      currentCount: settings.artistGridCount.value,
-                      onTap: () {
-                        final newCount = ScrollSearchController.inst.animateChangingGridSize(LibraryTab.artists, countPerRow);
-                        settings.save(artistGridCount: newCount);
-                      },
-                    ),
-                    isBarVisible: LibraryTab.artists.isBarVisible,
-                    showSearchBox: LibraryTab.artists.isSearchBoxVisible,
+                    gridWidget: enableGridIconButton
+                        ? const ChangeGridCountWidget(
+                            tab: libraryTab,
+                          )
+                        : null,
+                    isBarVisible: libraryTab.isBarVisible.valueR,
                     leftText: customType != null ? artistLeftText : '',
                     leftWidgets: customType != null
-                        ? []
+                        ? null
                         : [
                             NamidaPopupWrapper(
                               childrenDefault: _getTypeChooserChildren,
@@ -124,82 +177,115 @@ class ArtistsPage extends StatelessWidget {
                                   const SizedBox(width: 4.0),
                                   Text(
                                     artistLeftText,
-                                    style: context.textTheme.displayMedium?.copyWith(
-                                      color: context.theme.colorScheme.onSecondaryContainer.withOpacity(0.8),
+                                    style: textTheme.displayMedium?.copyWith(
+                                      color: artistTypeColor,
                                     ),
                                   ),
                                 ],
                               ),
                             ),
+                            const SizedBox(width: 4.0),
+                            NamidaInkWell(
+                              borderRadius: 6.0,
+                              padding: const EdgeInsets.symmetric(horizontal: 6.0, vertical: 4.0),
+                              onTap: const DiscoverPage().navigate,
+                              child: NamidaTooltip(
+                                message: () => lang.discover,
+                                child: Icon(
+                                  Broken.hierarchy_3,
+                                  size: 14.0,
+                                  color: artistTypeColor,
+                                ),
+                              ),
+                            ),
                           ],
-                    onFilterIconTap: () => ScrollSearchController.inst.switchSearchBoxVisibilty(LibraryTab.artists),
-                    onCloseButtonPressed: () => ScrollSearchController.inst.clearSearchTextField(LibraryTab.artists),
+                    onSearchBoxVisibilityChange: (newShow) => ScrollSearchController.inst.onSearchBoxVisibiltyChange(libraryTab, newShow),
+                    onCloseButtonPressed: () => ScrollSearchController.inst.clearSearchTextField(libraryTab),
+                    disableSorting: isCustomList,
                     sortByMenuWidget: SortByMenu(
-                      title: settings.artistSort.value.toText(),
-                      popupMenuChild: () => const SortByMenuArtists(),
-                      isCurrentlyReversed: settings.artistSortReversed.value,
-                      onReverseIconTap: () => SearchSortController.inst.sortMedia(settings.activeArtistType.value, reverse: !settings.artistSortReversed.value),
+                      title: sort.toText(),
+                      popupMenuChild: const SortByMenuArtists(),
+                      isCurrentlyReversed: sortReverse,
+                      onReverseIconTap: () => SearchSortController.inst.sortMedia(settings.activeArtistType.value, reverse: !sortReverse),
                     ),
-                    textField: CustomTextFiled(
-                      textFieldController: LibraryTab.artists.textSearchController,
-                      textFieldHintText: lang.FILTER_ARTISTS,
+                    textField: CustomTextField(
+                      textFieldController: libraryTab.textSearchControllerR,
+                      textFieldHintText: lang.filterArtists,
                       onTextFieldValueChanged: (value) => SearchSortController.inst.searchMedia(value, settings.activeArtistType.value),
                     ),
                   ),
-                  if (countPerRow == 1)
-                    Expanded(
-                      child: ListView.builder(
-                        controller: scrollController,
-                        itemCount: finalArtists.length,
-                        padding: kBottomPaddingInsets,
-                        itemExtent: 65.0 + 2.0 * 9,
-                        itemBuilder: (BuildContext context, int i) {
-                          final artist = finalArtists[i];
-                          final tracks = artist.getArtistTracksFor(artistType);
-                          return AnimatingTile(
-                            position: i,
-                            shouldAnimate: _shouldAnimate,
-                            child: ArtistTile(
-                              tracks: tracks,
-                              name: artist,
-                              albums: tracks.toUniqueAlbums(),
-                              type: artistType,
+                  page: SmoothCustomScrollView(
+                    controller: scrollController,
+                    slivers: [
+                      SliverToBoxAdapter(child: listHeader),
+                      countPerRowResolved == 1
+                          ? ObxPrefer(
+                              enabled: sort.requiresHistory,
+                              rx: HistoryController.inst.topTracksMapListens,
+                              builder: (context, _) => SliverFixedExtentList.builder(
+                                itemCount: finalArtists.length,
+                                itemExtent: 65.0 + 2.0 * 9,
+                                itemBuilder: (context, i) {
+                                  final artist = finalArtists[i];
+                                  final tracks = artist.getArtistTracksFor(artistType);
+                                  return AnimatingTile(
+                                    position: i,
+                                    shouldAnimate: _shouldAnimate,
+                                    allowTilting: true,
+                                    child: ArtistTile(
+                                      tracks: tracks,
+                                      name: artist,
+                                      albums: tracks.toUniqueAlbums(),
+                                      type: artistType,
+                                      extraText: extraTextResolver?.call(artist, tracks),
+                                    ),
+                                  );
+                                },
+                              ),
+                            )
+                          : ObxPrefer(
+                              enabled: sort.requiresHistory,
+                              rx: HistoryController.inst.topTracksMapListens,
+                              builder: (context, _) => SliverCrossAxisExtentBuilder(
+                                builder: (context, crossAxisExtent) {
+                                  const childAspectRatio = 0.88;
+                                  final cardWidth = crossAxisExtent / countPerRowResolved;
+                                  final cardHeight = cardWidth / childAspectRatio;
+                                  return SliverGrid.builder(
+                                    gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                                      crossAxisCount: countPerRowResolved,
+                                      childAspectRatio: childAspectRatio,
+                                      mainAxisSpacing: 8.0,
+                                    ),
+                                    itemCount: finalArtists.length,
+                                    itemBuilder: (context, i) {
+                                      final artist = finalArtists[i];
+                                      final tracks = artist.getArtistTracksFor(artistType);
+                                      return AnimatingGrid(
+                                        countPerRowResolved: countPerRowResolved,
+                                        columnCount: finalArtists.length,
+                                        position: i,
+                                        shouldAnimate: _shouldAnimate,
+                                        child: ArtistCard(
+                                          name: artist,
+                                          artist: tracks,
+                                          type: artistType,
+                                          bottomCenterText: extraTextResolver?.call(artist, tracks),
+                                          width: cardWidth,
+                                          height: cardHeight,
+                                        ),
+                                      );
+                                    },
+                                  );
+                                },
+                              ),
                             ),
-                          );
-                        },
-                      ),
-                    ),
-                  if (countPerRow > 1)
-                    Expanded(
-                      child: GridView.builder(
-                        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                          crossAxisCount: countPerRow,
-                          childAspectRatio: 0.88,
-                          mainAxisSpacing: 8.0,
-                        ),
-                        controller: scrollController,
-                        itemCount: finalArtists.length,
-                        padding: kBottomPaddingInsets,
-                        itemBuilder: (BuildContext context, int i) {
-                          final artist = finalArtists[i];
-                          final tracks = artist.getArtistTracksFor(artistType);
-                          return AnimatingGrid(
-                            columnCount: finalArtists.length,
-                            position: i,
-                            shouldAnimate: _shouldAnimate,
-                            child: ArtistCard(
-                              dimensions: artistDimensions,
-                              name: artist,
-                              artist: tracks,
-                              type: artistType,
-                            ),
-                          );
-                        },
-                      ),
-                    ),
-                ],
-              );
-            },
+                      kBottomPaddingWidgetSliver,
+                    ],
+                  ),
+                );
+              },
+            ),
           ),
         ),
       ),

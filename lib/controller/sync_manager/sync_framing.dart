@@ -1,0 +1,273 @@
+/// _FrameWriter and _FrameReader are built by claude.ai
+part of 'sync_manager.dart';
+
+class _FrameWriter {
+  final Socket _socket;
+  _FrameWriter(this._socket);
+
+  /// the frame payload is a utf8 json message.
+  static const kFrameKindJson = 0;
+
+  /// the frame payload is raw bytes belonging to the preceding
+  /// [BinaryPayloadMessage] json frame.
+  static const kFrameKindBinary = 1;
+
+  /// bytes preceding each frame payload: 4 length bytes + 1 kind byte.
+  static const kFrameHeaderSize = 5;
+
+  Future<void> _writeLock = Future.value();
+
+  /// without the lock, there will always be an issue while trying to send payload while an operation is executing.
+  /// for example: sending disconnect command while sending files
+  Future<T> _synchronized<T>(Future<T> Function() action) async {
+    final previous = _writeLock;
+    final completer = Completer<void>();
+    _writeLock = completer.future;
+    await previous.catchError((_) {}); // wait our turn & ignore earlier failures
+    try {
+      return await action();
+    } finally {
+      completer.complete();
+    }
+  }
+
+  /// sends the message json frame, followed by a raw binary frame
+  /// if the message carries a binary payload.
+  ///
+  /// returns the total bytes written, including frame headers.
+  Future<int> sendMessage(BaseMessage message) {
+    return _synchronized(() => _sendMessageUnsafe(message));
+  }
+
+  Future<int> _sendMessageUnsafe(BaseMessage message) async {
+    final jsonBytes = message.encodeBytes();
+    add(jsonBytes, kFrameKindJson);
+    int totalBytes = kFrameHeaderSize + jsonBytes.length;
+    final binaryPayload = message is BinaryPayloadMessage ? message.binaryPayload : null;
+    if (binaryPayload != null) {
+      add(binaryPayload, kFrameKindBinary);
+      totalBytes += kFrameHeaderSize + binaryPayload.length;
+    }
+    await flush();
+    return totalBytes;
+  }
+
+  void add(List<int> payload, int kind) {
+    final length = payload.length + 1; // -- +1 for the kind byte
+    final header = Uint8List(kFrameHeaderSize)
+      ..[0] = (length >> 24) & 0xFF
+      ..[1] = (length >> 16) & 0xFF
+      ..[2] = (length >> 8) & 0xFF
+      ..[3] = length & 0xFF
+      ..[4] = kind;
+    _socket.add(header);
+    _socket.add(payload);
+  }
+
+  Future<void> flush() => _socket.flush();
+
+  Future<void> closeSocket() {
+    return _synchronized(() async {
+      try {
+        await _socket.close();
+      } catch (_) {
+        // socket being swallowed by on going operation, whatever
+      } finally {
+        _socket.destroy();
+      }
+    });
+  }
+}
+
+// can be far more simpler, but this version has max performance
+class _FrameReader {
+  /// `(kind, payload)` per frame, see [_FrameWriter.kFrameKindJson] & [_FrameWriter.kFrameKindBinary].
+  ///
+  /// frames are delivered synchronously, inside [addBytes]. json payloads are zero-copy views
+  /// into the reusable internal buffer, the listener must consume (or copy) them before returning
+  /// and must never pause the subscription (buffered events would keep the views).
+  /// binary payloads own their bytes (the buffer is detached, see [_process]),
+  /// so they are safe to keep around for async work (like file writes).
+  Stream<(int, Uint8List)> get frames => _streamController.stream;
+  RxBaseCore<(int, int)?> get currentProgress => _currentProgressRx;
+
+  final _streamController = StreamController<(int, Uint8List)>(sync: true);
+  final _currentProgressRx = Rxn<(int, int)>();
+
+  static const _initialCapacity = 4096;
+  static const _maxHeaderPreallocation = 256 * 1024 * 1024;
+
+  /// a peer declaring a huge frame would make us buffer until OOM, since [_process]
+  /// keeps accumulating until the whole frame arrived. the largest legitimate payload is
+  /// a file transfer, capped at 200MB by the files sync messages.
+  static const _maxFrameLength = 256 * 1024 * 1024;
+
+  Uint8List _buf = Uint8List(_initialCapacity);
+  int _writePos = 0; // how many bytes are in the buffer
+  int _readPos = 0; // how far we've consumed
+  int _expectedLength = -1;
+
+  int get _available => _writePos - _readPos;
+
+  void addBytes(Uint8List data) {
+    _ensureCapacity(data.length);
+
+    _buf.setRange(_writePos, _writePos + data.length, data);
+    _writePos += data.length;
+    _process();
+
+    if (_expectedLength != -1) {
+      _currentProgressRx.value = (_available, _expectedLength);
+    } else {
+      _currentProgressRx.value = null;
+    }
+  }
+
+  /// emitted json views are already consumed (see [frames]), so the buffer can always be compacted in place.
+  void _ensureCapacity(int incoming) {
+    final needed = _writePos + incoming;
+    if (needed <= _buf.length) return;
+
+    if (_readPos > 0) {
+      // compact first (shift unread bytes to front)
+      _buf.setRange(0, _available, _buf, _readPos);
+      _writePos = _available;
+      _readPos = 0;
+      if (_writePos + incoming <= _buf.length) return;
+    }
+
+    // move unread bytes into a fresh (possibly bigger) buffer
+    final unread = _available;
+    var newSize = _buf.length;
+    while (newSize < unread + incoming) {
+      newSize *= 2;
+    }
+    final newBuf = Uint8List(newSize);
+    newBuf.setRange(0, unread, _buf, _readPos);
+    _buf = newBuf;
+    _readPos = 0;
+    _writePos = unread;
+  }
+
+  void _process() {
+    while (true) {
+      if (_expectedLength == -1) {
+        if (_available < 4) return;
+        // read header directly, zero copy
+        _expectedLength = (_buf[_readPos] << 24) | (_buf[_readPos + 1] << 16) | (_buf[_readPos + 2] << 8) | _buf[_readPos + 3];
+        _readPos += 4;
+
+        if (_expectedLength > _maxFrameLength) {
+          // -- the stream is desynced beyond recovery, drop everything & let the consumer close the socket.
+          _readPos = 0;
+          _writePos = 0;
+          _expectedLength = -1;
+          _buf = Uint8List(_initialCapacity);
+          _streamController.addError(const SocketException('Frame length exceeds the maximum allowed size'));
+          return;
+        }
+
+        var toPreallocate = _expectedLength - _available;
+        if (toPreallocate > 0) {
+          if (toPreallocate > _maxHeaderPreallocation) toPreallocate = _maxHeaderPreallocation;
+          _ensureCapacity(toPreallocate);
+        }
+      }
+
+      if (_available < _expectedLength) return;
+
+      if (_expectedLength > 0) {
+        final kind = _buf[_readPos];
+        final payloadStart = _readPos + 1;
+        final payloadEnd = _readPos + _expectedLength;
+        if (kind == _FrameWriter.kFrameKindBinary) {
+          // detach the buffer instead of copying: the emitted view keeps owning
+          // the old buffer (nothing else will touch it), and only the trailing
+          // bytes of any pipelined next frame get copied into a fresh buffer.
+          // this makes binary payloads safe for async consumption at zero cost.
+          final payload = Uint8List.sublistView(_buf, payloadStart, payloadEnd);
+          final trailing = _writePos - payloadEnd;
+          var newSize = _initialCapacity;
+          while (newSize < trailing) {
+            newSize *= 2;
+          }
+          final newBuf = Uint8List(newSize);
+          if (trailing > 0) newBuf.setRange(0, trailing, _buf, payloadEnd);
+          _buf = newBuf;
+          _readPos = 0;
+          _writePos = trailing;
+          _expectedLength = -1;
+          _streamController.add((kind, payload));
+          continue;
+        }
+        // zero-copy view into the buffer
+        final payload = Uint8List.sublistView(_buf, payloadStart, payloadEnd);
+        _streamController.add((kind, payload));
+      }
+      _readPos += _expectedLength;
+      _expectedLength = -1;
+
+      // reset positions when buffer is fully consumed
+      if (_readPos == _writePos) {
+        _readPos = 0;
+        _writePos = 0;
+      }
+    }
+  }
+
+  void close() {
+    if (_expectedLength != -1 && _available > 0) {
+      // connection lost midway
+      _streamController.addError(
+        const SocketException('Connection lost before whole message was received'),
+      );
+    }
+    _readPos = 0;
+    _writePos = 0;
+    _expectedLength = -1;
+    _streamController.close();
+  }
+}
+
+@visibleForTesting
+// ignore: library_private_types_in_public_api
+_FrameReader debugCreateFrameReader() => _FrameReader();
+
+// class _FrameReaderSimple {
+//   final _streamController = StreamController<Uint8List>();
+
+//   Stream<Uint8List> get frames => _streamController.stream;
+
+//   final _buf = BytesBuilder(copy: false);
+//   int _expectedLength = -1;
+
+//   void addBytes(List<int> data) {
+//     _buf.add(data);
+//     _process();
+//   }
+
+//   void _process() {
+//     while (true) {
+//       if (_buf.length < 4 && _expectedLength == -1) return;
+
+//       if (_expectedLength == -1) {
+//         final all = _buf.takeBytes();
+//         _expectedLength = (all[0] << 24) | (all[1] << 16) | (all[2] << 8) | all[3];
+//         if (all.length > 4) _buf.add(all.sublist(4));
+//       }
+
+//       // -- waiting for more data
+//       if (_buf.length < _expectedLength) return;
+
+//       final all = _buf.takeBytes();
+//       final payload = Uint8List.sublistView(all, 0, _expectedLength);
+//       _streamController.add(payload);
+//       if (all.length > _expectedLength) {
+//         _buf.add(all.sublist(_expectedLength));
+//       }
+//       _expectedLength = -1;
+//     }
+//   }
+
+//   void close() => _streamController.close();
+// }

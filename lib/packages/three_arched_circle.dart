@@ -1,7 +1,9 @@
 /// source: https://github.com/watery-desert/loading_animation_widget
+library;
+
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
-import 'dart:math' as math;
 
 const double _kGapAngle = math.pi / 12;
 const double _kMinAngle = math.pi / 36;
@@ -10,10 +12,10 @@ class ThreeArchedCircle extends StatefulWidget {
   final double size;
   final Color color;
   const ThreeArchedCircle({
-    Key? key,
+    super.key,
     required this.color,
     required this.size,
-  }) : super(key: key);
+  });
 
   @override
   State<ThreeArchedCircle> createState() => _ThreeArchedCircleState();
@@ -81,7 +83,7 @@ class _ThreeArchedCircleState extends State<ThreeArchedCircle> with SingleTicker
       height: size,
       child: AnimatedBuilder(
         animation: _animationController,
-        builder: (_, __) {
+        builder: (_, _) {
           return _animationController.value <= 0.5
               ? Transform.rotate(
                   angle: Tween<double>(
@@ -196,19 +198,18 @@ class Arc extends CustomPainter {
     required double strokeWidth,
     required double startAngle,
     required double endAngle,
-  }) =>
-      SizedBox(
-        width: size,
-        height: size,
-        child: CustomPaint(
-          painter: Arc._(
-            color,
-            strokeWidth,
-            startAngle,
-            endAngle,
-          ),
-        ),
-      );
+  }) => SizedBox(
+    width: size,
+    height: size,
+    child: CustomPaint(
+      painter: Arc._(
+        color,
+        strokeWidth,
+        startAngle,
+        endAngle,
+      ),
+    ),
+  );
 
   @override
   void paint(Canvas canvas, Size size) {

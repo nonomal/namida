@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
-import 'package:get/get.dart';
 
 import 'package:namida/core/extensions.dart';
+import 'package:namida/core/utils.dart';
 
 class NamidaDummyContainer extends StatelessWidget {
   final double? width;
@@ -23,6 +23,7 @@ class NamidaDummyContainer extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final theme = context.theme;
     return child != null && !shimmerEnabled
         ? child!
         : Container(
@@ -30,7 +31,7 @@ class NamidaDummyContainer extends StatelessWidget {
             height: height,
             clipBehavior: Clip.antiAlias,
             decoration: BoxDecoration(
-              color: context.theme.colorScheme.background,
+              color: theme.colorScheme.surface,
               borderRadius: isCircle ? null : BorderRadius.circular(borderRadius.multipliedRadius),
               shape: isCircle ? BoxShape.circle : BoxShape.rectangle,
             ),

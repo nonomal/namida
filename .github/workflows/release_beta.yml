@@ -1,0 +1,737 @@
+# This workflow uses actions that are not certified by GitHub.
+# They are provided by a third-party and are governed by
+# separate terms of service, privacy policy, and support
+# documentation.
+
+name: release_beta
+
+# A toggle means "publish this asset", whatever it needs gets built implicitly:
+#   linux    -> build_linux (deb/rpm/tar.gz + AUR)
+#   appimage -> build_linux (build only) + build_appimage
+#   flatpak  -> build_linux_portable + build_flatpak
+# source_run_id skips the builds and takes their artifacts from that run instead, to re-package only.
+on:
+  workflow_dispatch:
+    inputs:
+      is_beta:
+        type: boolean
+        default: true
+      android:
+        type: boolean
+        default: true
+      windows:
+        type: boolean
+        default: true
+      linux:
+        description: deb/rpm/tar.gz + AUR (beta only)
+        type: boolean
+        default: true
+      appimage:
+        description: beta only
+        type: boolean
+        default: true
+      flatpak:
+        description: beta only
+        type: boolean
+        default: true
+      source_run_id:
+        description: reuse the linux build artifacts from this run id instead of building (appimage/flatpak only)
+        type: string
+        default: ""
+  workflow_call:
+    inputs:
+      is_beta:
+        type: boolean
+        default: true
+      android:
+        type: boolean
+        default: true
+      windows:
+        type: boolean
+        default: true
+      linux:
+        type: boolean
+        default: true
+      appimage:
+        type: boolean
+        default: true
+      flatpak:
+        type: boolean
+        default: true
+      source_run_id:
+        type: string
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  create_release:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.extract_version.outputs.version }}
+      version_name: ${{ steps.extract_version.outputs.version_name }}
+      target_repo: ${{ steps.set_vars.outputs.target_repo }}
+      tag: ${{ steps.set_vars.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          token: ${{ secrets.PAT }}
+          fetch-depth: ${{ inputs.is_beta && 200 || 0 }} # fetch less commits for beta
+
+      - name: Extract version from pubspec.yaml
+        id: extract_version
+        run: |
+          VERSION=$(grep -o 'version:.*' pubspec.yaml | awk '{print $2}')
+          VERSION_NAME=$(echo $VERSION | cut -d'+' -f1)
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "version_name=$VERSION_NAME" >> $GITHUB_OUTPUT
+
+      - name: Set variables
+        id: set_vars
+        run: |
+          if [ "${{ inputs.is_beta }}" = "false" ]; then
+            echo "target_repo=${{ github.repository }}" >> $GITHUB_OUTPUT
+            echo "tag=v${{ steps.extract_version.outputs.version_name }}" >> $GITHUB_OUTPUT
+          else
+            echo "target_repo=namidaco/namida-snapshots" >> $GITHUB_OUTPUT
+            echo "tag=${{ steps.extract_version.outputs.version }}" >> $GITHUB_OUTPUT
+          fi
+
+      # a re-run for an existing release keeps its notes, the changelog range would be empty by now
+      - name: Check existing release
+        id: existing
+        env:
+          GH_TOKEN: ${{ inputs.is_beta && secrets.SNAPSHOTS_REPO_SECRET || secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "${{ steps.set_vars.outputs.tag }}" -R "${{ steps.set_vars.outputs.target_repo }}" > /dev/null 2>&1; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Generate Changelog
+        if: steps.existing.outputs.exists != 'true'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 scripts/chlog.py beta --repo ${{ steps.set_vars.outputs.target_repo }}
+          cat ./beta_changelog.md
+
+      - name: Generate Downloads Table
+        if: steps.existing.outputs.exists != 'true'
+        run: |
+          bash scripts/gen_downloads_table.sh \
+            "${{ steps.set_vars.outputs.tag }}" \
+            "${{ steps.set_vars.outputs.target_repo }}" \
+            "${{ inputs.is_beta }}" \
+            > downloads_table.md
+          cat beta_changelog.md downloads_table.md > combined.md
+          mv combined.md beta_changelog.md
+
+      - name: Create Release with Changelog
+        if: steps.existing.outputs.exists != 'true'
+        uses: softprops/action-gh-release@v3
+        with:
+          repository: ${{ steps.set_vars.outputs.target_repo }}
+          make_latest: true
+          draft: true
+          tag_name: ${{ steps.set_vars.outputs.tag }}
+          body_path: ./beta_changelog.md
+          token: ${{ inputs.is_beta && secrets.SNAPSHOTS_REPO_SECRET || secrets.GITHUB_TOKEN }}
+
+  # docs site for offline viewing, every app build drops it into assets/
+  bundle_docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/checkout@v5
+        with:
+          repository: namidaco/namida-docs
+          path: namida_docs
+          fetch-depth: 0 # docmd git plugin reads page dates from history
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      - name: Build docs site
+        working-directory: namida_docs
+        run: |
+          npm install
+          npm run build
+
+      - name: Bundle docs
+        run: python3 scripts/bundle_docs.py namida_docs/site
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: namida-docs
+          path: assets/docs.tar.xz
+          retention-days: 3
+
+  setup_matrix:
+    if: ${{ inputs.android }}
+    runs-on: ubuntu-22.04
+    outputs:
+      matrix: ${{ steps.set.outputs.matrix }}
+    steps:
+      - id: set
+        run: |
+          if [ "${{ inputs.is_beta }}" = "true" ]; then
+            echo 'matrix={"include":[{"is_clone":false,"apk_suffix":""},{"is_clone":true,"apk_suffix":"-clone"}]}' >> $GITHUB_OUTPUT
+          else
+            echo 'matrix={"include":[{"is_clone":false,"apk_suffix":""}]}' >> $GITHUB_OUTPUT
+          fi
+
+  build_android:
+    if: ${{ inputs.android }}
+    needs: [create_release, setup_matrix, bundle_docs]
+    runs-on: ubuntu-22.04
+    continue-on-error: ${{ matrix.is_clone }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.setup_matrix.outputs.matrix) }}
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          token: ${{ secrets.PAT }}
+          submodules: recursive
+          fetch-depth: 0 # all history for changelog
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version-file: pubspec.yaml
+
+      - name: free disk space
+        continue-on-error: true
+        run: |
+          sudo swapoff -a
+          sudo rm -f /swapfile
+          sudo apt clean
+          docker image prune -af
+          df -h
+
+      - name: remove unused SDKs
+        continue-on-error: true
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/share/boost
+          sudo rm -rf /usr/local/share/chromium
+          sudo rm -rf /usr/local/share/vcpkg
+          sudo rm -rf /usr/local/share/miniconda
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo rm -rf /opt/hostedtoolcache/go
+          sudo rm -rf /opt/hostedtoolcache/Python
+          sudo rm -rf /opt/hostedtoolcache/node
+          sudo rm -rf /opt/hostedtoolcache/R
+          sudo rm -rf /opt/hostedtoolcache/LLVM
+          sudo rm -rf /opt/hostedtoolcache/Swift
+          sudo rm -rf /opt/hostedtoolcache/Php
+          sudo rm -rf /opt/hostedtoolcache/Perl
+          sudo rm -rf /opt/hostedtoolcache/Scala
+          sudo rm -rf /opt/hostedtoolcache/Julia
+          sudo rm -rf /opt/hostedtoolcache/Mono
+          sudo rm -rf /opt/hostedtoolcache/Crystal
+          sudo rm -rf /opt/hostedtoolcache/Elixir
+          sudo rm -rf /opt/hostedtoolcache/Erlang
+          sudo rm -rf /opt/hostedtoolcache/FSharp
+          sudo rm -rf /opt/hostedtoolcache/Haskell
+          sudo rm -rf /opt/hostedtoolcache/OCaml
+          sudo rm -rf /opt/hostedtoolcache/Rust
+          sudo rm -rf /opt/hostedtoolcache/Sbt
+          sudo rm -rf /opt/hostedtoolcache/Solidity
+          sudo rm -rf /opt/hostedtoolcache/VisualStudio
+          sudo rm -rf /opt/hostedtoolcache/WinAppDriver
+          sudo rm -rf /opt/hostedtoolcache/Xamarin
+          sudo rm -rf /opt/hostedtoolcache/Yarn
+          sudo rm -rf /opt/hostedtoolcache/Zephyr
+          sudo rm -rf /opt/hostedtoolcache/zig
+          sudo rm -rf /opt/hostedtoolcache/azcopy
+
+      - name: setup credentials
+        run: |
+          git config --global url.https://${{ secrets.PAT_ORG }}@github.com/namidaco/.insteadOf https://github.com/namidaco/
+          git config --global url.https://${{ secrets.PAT }}@github.com/MSOB7YY/.insteadOf https://github.com/MSOB7YY/
+
+      - name: Setup dependencies
+        run: |
+          flutter clean
+          git submodule update --init --remote --recursive
+          flutter pub upgrade
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: "temurin"
+          java-version: "17"
+
+      - name: Create keystore & key.properties
+        run: |
+          echo ${{ secrets.ANDROID_SIGNING_KEYSTORE }} | base64 --decode > android/app/keystore.jks
+          echo ${{ secrets.ANDROID_SIGNING_KEY_PROPERTIES }} | base64 --decode > android/key.properties
+
+      - name: Patch package ID for clone
+        if: matrix.is_clone
+        run: find ./ -type f -exec sed -i -e 's/com.msob7y.namida/com.msob7y.namida.snapshot/g' {} \;
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: namida-docs
+          path: assets
+
+      - name: Build APKs
+        run: |
+          mkdir -p build_final
+          flutter build apk --target-platform android-arm64 --release
+          mv build/app/outputs/flutter-apk/app-arm64-v8a-release.apk \
+            build_final/namida-v${{ needs.create_release.outputs.version_name }}${{ matrix.apk_suffix }}-arm64-v8a.apk
+          flutter build apk --target-platform android-arm --release
+          mv build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk \
+            build_final/namida-v${{ needs.create_release.outputs.version_name }}${{ matrix.apk_suffix }}-armeabi-v7a.apk
+
+      - name: Creating Snapshot Release at ${{ needs.create_release.outputs.target_repo }}
+        uses: softprops/action-gh-release@v3
+        with:
+          repository: ${{ needs.create_release.outputs.target_repo }}
+          make_latest: true
+          draft: ${{ !inputs.is_beta }}
+          tag_name: ${{ needs.create_release.outputs.tag }}
+          files: build_final/*
+          token: ${{ inputs.is_beta && secrets.SNAPSHOTS_REPO_SECRET || secrets.GITHUB_TOKEN }}
+
+  build_windows:
+    if: ${{ inputs.windows }}
+    needs: [create_release, bundle_docs]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-2022
+            arch: x64
+            artifact_arch: x86_64
+          # - runner: windows-11-arm
+          #   arch: arm64
+          #   artifact_arch: arm64
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          token: ${{ secrets.PAT }}
+          submodules: recursive
+
+      - name: Install Flutter (x64)
+        if: matrix.arch == 'x64'
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version-file: pubspec.yaml
+
+      - name: Install Flutter (arm64)
+        if: matrix.arch == 'arm64'
+        shell: pwsh
+        run: |
+          # Derived from https://github.com/flutter/flutter/issues/186730#issuecomment-4573214964 & https://github.com/flutter/flutter/issues/62597#issuecomment-4572851264
+
+          # Read version from pubspec.yaml (e.g. "3.41.7")
+          $version = (Select-String -Path pubspec.yaml -Pattern '^\s*flutter:\s*([\d.]+)').Matches[0].Groups[1].Value
+          if (-not $version) {
+            Write-Error "Could not parse flutter version from pubspec.yaml"
+            exit 1
+          }
+          Write-Host "Flutter version: $version"
+
+          # Download the standard x64 SDK zip, the bundled Dart/engine are x64,
+          # but the update_dart_sdk.ps1 script inside already knows how to fetch
+          # arm64 binaries when PROCESSOR_ARCHITECTURE=ARM64 (available since 3.44.0).
+          $url = "https://storage.googleapis.com/flutter_infra_release/releases/stable/windows/flutter_windows_${version}-stable.zip"
+          Write-Host "Downloading $url"
+          Invoke-WebRequest -Uri $url -OutFile flutter.zip
+          Expand-Archive -Path flutter.zip -DestinationPath C:\ -Force
+          Remove-Item flutter.zip
+
+          # Add flutter\bin to PATH for all subsequent steps
+          "C:\flutter\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+          # Delete the stamp so update_dart_sdk.ps1 ignores the bundled x64 Dart
+          # and re-downloads. Because this PowerShell session is native arm64
+          # (PROCESSOR_ARCHITECTURE=ARM64), it will fetch the arm64 Dart SDK.
+          Remove-Item "C:\flutter\bin\cache\engine-dart-sdk.stamp" -Force
+
+          # Triggers arm64 Dart SDK download
+          C:\flutter\bin\dart.bat --version
+
+          # Download arm64 engine artifacts (windows-arm64, -release, -profile, -debug)
+          C:\flutter\bin\flutter.bat precache --windows
+
+      - name: Setup credentials
+        run: |
+          git config --global url.https://${{ secrets.PAT_ORG }}@github.com/namidaco/.insteadOf https://github.com/namidaco/
+          git config --global url.https://${{ secrets.PAT }}@github.com/MSOB7YY/.insteadOf https://github.com/MSOB7YY/
+
+      - name: Setup dependencies
+        run: |
+          flutter clean
+          git submodule update --init --remote --recursive
+          flutter pub upgrade
+
+      - name: Rust diagnostics (arm64 only)
+        if: matrix.arch == 'arm64'
+        shell: pwsh
+        run: |
+          rustup show
+          rustc --version --verbose
+          cargo --version
+          rustup target list --installed
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: namida-docs
+          path: assets
+
+      - name: Build Windows App
+        run: |
+          flutter config --enable-windows-desktop
+          flutter build windows --release --verbose 2>&1 | Tee-Object -FilePath build_log.txt
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "=== CARGO / CARGOKIT ERRORS ==="
+            Select-String -Path build_log.txt -Pattern "error|cargo|cargokit" -CaseSensitive:$false | Select-Object -First 80
+            exit 1
+          }
+
+      - name: Build installer
+        # --app-version `6.0.1` instead of `6.0.1+260418125`, for menus/winget/etc..
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # avoids api rate limits if inno_bundle has to download inno setup
+        run: dart run inno_bundle --no-app --release --app-version ${{ needs.create_release.outputs.version_name }}
+
+      - name: Move Windows installer
+        run: |
+          mkdir -p build_final
+          $installer = Get-ChildItem "./build/windows/${{ matrix.arch }}/installer/Release/" -Filter "*.exe" | Select-Object -First 1
+          Move-Item $installer.FullName "build_final/Namida-${{ matrix.artifact_arch }}-${{ needs.create_release.outputs.version_name }}-Installer.exe"
+
+      - name: Build Windows App (Portable)
+        run: |
+          flutter build windows --release --dart-define=WINDOWS_PORTABLE=true --verbose 2>&1 | Tee-Object -FilePath build_log_portable.txt
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "=== CARGO / CARGOKIT ERRORS ==="
+            Select-String -Path build_log_portable.txt -Pattern "error|cargo|cargokit" -CaseSensitive:$false | Select-Object -First 80
+            exit 1
+          }
+
+      - name: Package portable ZIP
+        run: |
+          $releaseDir = "build/windows/${{ matrix.arch }}/runner/Release"
+          Compress-Archive -Path "$releaseDir/*" -DestinationPath "build_final/Namida-${{ matrix.artifact_arch }}-${{ needs.create_release.outputs.version_name }}-Portable.zip"
+
+      - name: Upload installer to Snapshot Release
+        uses: softprops/action-gh-release@v3
+        with:
+          repository: ${{ needs.create_release.outputs.target_repo }}
+          make_latest: true
+          draft: ${{ !inputs.is_beta }}
+          tag_name: ${{ needs.create_release.outputs.tag }}
+          files: |
+            build_final/*
+          token: ${{ inputs.is_beta && secrets.SNAPSHOTS_REPO_SECRET || secrets.GITHUB_TOKEN }}
+
+  build_linux:
+    if: ${{ inputs.is_beta && (inputs.linux || inputs.appimage) && inputs.source_run_id == '' }}
+    needs: [create_release, bundle_docs]
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:latest
+
+    steps:
+      - name: Install base dependencies
+        run: |
+          pacman-key --init
+          pacman-key --populate archlinux
+          pacman -Sy --noconfirm archlinux-keyring
+          pacman -Su --noconfirm
+          pacman -S --noconfirm \
+            base-devel git curl wget jq openssh unzip xz \
+            clang cmake ninja pkgconf gcc gtk3 libstdc++ \
+            alsa-lib libx11 libxrender libxext mesa libgl \
+            libepoxy libdrm wayland libxkbcommon glibc binutils \
+            mpv webkit2gtk-4.1 dpkg rpm-tools
+          pacman -Scc --noconfirm
+
+      - uses: actions/checkout@v5
+        with:
+          token: ${{ secrets.PAT }}
+          submodules: recursive
+
+      - name: Fix git ownership
+        run: git config --global --add safe.directory /__w/namida/namida
+
+      - name: Setup Git credentials
+        run: |
+          git config --global url.https://${{ secrets.PAT_ORG }}@github.com/namidaco/.insteadOf https://github.com/namidaco/
+          git config --global url.https://${{ secrets.PAT }}@github.com/MSOB7YY/.insteadOf https://github.com/MSOB7YY/
+          # needed for AUR cloning
+          git config --global user.name "MSOB7YY"
+          git config --global user.email "${{ secrets.EMAIL }}"
+
+      - name: Install Flutter
+        run: |
+          FLUTTER_VERSION=$(grep 'flutter:' pubspec.yaml | grep -v '#' | head -1 | awk '{print $2}' || echo "")
+          git clone https://github.com/flutter/flutter.git /opt/flutter --depth 1 ${FLUTTER_VERSION:+-b $FLUTTER_VERSION}
+          export PATH="/opt/flutter/bin:$PATH"
+          echo "PATH=/opt/flutter/bin:$PATH" >> $GITHUB_ENV
+          flutter precache --linux
+          flutter config --no-analytics
+
+      - name: Install Rust via rustup
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+          echo "PATH=$HOME/.cargo/bin:$PATH" >> $GITHUB_ENV
+          source $HOME/.cargo/env
+          rustup show
+
+      - name: Setup Flutter dependencies
+        run: |
+          export PATH="/opt/flutter/bin:/opt/dart-sdk/bin:$PATH"
+          flutter clean
+          git submodule update --init --remote --recursive
+          flutter pub upgrade
+
+      - name: Install fastforge
+        run: |
+          export PATH="/opt/flutter/bin:/opt/dart-sdk/bin:$PATH"
+          dart pub global deactivate fastforge_workspace || true
+          dart pub global deactivate fastforge || true
+          dart pub global activate --source git https://github.com/MSOB7YY/fastforge.git
+          dart pub global activate --source git https://github.com/MSOB7YY/fastforge.git --git-path "packages/fastforge"
+          echo "PATH=$HOME/.pub-cache/bin:$PATH" >> $GITHUB_ENV
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: namida-docs
+          path: assets
+
+      - name: Build Linux deb/rpm/tar.gz
+        run: |
+          export PATH="/opt/flutter/bin:/opt/dart-sdk/bin:$HOME/.pub-cache/bin:$PATH"
+          dart ./scripts/bundle.dart --no-aur
+          mkdir -p build_final
+          mv ./scripts/bundle_output/* build_final/ || echo "No files to move"
+
+      - name: Upload tarball artifact (input for the appimage job)
+        uses: actions/upload-artifact@v6
+        with:
+          name: namida-linux-arch
+          path: build_final/*.tar.gz
+          retention-days: 3
+
+      - name: Upload files to Snapshot Release
+        if: ${{ inputs.linux }}
+        uses: softprops/action-gh-release@v3
+        with:
+          repository: ${{ needs.create_release.outputs.target_repo }}
+          make_latest: true
+          draft: ${{ !inputs.is_beta }}
+          tag_name: ${{ needs.create_release.outputs.tag }}
+          files: |
+            build_final/*
+          token: ${{ inputs.is_beta && secrets.SNAPSHOTS_REPO_SECRET || secrets.GITHUB_TOKEN }}
+
+      - name: Install SSH key for AUR
+        if: ${{ inputs.linux }}
+        uses: shimataro/ssh-key-action@v2
+        with:
+          key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          known_hosts: ${{ secrets.AUR_KNOWN_HOSTS }}
+          name: id_ed25519
+
+      - name: Publish to AUR
+        if: ${{ inputs.linux }}
+        run: |
+          # Parse version string (e.g. 5.6.5-beta+260114196)
+          FULL_VERSION="${{ needs.create_release.outputs.version }}"
+          PKGVER=$(echo "$FULL_VERSION" | sed 's/[-+].*//')
+          BUILDNUMBER=$(echo "$FULL_VERSION" | sed 's/.*+//')
+          TARBALL=$(find "$(pwd)/build_final" -name "*.tar.gz" | head -1)
+          if [ -z "$TARBALL" ]; then
+            echo "No tarball found in build_final:"
+            ls -la build_final/
+            exit 1
+          fi
+
+          # Clone and Publish AUR package
+          git clone ssh://aur@aur.archlinux.org/namida-bin.git namida-bin
+          cd namida-bin
+          # disable root user check for makepkg, very annoying
+          sed -i 's/if (( EUID == 0 ))/if (( EUID == -1 ))/' $(which makepkg)
+          bash bump.sh "$PKGVER" "$BUILDNUMBER" "$TARBALL"
+
+  # AppImage from the arch tarball, packaged with quick-sharun in the pkgforge archlinux container.
+  # Bundles everything (glibc, gtk, webkit2gtk, mpv) so nothing is taken from the host.
+  # Mirrors https://github.com/pkgforge-dev/Namida-AppImage
+  build_appimage:
+    if: ${{ !cancelled() && inputs.is_beta && inputs.appimage && (inputs.source_run_id != '' || needs.build_linux.result == 'success') }}
+    needs: [create_release, build_linux]
+    runs-on: ubuntu-latest
+    container: ghcr.io/pkgforge-dev/archlinux:latest
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          token: ${{ secrets.PAT }}
+
+      - name: Preparing Container
+        uses: pkgforge-dev/anylinux-setup-action@b2d1ce4216f71162e00ae58fa11ee9aeb723d0d5 # v5
+
+      - name: Install runtime dependencies
+        run: |
+          pacman -S --needed --noconfirm mpv webkit2gtk-4.1
+          # smaller builds of the biggest libraries, from pkgforge-dev/archlinux-pkgs-debloated
+          get-debloated-pkgs --add-common --prefer-nano ffmpeg-mini webkit2gtk-4.1-mini
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: namida-linux-arch
+          path: build_final
+          run-id: ${{ inputs.source_run_id != '' && inputs.source_run_id || github.run_id }}
+          github-token: ${{ secrets.PAT }}
+
+      - name: Build AppImage
+        run: |
+          mkdir -p bundle
+          tar -xzf build_final/*.tar.gz -C bundle
+          rm -f build_final/*.tar.gz
+          IFS=/ read -r REPO_OWNER REPO_NAME <<< "${{ needs.create_release.outputs.target_repo }}"
+          # lets the self-updater hook / AppImageUpdate update from the latest release of the target repo
+          export UPINFO="gh-releases-zsync|${REPO_OWNER}|${REPO_NAME}|latest|Namida-x86_64-*.AppImage.zsync"
+          export VERSION="${{ needs.create_release.outputs.version_name }}"
+          bash scripts/make_appimage.sh bundle build_final
+
+      - name: Upload AppImage to Release
+        uses: softprops/action-gh-release@v3
+        with:
+          repository: ${{ needs.create_release.outputs.target_repo }}
+          make_latest: true
+          draft: ${{ !inputs.is_beta }}
+          tag_name: ${{ needs.create_release.outputs.tag }}
+          files: |
+            build_final/*.AppImage
+            build_final/*.AppImage.zsync
+          token: ${{ inputs.is_beta && secrets.SNAPSHOTS_REPO_SECRET || secrets.GITHUB_TOKEN }}
+
+  # Portable Linux payload for the flatpak, built on the oldest glibc we target (ubuntu-24.04 = glibc 2.39)
+  # instead of the arch container.
+  #   - namida-linux-portable.tar.gz                  -> workflow artifact consumed by build_flatpak
+  #   - Namida-x86_64-<ver>-flatpak-payload.tar.gz    -> release asset, the source of the Flathub manifest
+  build_linux_portable:
+    if: ${{ inputs.is_beta && inputs.flatpak && inputs.source_run_id == '' }}
+    needs: [create_release, bundle_docs]
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          token: ${{ secrets.PAT }}
+          submodules: recursive
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev libstdc++-12-dev \
+            libmpv-dev libasound2-dev libepoxy-dev libwebkit2gtk-4.1-dev curl
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version-file: pubspec.yaml
+
+      - name: Setup credentials
+        run: |
+          git config --global url.https://${{ secrets.PAT_ORG }}@github.com/namidaco/.insteadOf https://github.com/namidaco/
+          git config --global url.https://${{ secrets.PAT }}@github.com/MSOB7YY/.insteadOf https://github.com/MSOB7YY/
+
+      - name: Setup dependencies
+        run: |
+          flutter clean
+          git submodule update --init --remote --recursive
+          flutter pub upgrade
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: namida-docs
+          path: assets
+
+      - name: Build Linux App
+        run: |
+          flutter config --enable-linux-desktop
+          flutter build linux --release -v
+
+      - name: Package tarball (input for the flatpak job)
+        run: |
+          mkdir -p build_final
+          tar -czf build_final/namida-linux-portable.tar.gz -C build/linux/x64/release/bundle .
+
+      - name: Upload tarball artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: namida-linux-portable
+          path: build_final/namida-linux-portable.tar.gz
+          retention-days: 3
+
+  # Flatpak bundle from the portable tarball. libass/libplacebo/ffmpeg/mpv are compiled by the manifest
+  # (cached between runs on the manifest hash), the app is dropped in prebuilt.
+  build_flatpak:
+    if: ${{ !cancelled() && inputs.is_beta && inputs.flatpak && (inputs.source_run_id != '' || needs.build_linux_portable.result == 'success') }}
+    needs: [create_release, build_linux_portable]
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:freedesktop-25.08
+      options: --privileged
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          token: ${{ secrets.PAT }}
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: namida-linux-portable
+          path: build_final
+          run-id: ${{ inputs.source_run_id != '' && inputs.source_run_id || github.run_id }}
+          github-token: ${{ secrets.PAT }}
+
+      - name: Name the payload and place it where the manifest expects it
+        run: |
+          PAYLOAD="build_final/Namida-x86_64-${{ needs.create_release.outputs.version_name }}-flatpak-payload.tar.gz"
+          mv build_final/namida-linux-portable.tar.gz "$PAYLOAD"
+          cp "$PAYLOAD" linux/packaging/flatpak/namida-linux.tar.gz
+
+      - name: Build Flatpak
+        uses: flathub-infra/flatpak-github-actions/flatpak-builder@933e9e8ca36e85046ebca8e211f0785c6becac40
+        with:
+          manifest-path: linux/packaging/flatpak/app.namida.Namida.yml
+          bundle: Namida-x86_64-${{ needs.create_release.outputs.version_name }}.flatpak
+          arch: x86_64
+          cache-key: flatpak-builder-${{ hashFiles('linux/packaging/flatpak/app.namida.Namida.yml') }}
+          upload-artifact: false
+
+      # the same checks Flathub runs on submissions, report only
+      - name: Lint for Flathub
+        continue-on-error: true
+        run: |
+          flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+          flatpak install --user --noninteractive -y flathub org.flatpak.Builder
+          flatpak run --command=flatpak-builder-lint org.flatpak.Builder manifest linux/packaging/flatpak/app.namida.Namida.yml || true
+          flatpak run --command=flatpak-builder-lint org.flatpak.Builder repo repo
+
+      - name: Upload Flatpak to Release
+        uses: softprops/action-gh-release@v3
+        with:
+          repository: ${{ needs.create_release.outputs.target_repo }}
+          make_latest: true
+          draft: ${{ !inputs.is_beta }}
+          tag_name: ${{ needs.create_release.outputs.tag }}
+          files: |
+            Namida-x86_64-*.flatpak
+            build_final/Namida-x86_64-*-flatpak-payload.tar.gz
+          token: ${{ inputs.is_beta && secrets.SNAPSHOTS_REPO_SECRET || secrets.GITHUB_TOKEN }}

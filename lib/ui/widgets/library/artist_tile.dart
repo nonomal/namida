@@ -1,21 +1,21 @@
 import 'package:flutter/material.dart';
 
-import 'package:get/get.dart';
-
 import 'package:namida/class/track.dart';
 import 'package:namida/core/dimensions.dart';
 import 'package:namida/core/enums.dart';
 import 'package:namida/core/extensions.dart';
 import 'package:namida/core/functions.dart';
-import 'package:namida/ui/widgets/artwork.dart';
-import 'package:namida/ui/widgets/custom_widgets.dart';
+import 'package:namida/core/utils.dart';
 import 'package:namida/ui/dialogs/common_dialogs.dart';
+import 'package:namida/ui/widgets/custom_widgets.dart';
+import 'package:namida/ui/widgets/network_artwork.dart';
 
 class ArtistTile extends StatelessWidget {
   final String name;
   final List<Track> tracks;
-  final Set<String> albums;
+  final Set<AlbumIdentifierWrapper> albums;
   final MediaType type;
+  final String? extraText;
 
   const ArtistTile({
     super.key,
@@ -23,10 +23,12 @@ class ArtistTile extends StatelessWidget {
     required this.tracks,
     required this.albums,
     required this.type,
+    this.extraText,
   });
 
   @override
   Widget build(BuildContext context) {
+    final textTheme = context.textTheme;
     final hero = 'artist_$name';
 
     return Padding(
@@ -34,6 +36,7 @@ class ArtistTile extends StatelessWidget {
       child: NamidaInkWell(
         onTap: () => NamidaOnTaps.inst.onArtistTap(name, type, tracks),
         onLongPress: () => NamidaDialogs.inst.showArtistDialog(name, type),
+        enableSecondaryTap: true,
         child: SizedBox(
           height: Dimensions.artistTileItemExtent,
           child: Padding(
@@ -44,14 +47,17 @@ class ArtistTile extends StatelessWidget {
                 NamidaHero(
                   tag: hero,
                   child: ContainerWithBorder(
-                    child: ArtworkWidget(
+                    child: NetworkArtwork.orLocal(
                       key: Key(tracks.pathToImage),
-                      track: tracks.trackOfImage,
-                      thumbnailSize: Dimensions.artistThumbnailSize,
                       path: tracks.pathToImage,
-                      borderRadius: 64.0,
+                      track: tracks.trackOfImage,
+                      info: NetworkArtworkInfo.artist(name),
+                      thumbnailSize: Dimensions.artistThumbnailSize,
+                      borderRadius: 0,
                       forceSquared: true,
-                      blur: 0,
+                      blur: 6.0,
+                      disableBlurBgSizeShrink: true,
+                      isCircle: true,
                     ),
                   ),
                 ),
@@ -65,7 +71,7 @@ class ArtistTile extends StatelessWidget {
                         tag: 'line1_$hero',
                         child: Text(
                           name,
-                          style: context.textTheme.displayMedium,
+                          style: textTheme.displayMedium,
                           overflow: TextOverflow.ellipsis,
                         ),
                       ),
@@ -76,24 +82,30 @@ class ArtistTile extends StatelessWidget {
                             tracks.displayTrackKeyword,
                             albums.length.displayAlbumKeyword,
                           ].join(' & '),
-                          style: context.textTheme.displaySmall?.copyWith(fontSize: 14.0.multipliedFontScale),
+                          style: textTheme.displaySmall?.copyWith(fontSize: 14.0),
                           overflow: TextOverflow.ellipsis,
                         ),
                       ),
+                      if (extraText != null && extraText!.isNotEmpty && extraText != name)
+                        Text(
+                          extraText!,
+                          style: textTheme.displaySmall?.copyWith(fontSize: 12.0),
+                          overflow: TextOverflow.ellipsis,
+                        ),
                     ],
                   ),
                 ),
                 Text(
                   tracks.totalDurationFormatted,
-                  style: context.textTheme.displaySmall?.copyWith(
+                  style: textTheme.displaySmall?.copyWith(
                     fontWeight: FontWeight.w500,
                   ),
                   overflow: TextOverflow.ellipsis,
                 ),
                 const SizedBox(width: 4.0),
                 MoreIcon(
-                  onPressed: () => NamidaDialogs.inst.showArtistDialog(name, type),
                   padding: 6.0,
+                  onPressed: () => NamidaDialogs.inst.showArtistDialog(name, type),
                 ),
               ],
             ),

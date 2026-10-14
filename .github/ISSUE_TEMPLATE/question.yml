@@ -1,0 +1,43 @@
+name: ❓ Question
+description: i got a smol question / is it only me or..
+labels:
+  - question
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        the [docs](https://docs.namida.app) might have it already, if not ask away 🤎
+  - type: textarea
+    id: question
+    attributes:
+      label: what is it cutie
+    validations:
+      required: true
+  - type: textarea
+    id: media
+    attributes:
+      label: screenshots / video
+      description: if it helps explain
+  - type: input
+    id: version
+    attributes:
+      label: namida version
+      description: |
+        the exact version from **Settings > About**, ex: `7.4.0-beta`
+        please do NOT type "latest", it changes every few days
+  - type: dropdown
+    id: platforms
+    attributes:
+      label: platforms
+      description: the ones you're using
+      multiple: true
+      options:
+        - Android
+        - Windows
+        - Linux
+  - type: textarea
+    id: logs
+    attributes:
+      label: logs
+      description: optional, **Settings > About > Share Logs** gives you a zip, drag it here if it's related 📦

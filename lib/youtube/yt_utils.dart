@@ -1,42 +1,83 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
-import 'package:flutter_html/flutter_html.dart';
-import 'package:get/get.dart';
-import 'package:intl/intl.dart';
-import 'package:newpipeextractor_dart/newpipeextractor_dart.dart';
-import 'package:playlist_manager/module/playlist_id.dart';
-import 'package:share_plus/share_plus.dart';
 
+import 'package:history_manager/history_manager.dart';
+import 'package:playlist_manager/module/playlist_id.dart';
+import 'package:youtipie/class/comments/comment_info_item.dart';
+import 'package:youtipie/class/comments/comment_info_item_base.dart';
+import 'package:youtipie/class/result_wrapper/comment_reply_result.dart';
+import 'package:youtipie/class/result_wrapper/comment_result.dart';
+import 'package:youtipie/class/result_wrapper/notification_result.dart';
+import 'package:youtipie/class/stream_info_item/stream_info_item.dart';
+import 'package:youtipie/class/streams/audio_stream.dart';
+import 'package:youtipie/class/streams/video_stream.dart';
+import 'package:youtipie/class/streams/video_streams_result.dart';
+import 'package:youtipie/class/videos/video_result.dart';
+import 'package:youtipie/class/youtipie_feed/playlist_basic_info.dart';
+import 'package:youtipie/core/enum.dart';
+import 'package:youtipie/core/url_utils.dart';
+import 'package:youtipie/youtipie.dart';
+
+import 'package:namida/class/audio_cache_detail.dart';
+import 'package:namida/class/file_parts.dart';
+import 'package:namida/class/route.dart';
 import 'package:namida/class/video.dart';
+import 'package:namida/controller/audio_cache_controller.dart';
+import 'package:namida/controller/bookmarks_controller.dart';
 import 'package:namida/controller/current_color.dart';
-import 'package:namida/controller/indexer_controller.dart';
+import 'package:namida/controller/edit_delete_controller.dart';
 import 'package:namida/controller/ffmpeg_controller.dart';
 import 'package:namida/controller/miniplayer_controller.dart';
 import 'package:namida/controller/navigator_controller.dart';
 import 'package:namida/controller/player_controller.dart';
+import 'package:namida/controller/settings_controller.dart';
 import 'package:namida/controller/storage_cache_manager.dart';
 import 'package:namida/controller/thumbnail_manager.dart';
 import 'package:namida/controller/video_controller.dart';
 import 'package:namida/core/constants.dart';
+import 'package:namida/core/dimensions.dart';
 import 'package:namida/core/enums.dart';
 import 'package:namida/core/extensions.dart';
+import 'package:namida/core/functions.dart';
 import 'package:namida/core/icon_fonts/broken_icons.dart';
 import 'package:namida/core/translations/language.dart';
+import 'package:namida/core/utils.dart';
+import 'package:namida/main.dart';
+import 'package:namida/ui/dialogs/bookmarks_sheet.dart';
+import 'package:namida/ui/dialogs/track_stats_dialog.dart';
 import 'package:namida/ui/widgets/custom_widgets.dart';
+import 'package:namida/ui/widgets/history_listens_navigation.dart';
+import 'package:namida/youtube/class/download_task_base.dart';
 import 'package:namida/youtube/class/youtube_id.dart';
+import 'package:namida/youtube/controller/youtube_account_controller.dart';
 import 'package:namida/youtube/controller/youtube_controller.dart';
 import 'package:namida/youtube/controller/youtube_history_controller.dart';
+import 'package:namida/youtube/controller/youtube_info_controller.dart';
 import 'package:namida/youtube/controller/youtube_playlist_controller.dart';
-import 'package:namida/youtube/controller/youtube_subscriptions_controller.dart';
+import 'package:namida/youtube/controller/yt_miniplayer_ui_controller.dart';
 import 'package:namida/youtube/functions/add_to_playlist_sheet.dart';
 import 'package:namida/youtube/functions/download_sheet.dart';
+import 'package:namida/youtube/functions/video_download_options.dart';
 import 'package:namida/youtube/functions/video_listens_dialog.dart';
+import 'package:namida/youtube/functions/yt_playlist_utils.dart';
+import 'package:namida/youtube/pages/user/youtube_account_manage_page.dart';
 import 'package:namida/youtube/pages/yt_channel_subpage.dart';
 import 'package:namida/youtube/pages/yt_history_page.dart';
+import 'package:namida/youtube/pages/yt_playlist_download_subpage.dart';
+import 'package:namida/youtube/pages/yt_playlist_subpage.dart';
+import 'package:namida/youtube/widgets/video_info_dialog.dart';
+import 'package:namida/youtube/widgets/yt_thumbnail.dart';
+
+part 'yt_utils.comments.dart';
 
 class YTUtils {
+  const YTUtils();
+
+  static const comments = _YTUtilsCommentActions();
+
+  static final historyListensNavigation = Rxn<HistoryListensNavigation>();
+
   static void expandMiniplayer() {
     final st = MiniPlayerController.inst.ytMiniplayerKey.currentState;
     if (st != null) st.animateToState(true);
@@ -51,7 +92,7 @@ class YTUtils {
       );
     }
 
-    YoutubeController.inst.resetGlowUnderVideo();
+    YoutubeMiniplayerUiController.inst.resetGlowUnderVideo();
   }
 
   static List<Widget> getVideoCacheStatusIcons({
@@ -60,43 +101,86 @@ class YTUtils {
     Color? iconsColor,
     List<int> overrideListens = const [],
     bool displayCacheIcons = true,
+    double? fontMultiplier,
+    required RxBaseCore<LikeStatus?>? likeStatusRx,
   }) {
     iconsColor ??= context.theme.iconTheme.color;
-    final listens = overrideListens.isNotEmpty ? overrideListens : YoutubeHistoryController.inst.topTracksMapListens[videoId] ?? [];
+    final listens = overrideListens.isNotEmpty ? overrideListens : YoutubeHistoryController.inst.topTracksMapListens.value[videoId] ?? [];
+    final textTheme = context.textTheme;
     return [
-      if (listens.isNotEmpty)
-        NamidaInkWell(
-          borderRadius: 6.0,
-          bgColor: context.theme.scaffoldBackgroundColor.withOpacity(0.5),
-          onTap: () {
-            showVideoListensDialog(videoId);
+      if (likeStatusRx != null) ...[
+        ObxO(
+          rx: likeStatusRx,
+          builder: (context, likeStatus) {
+            if (likeStatus == null) return const SizedBox();
+            final (bool isFilled, IconData likedIcon, IconData normalIcon) = switch (likeStatus) {
+              LikeStatus.liked => (true, Broken.like_filled, Broken.like_1),
+              LikeStatus.disliked => (true, Broken.dislike_filled, Broken.dislike),
+              LikeStatus.undefined || LikeStatus.unknown => (false, Broken.like_filled, Broken.like_1),
+            };
+            final likeButtonColor = iconsColor?.withOpacityExt(likeStatus == LikeStatus.unknown ? 0.1 : 0.6);
+            return NamidaRawLikeButton(
+              isLiked: isFilled,
+              likedIcon: likedIcon,
+              normalIcon: normalIcon,
+              enabledColor: likeButtonColor,
+              disabledColor: likeButtonColor,
+              size: 14.0,
+              removeConfirmationAction: null,
+              onTap: null,
+            );
           },
-          padding: const EdgeInsets.symmetric(horizontal: 4.0, vertical: 1.0),
-          child: Text(
-            listens.length.formatDecimal(),
-            style: context.textTheme.displaySmall,
-          ),
         ),
+      ],
+      if (listens.isNotEmpty)
+        Material(
+          type: MaterialType.transparency,
+          child: InkWell(
+            highlightColor: Colors.transparent,
+            hoverColor: Colors.transparent,
+            onTap: () => showVideoListensDialog(videoId),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 5.0, vertical: 1.0), // extra hittest margin
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(6.0.multipliedRadius),
+                  color: context.theme.scaffoldBackgroundColor.withOpacityExt(0.5),
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 4.0, vertical: 1.0),
+                  child: Text(
+                    listens.length.formatDecimal(),
+                    style: fontMultiplier != null
+                        ? textTheme.displaySmall?.copyWith(fontSize: (textTheme.displaySmall?.fontSize ?? 12.0) * fontMultiplier)
+                        : textTheme.displaySmall,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        )
+      else
+        const SizedBox(width: 5.0),
+
       if (displayCacheIcons) ...[
-        const SizedBox(width: 4.0),
         Tooltip(
-          message: lang.VIDEO_CACHE,
+          message: lang.videoCache,
           child: Icon(
             Broken.video,
             size: 15.0,
-            color: iconsColor?.withOpacity(
-              VideoController.inst.getNVFromID(videoId).isNotEmpty ? 0.6 : 0.1,
+            color: iconsColor?.withValues(
+              alpha: VideoController.inst.hasNVCachedFromID(videoId) ? 0.6 : 0.1,
             ),
           ),
         ),
         const SizedBox(width: 4.0),
         Tooltip(
-          message: lang.AUDIO_CACHE,
+          message: lang.audioCache,
           child: Icon(
             Broken.audio_square,
             size: 15.0,
-            color: iconsColor?.withOpacity(
-              Player.inst.audioCacheMap[videoId] != null || Indexer.inst.allTracksMappedByYTID[videoId] != null ? 0.6 : 0.1,
+            color: iconsColor?.withValues(
+              alpha: AudioCacheController.inst.isAvailableOffline(videoId) ? 0.6 : 0.1,
             ),
           ),
         ),
@@ -104,44 +188,129 @@ class YTUtils {
     ];
   }
 
-  static List<NamidaPopupItem> getVideosMenuItems({
+  static NamidaPopupItem _getPlayAllTile({required QueueSourceYoutubeID queueSource, required Iterable<YoutubeID> videos, required bool showPlayAllReverse}) {
+    return NamidaPopupItem(
+      icon: Broken.play_circle,
+      title: lang.playAll,
+      onTap: () => Player.inst.playOrPause(0, videos, queueSource),
+      trailing: showPlayAllReverse
+          ? IconButton(
+              style: ButtonStyle(
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                visualDensity: VisualDensity.compact,
+              ),
+              tooltip: "${lang.playAll} (${lang.reverseOrder})",
+              icon: StackedIcon(
+                baseIcon: Broken.play_cricle,
+                secondaryIcon: Broken.arrow_swap,
+                iconSize: 20.0,
+                secondaryIconSize: 10.0,
+              ),
+              iconSize: 20.0,
+              onPressed: () {
+                NamidaNavigator.inst.popMenu();
+                Player.inst.playOrPause(0, videos.toFixedList().reversed, queueSource);
+              },
+            )
+          : null,
+    );
+  }
+
+  static Future<List<NamidaPopupItem>> getPlaylistMenuItems({
+    required BuildContext context,
+    required YoutubePlaylist playlist,
+    required QueueSourceYoutubeID queueSource,
+  }) async {
+    final isPinned = playlist.isPinned;
+    final playlistItems = playlist.isFav
+        ? const <NamidaPopupItem>[]
+        : [
+            NamidaPopupItem(
+              icon: Broken.tag,
+              title: '${lang.tags}/${lang.moods}',
+              onTap: () => showSetPlaylistsTagsDialog(
+                manager: YoutubePlaylistController.inst,
+                playlistsNames: [playlist.name],
+              ),
+            ),
+            NamidaPopupItem(
+              icon: isPinned ? Broken.paperclip_2 : Broken.paperclip,
+              title: isPinned ? lang.unpin : lang.pin,
+              onTap: () => YoutubePlaylistController.inst.updatePlaylistMetadata(playlist.name, isPinned: !isPinned),
+            ),
+            NamidaPopupItem(
+              icon: Broken.edit_2,
+              title: lang.edit,
+              onTap: () => playlist.showRenamePlaylistSheet(playlistName: playlist.name),
+            ),
+          ];
+    return getVideosMenuItems(
+      queueSource: queueSource,
+      context: context,
+      videos: playlist.tracks,
+      playlistName: '',
+      playlistToRemove: playlist,
+      playlistItems: playlistItems,
+    );
+  }
+
+  static Future<List<NamidaPopupItem>> getVideosMenuItems({
+    required QueueSourceYoutubeID queueSource,
+    required BuildContext context,
     required List<YoutubeID> videos,
-    List<NamidaPopupItem> moreItems = const [],
     required String playlistName,
-  }) {
-    final playAfterVid = getPlayerAfterVideo();
+    YoutubePlaylist? playlistToRemove,
+    List<NamidaPopupItem> playlistItems = const [],
+    bool showPlayAllReverse = true,
+  }) async {
+    final playAfterVid = await getPlayerAfterVideo();
+
+    final setPriorityChipController = SetVideosPriorityChipController();
+    final setPriorityChip = SetVideosPriorityChip(
+      controller: setPriorityChipController,
+      smaller: true,
+      totalCount: videos.length,
+      videosId: videos.map((e) => e.id),
+      countToText: (count) => count.displayVideoKeyword,
+      onChanged: (_) {},
+    );
+
     return [
       NamidaPopupItem(
         icon: Broken.music_library_2,
-        title: lang.ADD_TO_PLAYLIST,
+        title: lang.addToPlaylist,
         onTap: () {
           showAddToPlaylistSheet(ids: videos.map((e) => e.id), idsNamesLookup: {});
         },
       ),
       NamidaPopupItem(
         icon: Broken.share,
-        title: lang.SHARE,
+        title: lang.share,
         onTap: videos.shareVideos,
       ),
-      NamidaPopupItem(
-        icon: Broken.play,
-        title: lang.PLAY,
-        onTap: () => Player.inst.playOrPause(0, videos, QueueSource.others),
-      ),
-      NamidaPopupItem(
-        icon: Broken.shuffle,
-        title: lang.SHUFFLE,
-        onTap: () => Player.inst.playOrPause(0, videos, QueueSource.others, shuffle: true),
-      ),
+      if (videos.length > 1)
+        YTUtils._getPlayAllTile(queueSource: queueSource, videos: videos, showPlayAllReverse: showPlayAllReverse)
+      else
+        NamidaPopupItem(
+          icon: Broken.play,
+          title: lang.play,
+          onTap: () => Player.inst.playOrPause(0, videos, queueSource),
+        ),
+      if (videos.length > 1)
+        NamidaPopupItem(
+          icon: Broken.shuffle,
+          title: lang.shuffle,
+          onTap: () => Player.inst.playOrPause(0, videos, queueSource, shuffle: true),
+        ),
       NamidaPopupItem(
         icon: Broken.next,
-        title: lang.PLAY_NEXT,
+        title: lang.playNext,
         onTap: () => Player.inst.addToQueue(videos, insertNext: true),
       ),
       if (playAfterVid != null)
         NamidaPopupItem(
           icon: Broken.hierarchy_square,
-          title: '${lang.PLAY_AFTER}: ${playAfterVid.diff.displayVideoKeyword}',
+          title: '${lang.playAfter}: ${playAfterVid.diff.displayVideoKeyword}',
           subtitle: playAfterVid.name,
           oneLinedSub: true,
           onTap: () {
@@ -150,217 +319,592 @@ class YTUtils {
         ),
       NamidaPopupItem(
         icon: Broken.play_cricle,
-        title: lang.PLAY_LAST,
+        title: lang.playLast,
         onTap: () => Player.inst.addToQueue(videos, insertNext: false),
       ),
       if (playlistName != '')
         NamidaPopupItem(
           icon: Broken.trash,
-          title: lang.DELETE,
+          title: lang.removeFromPlaylist,
+          subtitle: playlistName.translatePlaylistName(),
           onTap: () => YTUtils.onRemoveVideosFromPlaylist(k_PLAYLIST_NAME_HISTORY, videos),
         ),
-      ...moreItems,
+      ...playlistItems,
+      if (playlistToRemove != null)
+        NamidaPopupItem(
+          icon: Broken.trash,
+          title: lang.deletePlaylist,
+          onTap: () => playlistToRemove.promptDelete(name: playlistToRemove.name),
+        ),
+      NamidaPopupItem(
+        icon: Broken.document_download,
+        title: lang.cache,
+        onTap: () => YTPlaylistDownloadPage(
+          ids: videos,
+          playlistName: playlistToRemove?.name ?? playlistName,
+          infoLookup: const {},
+          playlistInfo: null,
+          cacheOnly: true,
+        ).navigate(),
+      ),
+      NamidaPopupItem(
+        icon: Broken.bill,
+        title: lang.priority,
+        trailing: setPriorityChip,
+        onTap: setPriorityChipController.showMenu,
+      ),
     ];
   }
 
-  static List<NamidaPopupItem> getVideoCardMenuItems({
+  static Future<List<NamidaPopupItem>> getVideoCardMenuItemsForCurrentlyPlaying({
+    required QueueSourceYoutubeID queueSource,
+    required Rx<int> numberOfRepeats,
     required String videoId,
-    required String? url,
-    required String? channelUrl,
+    required String? videoTitle,
+    required String? channelID,
+    required bool displayGoToChannel,
+    required bool displayCopyUrl,
+  }) async {
+    final currentItem = Player.inst.currentItem.value;
+    NamidaPopupItem? repeatForWidget;
+    NamidaPopupItem? bookmarksItem;
+    final defaultItems = await YTUtils.getVideoCardMenuItems(
+      queueSource: queueSource,
+      downloadIndex: null,
+      totalLength: null,
+      streamInfoItem: null,
+      videoId: videoId,
+      channelID: channelID,
+      displayGoToChannel: displayGoToChannel,
+      playlistID: null,
+      idsNamesLookup: {videoId: videoTitle},
+      copyUrl: displayCopyUrl,
+      clearTile: false,
+      displayShareUrl: false,
+      showFavouritesTile: true,
+    );
+    if (currentItem is YoutubeID && videoId == currentItem.id) {
+      repeatForWidget = NamidaPopupItem(
+        icon: Broken.cd,
+        title: '',
+        titleBuilder: (style) => Obx(
+          (context) => Text(
+            lang.repeatForNTimes(number: numberOfRepeats.valueR),
+            style: style,
+          ),
+        ),
+        onTap: () {
+          Player.inst.setRepeatMode(PlayerRepeatMode.forNtimes, times: numberOfRepeats.value);
+        },
+        trailing: NumberOfRepeatsWidgetProvider(
+          numberOfRepeatsRx: numberOfRepeats,
+          iconColor: null,
+          iconSize: 18.0,
+          horizontalPadding: 4.0,
+        ),
+      );
+      final bookmarksCount = BookmarksController.inst.currentBookmarks.value.length;
+      if (bookmarksCount > 0) {
+        bookmarksItem = NamidaPopupItem(
+          icon: Broken.book_saved,
+          title: '${lang.bookmarks}: $bookmarksCount',
+          onTap: () => showBookmarksSheet(currentItem),
+        );
+      }
+    }
+    final clearItem = NamidaPopupItem(
+      icon: Broken.broom,
+      title: lang.clear,
+      trailing: SetVideosPriorityChip(
+        smaller: true,
+        totalCount: 1,
+        videosId: [videoId],
+        countToText: (count) => count.displayTrackKeyword,
+        onChanged: (_) {},
+      ),
+      onTap: () {
+        const YTUtils().showVideoClearDialog(videoId);
+      },
+    );
+
+    final items = <NamidaPopupItem>[];
+    items.addAll(defaultItems);
+    if (repeatForWidget != null) items.add(repeatForWidget);
+    if (bookmarksItem != null) items.add(bookmarksItem);
+    items.add(clearItem);
+    return items;
+  }
+
+  static void showCopyItemsDialog(String videoId) async {
+    final videoLink = YTUrlUtils.buildVideoUrl(videoId);
+    String? videoLinkTimeStamp;
+    final title = await YoutubeInfoController.utils.getVideoName(videoId) ?? '';
+    final channelTitle = await YoutubeInfoController.utils.getVideoChannelName(videoId) ?? '';
+
+    if (videoId == Player.inst.currentVideo?.id) {
+      int currentSeconds = Player.inst.nowPlayingPosition.value ~/ 1000;
+      if (currentSeconds > 0) {
+        videoLinkTimeStamp = YTUrlUtils.buildVideoUrl(videoId, timestampSeconds: currentSeconds);
+      }
+    }
+
+    void copy(String text) {
+      NamidaUtils.copyToClipboard(
+        content: text,
+        message: text.replaceAll('\n', ' '),
+        maxLinesMessage: 2,
+        leftBarIndicatorColor: CurrentColor.inst.miniplayerColor,
+      );
+      NamidaNavigator.inst.closeDialog();
+    }
+
+    NamidaNavigator.inst.navigateDialog(
+      dialog: CustomBlurryDialog(
+        title: lang.copy,
+        actions: const [
+          DoneButton(),
+        ],
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            CustomListTile(
+              title: lang.title,
+              subtitle: title,
+              onTap: () => copy(title),
+            ),
+            CustomListTile(
+              title: lang.channel,
+              subtitle: channelTitle,
+              onTap: () => copy(channelTitle),
+            ),
+            CustomListTile(
+              title: "${lang.channel} + ${lang.title}",
+              subtitle: '$channelTitle $title',
+              onTap: () => copy('$channelTitle $title'),
+            ),
+            CustomListTile(
+              title: lang.link,
+              subtitle: videoLink,
+              onTap: () => copy(videoLink),
+            ),
+            if (videoLinkTimeStamp != null)
+              CustomListTile(
+                title: "${lang.link} + ${lang.seconds}",
+                subtitle: videoLinkTimeStamp,
+                onTap: () => copy(videoLinkTimeStamp!),
+              ),
+            CustomListTile(
+              title: lang.video,
+              subtitle: videoId,
+              onTap: () => copy(videoId),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  static NamidaPopupItem getVideoCopyItemsPopupItem(String videoId) {
+    return NamidaPopupItem(
+      icon: Broken.copy,
+      title: lang.copy,
+      onTap: () {
+        final videoLink = YTUrlUtils.buildVideoUrl(videoId);
+        final text = videoLink;
+        NamidaUtils.copyToClipboard(
+          content: text,
+          maxLinesMessage: 2,
+        );
+      },
+      onLongPress: () => YTUtils.showCopyItemsDialog(videoId),
+      titleBuilder: (style) => Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Expanded(
+            child: Text(
+              lang.copy,
+              style: style,
+            ),
+          ),
+          const SizedBox(width: 4.0),
+          NamidaIconButton(
+            disableColor: true,
+            icon: Broken.share,
+            iconSize: 18.0,
+            onPressed: () {
+              final videoLink = YTUrlUtils.buildVideoUrl(videoId);
+              NamidaUtils.shareUri(videoLink);
+            },
+          ),
+        ],
+      ),
+    );
+  }
+
+  static Future<String?> copyThumbnailToStorage(String videoId) async {
+    if (!await requestManageStoragePermission()) {
+      return null;
+    }
+
+    final imgFile = await ThumbnailManager.inst.getYoutubeThumbnailAndCache(
+      id: videoId,
+      type: ThumbnailType.video,
+    );
+
+    if (imgFile != null) {
+      final saveDirPath = await EditDeleteController.inst.saveImageToStorage(imgFile);
+      return saveDirPath;
+    }
+    return null;
+  }
+
+  static Future<List<NamidaPopupItem>> getVideoCardMenuItems({
+    int? queueIndex,
+    required QueueSourceYoutubeID queueSource,
+    required int? downloadIndex,
+    required int? totalLength,
+    required StreamInfoItem? streamInfoItem,
+    String? playlistId,
+    PlaylistBasicInfo Function()? playlistInfo,
+    required String videoId,
+    required String? channelID,
+    bool displayGoToChannel = true,
     required PlaylistID? playlistID,
     required Map<String, String?> idsNamesLookup,
     String playlistName = '',
     YoutubeID? videoYTID,
-  }) {
-    final playAfterVid = getPlayerAfterVideo();
-    final isCurrentlyPlaying = Player.inst.nowPlayingVideoID != null && videoId == Player.inst.getCurrentVideoId;
+    bool copyUrl = false,
+    List<NamidaPopupItem>? moreMenuChildren,
+    bool isInFullScreen = false,
+    bool clearTile = true,
+    bool displayShareUrl = true,
+    bool showInfoTile = true,
+    bool showFavouritesTile = false,
+    Iterable<YoutubeID>? videosToPlayAll,
+  }) async {
+    final playAfterVid = await getPlayerAfterVideo();
+    if (displayGoToChannel && (channelID == null || channelID.isEmpty)) channelID = await YoutubeInfoController.utils.getVideoChannelID(videoId);
+
+    final isFromQueue = queueIndex != null && queueSource == QueueSourceYoutubeID.ytPlayerQueue;
+
+    final int? stopAfterItems = isFromQueue
+        ? Player.inst.sleepAfterItemsForIndex(queueIndex)
+        : videoId == Player.inst.currentVideo?.id
+        ? 1
+        : null;
+
+    NamidaPopupItem? favouriteItem;
+    if (showFavouritesTile) {
+      final isFavourite = YoutubePlaylistController.inst.favouritesPlaylist.isSubItemFavourite(videoId);
+      favouriteItem = NamidaPopupItem(
+        icon: isFavourite ? Broken.heart_filled : Broken.heart,
+        title: lang.favourites,
+        onTap: () => YoutubePlaylistController.inst.favouriteButtonOnPressed(videoId),
+      );
+    }
     return [
+      if (showInfoTile)
+        NamidaPopupItem(
+          icon: Broken.info_circle,
+          title: lang.info,
+          onTap: () {
+            NamidaNavigator.inst.navigateDialog(
+              dialog: VideoInfoDialog(
+                videoId: videoId,
+              ),
+            );
+          },
+        ),
+      ?favouriteItem,
       NamidaPopupItem(
         icon: Broken.music_library_2,
-        title: lang.ADD_TO_PLAYLIST,
+        title: lang.addToPlaylist,
         onTap: () {
           showAddToPlaylistSheet(ids: [videoId], idsNamesLookup: idsNamesLookup);
         },
       ),
       NamidaPopupItem(
         icon: Broken.import,
-        title: lang.DOWNLOAD,
+        title: lang.download,
         onTap: () {
+          final plInfo = playlistInfo?.call();
           showDownloadVideoBottomSheet(
             videoId: videoId,
+            originalIndex: downloadIndex,
+            playlistId: plInfo?.id ?? playlistId,
+            playlistInfo: plInfo,
+            totalLength: totalLength,
+            streamInfoItem: streamInfoItem,
+            initialGroupName: playlistName.emptyIfHasDefaultPlaylistName(),
           );
         },
       ),
-      if (url != null && url != '')
+      if (displayShareUrl) getVideoCopyItemsPopupItem(videoId),
+      if (copyUrl)
         NamidaPopupItem(
-          icon: Broken.share,
-          title: lang.SHARE,
-          onTap: () => Share.share(url),
+          icon: Broken.copy,
+          title: lang.copy,
+          onTap: () => const YTUtils().copyCurrentVideoUrl(videoId, withTimestamp: false),
         ),
-      isCurrentlyPlaying
+      if (channelID != null && channelID.isNotEmpty)
+        NamidaPopupItem(
+          icon: Broken.user,
+          title: lang.goToChannel,
+          onTap: () {
+            if (isInFullScreen) NamidaNavigator.inst.exitFullScreen();
+            YTChannelSubpage(channelID: channelID!).navigate();
+          },
+        ),
+      if (videosToPlayAll != null && videosToPlayAll.length > 1) YTUtils._getPlayAllTile(queueSource: queueSource, videos: videosToPlayAll, showPlayAllReverse: true),
+      stopAfterItems != null
           ? NamidaPopupItem(
               icon: Broken.pause,
-              title: lang.STOP_AFTER_THIS_VIDEO,
-              enabled: Player.inst.sleepAfterTracks != 1,
+              title: lang.stopAfterThisVideo,
+              enabled: !Player.inst.isSleepingAfterItems(stopAfterItems),
               onTap: () {
-                Player.inst.updateSleepTimerValues(enableSleepAfterTracks: true, sleepAfterTracks: 1);
+                Player.inst.updateSleepTimerValues(enableSleepAfterItems: true, sleepAfterItems: stopAfterItems, isAnchoredToItem: true);
               },
             )
           : NamidaPopupItem(
               icon: Broken.play,
-              title: lang.PLAY,
+              title: lang.play,
               onTap: () {
-                Player.inst.playOrPause(0, [YoutubeID(id: videoId, playlistID: playlistID)], QueueSource.others);
+                Player.inst.playOrPause(0, [YoutubeID(id: videoId, playlistID: playlistID)], queueSource);
               },
             ),
-      if (channelUrl != '')
-        NamidaPopupItem(
-          icon: Broken.user,
-          title: lang.GO_TO_CHANNEL,
-          onTap: () {
-            final chid = YoutubeSubscriptionsController.inst.idOrUrlToChannelID(channelUrl);
-            if (chid == null) return;
-            NamidaNavigator.inst.navigateTo(YTChannelSubpage(channelID: chid));
-          },
-        ),
       NamidaPopupItem(
         icon: Broken.next,
-        title: lang.PLAY_NEXT,
+        title: lang.playNext,
         onTap: () {
           Player.inst.addToQueue([YoutubeID(id: videoId, playlistID: playlistID)], insertNext: true, showSnackBar: false);
         },
+        onLongPress: isFromQueue ? () => Player.inst.moveToNext(queueIndex) : null,
       ),
       if (playAfterVid != null)
         NamidaPopupItem(
           icon: Broken.hierarchy_square,
-          title: '${lang.PLAY_AFTER}: ${playAfterVid.diff.displayVideoKeyword}',
+          title: '${lang.playAfter}: ${playAfterVid.diff.displayVideoKeyword}',
           subtitle: playAfterVid.name,
           oneLinedSub: true,
           onTap: () {
             Player.inst.addToQueue([YoutubeID(id: videoId, playlistID: playlistID)], insertAfterLatest: true, showSnackBar: false);
           },
+          onLongPress: isFromQueue ? () => Player.inst.moveToAfterLatestInserted(queueIndex) : null,
         ),
       NamidaPopupItem(
         icon: Broken.play_cricle,
-        title: lang.PLAY_LAST,
+        title: lang.playLast,
         onTap: () {
           Player.inst.addToQueue([YoutubeID(id: videoId, playlistID: playlistID)], insertNext: false, showSnackBar: false);
         },
+        onLongPress: isFromQueue ? () => Player.inst.moveToLast(queueIndex) : null,
       ),
       if (playlistName != '' && videoYTID != null)
         NamidaPopupItem(
           icon: Broken.box_remove,
-          title: lang.REMOVE_FROM_PLAYLIST,
-          subtitle: playlistName.translatePlaylistName(liked: true),
+          title: lang.removeFromPlaylist,
+          subtitle: playlistName.translatePlaylistName(),
           onTap: () => YTUtils.onRemoveVideosFromPlaylist(playlistName, [videoYTID]),
         ),
+      if (!AudioCacheController.inst.isAvailableOffline(videoId))
+        NamidaPopupItem(
+          icon: Broken.document_download,
+          title: lang.cache,
+          onTap: () => YoutubeController.inst.cacheYoutubeVideos(
+            groupName: DownloadTaskGroupName(groupName: playlistName.emptyIfHasDefaultPlaylistName()),
+            videoIds: [videoId],
+            infoLookup: {videoId: ?streamInfoItem},
+            audioOnly: settings.downloadAudioOnly.value,
+            preferredQualities: settings.youtubeVideoQualities.value,
+          ),
+        ),
+      if (clearTile)
+        NamidaPopupItem(
+          icon: Broken.broom,
+          title: lang.clear,
+          trailing: SetVideosPriorityChip(
+            smaller: true,
+            totalCount: 1,
+            videosId: [videoId],
+            countToText: (count) => count.displayTrackKeyword,
+            onChanged: (_) {},
+          ),
+          onTap: () {
+            const YTUtils().showVideoClearDialog(videoId);
+          },
+        ),
+      ...?moreMenuChildren,
     ];
   }
 
-  static ({YoutubeID video, int diff, String name})? getPlayerAfterVideo() {
+  static Future<({YoutubeID video, int diff, String name})?> getPlayerAfterVideo() async {
     final player = Player.inst;
-    if (player.currentQueueYoutube.isNotEmpty && player.latestInsertedIndex != player.currentIndex) {
-      final playAfterVideo = player.currentQueueYoutube[player.latestInsertedIndex];
-      final diff = player.latestInsertedIndex - player.currentIndex;
-      final name = YoutubeController.inst.getVideoName(playAfterVideo.id) ?? '';
-      return (video: playAfterVideo, diff: diff, name: name);
+    if (player.currentItem.value is YoutubeID && player.latestInsertedIndex > player.currentIndex.value) {
+      try {
+        final playAfterVideo = player.currentQueue.value[player.latestInsertedIndex] as YoutubeID;
+        final diff = player.latestInsertedIndex - player.currentIndex.value;
+        final name = await YoutubeInfoController.utils.getVideoName(playAfterVideo.id) ?? '';
+        return (video: playAfterVideo, diff: diff, name: name);
+      } catch (_) {}
     }
     return null;
   }
 
-  static Map<String, String?> getMetadataInitialMap(String id, VideoInfo? info, {bool autoExtract = true}) {
-    String removeTopic(String text) {
-      const topic = '- Topic';
-      final startIndex = (text.length - topic.length).withMinimum(0);
-      return text.replaceFirst(topic, '', startIndex).trimAll();
-    }
-
-    final date = info?.date;
-    final description = info?.description;
-    String? title = info?.name;
-    String? artist = info?.uploaderName;
-    String? album;
-    if (autoExtract) {
-      final splitted = info?.name?.splitArtistAndTitle();
-      if (splitted != null && splitted.$1 != null && splitted.$2 != null) {
-        title = splitted.$2;
-        artist = splitted.$1;
-      }
-      final uploaderName = info?.uploaderName;
-      if (uploaderName != null) album = removeTopic(uploaderName);
-    }
-
-    if (artist != null) artist = removeTopic(artist);
-
-    String? synopsis;
-    if (description != null) {
-      try {
-        synopsis = HtmlParser.parseHTML(description).text;
-      } catch (_) {}
-    }
+  static Map<FFMPEGTagField, String> getDefaultTagsFieldsBuilders(bool autoExtract) {
     return {
-      FFMPEGTagField.title: title,
-      FFMPEGTagField.artist: artist,
-      FFMPEGTagField.album: album,
-      FFMPEGTagField.comment: YoutubeController.inst.getYoutubeLink(id),
-      FFMPEGTagField.year: date == null ? null : DateFormat('yyyyMMdd').format(date),
-      FFMPEGTagField.synopsis: synopsis,
+      if (autoExtract)
+        FFMPEGTagField.title: YoutubeController.filenameBuilder.buildParamForFilename('title')
+      else
+        FFMPEGTagField.title: YoutubeController.filenameBuilder.buildParamForFilename('fulltitle'),
+      if (autoExtract)
+        FFMPEGTagField.artist: YoutubeController.filenameBuilder.buildParamForFilename('artist')
+      else
+        FFMPEGTagField.artist: YoutubeController.filenameBuilder.buildParamForFilename('channel'),
+      if (autoExtract) FFMPEGTagField.album: YoutubeController.filenameBuilder.buildParamForFilename('channel'),
+      if (autoExtract) FFMPEGTagField.genre: YoutubeController.filenameBuilder.buildParamForFilename('genre'),
+      FFMPEGTagField.comment: YoutubeController.filenameBuilder.buildParamForFilename('video_url'),
+      FFMPEGTagField.year: YoutubeController.filenameBuilder.buildParamForFilename('upload_date'),
+      FFMPEGTagField.trackNumber: YoutubeController.filenameBuilder.buildParamForFilename('playlist_autonumber'),
+      FFMPEGTagField.trackTotal: YoutubeController.filenameBuilder.buildParamForFilename('playlist_count'),
+      // FFMPEGTagField.synopsis: YoutubeController.filenameBuilder.buildParamForFilename('description'),
+      FFMPEGTagField.description: YoutubeController.filenameBuilder.buildParamForFilename('description'),
     };
   }
 
-  static Future<bool> writeAudioMetadata({
-    required String videoId,
-    required File audioFile,
-    required File? thumbnailFile,
-    required Map<String, String?> tagsMap,
+  static Future<Map<String, String?>> getMetadataInitialMap(
+    String id,
+    StreamInfoItem? streamInfoItem,
+    VideoStream? videoStream,
+    AudioStream? audioStream,
+    VideoStreamsResult? streams,
+    PlaylistBasicInfo? playlistInfo,
+    String? playlistId,
+    int? originalIndex,
+    int? totalLength, {
+    bool autoExtract = true,
+    Map<String, String?>? initialBuilding,
   }) async {
-    final thumbnail = thumbnailFile ?? await ThumbnailManager.inst.getYoutubeThumbnailAndCache(id: videoId);
-    if (thumbnail != null) {
-      await NamidaFFMPEG.inst.editAudioThumbnail(audioPath: audioFile.path, thumbnailPath: thumbnail.path);
+    if (playlistInfo == null && playlistId != null && playlistId.isNotEmpty) {
+      final plInfo = await YoutubeInfoController.playlist.fetchPlaylist(playlistId: playlistId).catchError((_) => null);
+      playlistInfo = plInfo?.info;
     }
-    return await NamidaFFMPEG.inst.editMetadata(
-      path: audioFile.path,
-      tagsMap: tagsMap,
-    );
+    final videoPage = await YoutubeInfoController.video.fetchVideoPage(id).catchError((_) => null);
+    final streamInfo = await YoutubeInfoController.utils.buildOrUseVideoStreamInfo(id, streams);
+
+    final infoMap = <String, String?>{};
+
+    if (initialBuilding != null) {
+      for (final ib in initialBuilding.entries) {
+        final userText = ib.value;
+        if (userText != null) {
+          infoMap[ib.key] =
+              YoutubeController.filenameBuilder.rebuildFilenameWithDecodedParams(
+                userText,
+                id,
+                streamInfo,
+                videoPage,
+                streamInfoItem,
+                playlistInfo,
+                videoStream,
+                audioStream,
+                originalIndex,
+                totalLength,
+                fallback: '',
+              ) ??
+              userText;
+        }
+      }
+    }
+
+    final defaultInfoSett = settings.youtube.initialDefaultMetadataTags.value;
+    for (final di in defaultInfoSett.entries) {
+      final defaultText = di.value;
+      infoMap[di.key] ??=
+          YoutubeController.filenameBuilder.rebuildFilenameWithDecodedParams(
+            defaultText,
+            id,
+            streamInfo,
+            videoPage,
+            streamInfoItem,
+            playlistInfo,
+            videoStream,
+            audioStream,
+            originalIndex,
+            totalLength,
+            fallback: '',
+          ) ??
+          defaultText;
+    }
+
+    final defaultInfo = getDefaultTagsFieldsBuilders(autoExtract);
+    for (final di in defaultInfo.entries) {
+      final defaultText = di.value;
+      infoMap[di.key.tagKey] ??=
+          YoutubeController.filenameBuilder.rebuildFilenameWithDecodedParams(
+            defaultText,
+            id,
+            streamInfo,
+            videoPage,
+            streamInfoItem,
+            playlistInfo,
+            videoStream,
+            audioStream,
+            originalIndex,
+            totalLength,
+            fallback: '',
+          ) ??
+          '';
+    }
+
+    return infoMap;
   }
 
-  static Future<void> onYoutubeHistoryPlaylistTap({
-    double initialScrollOffset = 0,
-    int? indexToHighlight,
-    int? dayOfHighLight,
-  }) async {
-    YoutubeHistoryController.inst.indexToHighlight.value = indexToHighlight;
-    YoutubeHistoryController.inst.dayOfHighLight.value = dayOfHighLight;
-
-    void jump() => YoutubeHistoryController.inst.scrollController.jumpTo(initialScrollOffset);
-
-    NamidaNavigator.inst.hideStuff();
-
-    if (YoutubeHistoryController.inst.scrollController.hasClients) {
-      jump();
-    } else {
-      WidgetsBinding.instance.addPostFrameCallback((timeStamp) {
-        jump();
-      });
-      await NamidaNavigator.inst.navigateTo(
-        const YoutubeHistoryPage(),
+  static Future<void> onYoutubeHistoryPlaylistTap({int? initialListen, List<int>? listensToNavigate}) async {
+    historyListensNavigation.value = HistoryListensNavigation.of(listensToNavigate, initialListen);
+    bool shouldNavigate = true;
+    if (initialListen != null) {
+      shouldNavigate = NamidaOnTaps.jumpToListen(
+        YoutubeHistoryController.inst,
+        initialListen,
+        Dimensions.youtubeCardItemExtent,
+        kYoutubeHistoryDayHeaderHeightWithPadding,
+        RouteType.YOUTUBE_HISTORY_SUBPAGE,
       );
     }
+    if (shouldNavigate) await YoutubeHistoryPage().navigate();
+  }
+
+  static Future<void> onYoutubeLikedPlaylistTap() {
+    return const YTNormalPlaylistSubpage(
+      playlistName: k_PLAYLIST_NAME_FAV,
+      isEditable: false,
+      reversedList: true,
+      queueSource: QueueSourceYoutubeID.ytFavourites,
+    ).navigate();
+  }
+
+  static Future<void> onYoutubeMostPlayedPlaylistTap({MostPlayedTimeRange? mptr, DateRange? dateCustom}) async {
+    if (mptr != null) {
+      settings.transaction(() {
+        settings.ytMostPlayedTimeRange.save(mptr);
+        settings.ytMostPlayedCustomDateRange.save(dateCustom);
+      });
+      YoutubeHistoryController.inst.updateTempMostPlayedPlaylist(
+        mptr: mptr,
+        customDateRange: dateCustom,
+      );
+    }
+
+    return const YTMostPlayedVideosPage().navigate();
   }
 
   static Future<void> onRemoveVideosFromPlaylist(String name, List<YoutubeID> videosToDelete) async {
     void showSnacky({required void Function() whatDoYouWant}) {
       snackyy(
-        title: lang.UNDO_CHANGES,
-        message: lang.UNDO_CHANGES_DELETED_TRACK,
-        displaySeconds: 3,
-        button: TextButton(
-          onPressed: () {
-            Get.closeCurrentSnackbar();
-            whatDoYouWant();
-          },
-          child: Text(lang.UNDO),
-        ),
+        title: lang.undoChanges,
+        message: lang.undoChangesDeletedTrack,
+        displayDuration: SnackDisplayDuration.long,
+        button: SnackbarButton(text: lang.undo, function: whatDoYouWant),
       );
     }
 
@@ -368,11 +912,10 @@ class YTUtils {
 
     if (isHistory) {
       final tempList = List<YoutubeID>.from(videosToDelete);
-      await YoutubeHistoryController.inst.removeTracksFromHistory(videosToDelete);
+      await YoutubeHistoryController.inst.removeTracksFromHistory(tempList);
       showSnacky(
         whatDoYouWant: () async {
           await YoutubeHistoryController.inst.addTracksToHistory(tempList);
-          YoutubeHistoryController.inst.sortHistoryTracks(tempList.mapped((e) => e.dateTimeAdded.toDaysSince1970()));
         },
       );
     } else {
@@ -380,9 +923,10 @@ class YTUtils {
       if (playlist == null) return;
 
       final Map<YoutubeID, int> twdAndIndexes = {};
-      videosToDelete.loop((twd, index) {
-        twdAndIndexes[twd] = playlist.tracks.indexOf(twd);
-      });
+      for (var twd in videosToDelete) {
+        final index = playlist.tracks.indexOf(twd);
+        if (index > -1) twdAndIndexes[twd] = index;
+      }
 
       await YoutubePlaylistController.inst.removeTracksFromPlaylist(playlist, twdAndIndexes.values.toList());
       showSnacky(
@@ -396,29 +940,11 @@ class YTUtils {
     }
   }
 
-  void showVideoClearDialog(BuildContext context, String videoId, Color colorScheme) {
-    final videosCached = VideoController.inst.getNVFromID(videoId);
-    final audiosCached = Player.inst.audioCacheMap[videoId]?.where((element) => element.file.existsSync()).toList() ?? [];
-
-    final fileSizeLookup = <String, int>{};
-    final fileTypeLookup = <String, int>{};
-
-    int videosSize = 0;
-    int audiosSize = 0;
-
-    audiosCached.loop((e, _) {
-      final s = e.file.sizeInBytesSync();
-      audiosSize += s;
-      fileSizeLookup[e.file.path] = s;
-      fileTypeLookup[e.file.path] = 0;
-    });
-    videosCached.loop((e, _) {
-      final s = e.sizeInBytes;
-      videosSize += s;
-      fileSizeLookup[e.path] = s;
-      fileTypeLookup[e.path] = 1;
-    });
-
+  void showVideoClearDialog(
+    String videoId, {
+    final void Function(Map<String, bool> pathsDeleted)? afterDeleting,
+    List<NamidaClearDialogExpansionTile<dynamic>> Function(RxMap<String, bool> pathsToDelete, Rx<int> totalSizeToDelete, Rx<bool> allSelected)? extraTiles,
+  }) async {
     final pathsToDelete = <String, bool>{}.obs;
     final allSelected = false.obs;
     final totalSizeToDelete = 0.obs;
@@ -427,6 +953,47 @@ class YTUtils {
     final deleteTempVideo = false.obs;
     final tempFilesSizeAudio = <File, int>{}.obs;
     final tempFilesSizeVideo = <File, int>{}.obs;
+
+    final extraTilesBuilt = extraTiles?.call(pathsToDelete, totalSizeToDelete, allSelected);
+    final videosCached = await VideoController.inst.getNVFromID(videoId);
+    final fileSizeLookup = <String, int>{};
+    final fileTypeLookup = <String, int>{};
+
+    int videosSize = 0;
+    int audiosSize = 0;
+
+    final audiosCached = <AudioCacheDetails>[];
+    final audioCachesAll = AudioCacheController.inst.audioCacheMap[videoId];
+    if (audioCachesAll != null) {
+      final sizes = await audioCachesAll.mapConcurrent((e) => e.file.fileSize());
+      for (int i = 0; i < audioCachesAll.length; i++) {
+        final s = sizes[i];
+        if (s == null) continue; // -- doesn't exist
+        final e = audioCachesAll[i];
+        audiosCached.add(e);
+        audiosSize += s;
+        fileSizeLookup[e.file.path] = s;
+        fileTypeLookup[e.file.path] = 0;
+      }
+    }
+
+    for (var e in videosCached) {
+      final s = e.sizeInBytes;
+      videosSize += s;
+      fileSizeLookup[e.path] = s;
+      fileTypeLookup[e.path] = 1;
+    }
+
+    if (extraTilesBuilt != null) {
+      for (var e in extraTilesBuilt) {
+        for (var item in e.items) {
+          final data = e.itemBuilder(item);
+          final s = e.itemSize(item);
+          fileSizeLookup[data.path] = s;
+          fileTypeLookup[data.path] = 2;
+        }
+      }
+    }
 
     const cm = StorageCacheManager();
     cm.getTempAudiosForID(videoId).then((value) => tempFilesSizeAudio.value = value);
@@ -451,116 +1018,15 @@ class YTUtils {
     }
 
     Future<void> deleteItems(Iterable<String> paths) async {
-      for (final path in paths) {
-        await File(path).tryDeleting();
-
+      await paths.loopConcurrent((path) async {
         final type = fileTypeLookup[path];
+        await File(path).tryDeleting(); // always delete even if not in fileTypeLookup, for temp files
         if (type == 1) {
           VideoController.inst.removeNVFromCacheMap(videoId, path);
         } else if (type == 0) {
-          Player.inst.audioCacheMap[videoId]?.removeWhere((element) => element.file.path == path);
+          AudioCacheController.inst.removeFromCacheMap(videoId, path);
         }
-      }
-    }
-
-    Widget getExpansionTileWidget<T>({
-      required String title,
-      required String subtitle,
-      required IconData icon,
-      required List<T> items,
-      required ({String title, String subtitle, String path}) Function(T item) itemBuilder,
-      required int Function(T item) itemSize,
-      required RxMap<File, int> tempFilesSize,
-      required RxBool tempFilesDelete,
-    }) {
-      return NamidaExpansionTile(
-        initiallyExpanded: true,
-        titleText: title,
-        subtitleText: subtitle,
-        icon: icon,
-        trailing: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            DecoratedBox(
-              decoration: BoxDecoration(
-                color: context.theme.cardColor,
-                borderRadius: BorderRadius.circular(6.0.multipliedRadius),
-              ),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 6.0, vertical: 3.0),
-                child: Text("${items.length}"),
-              ),
-            ),
-            const SizedBox(width: 6.0),
-            const Icon(Broken.arrow_down_2, size: 20.0),
-          ],
-        ),
-        childrenPadding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 6.0),
-        children: [
-          ...items.map(
-            (item) {
-              final data = itemBuilder(item);
-              return SmallListTile(
-                borderRadius: 12.0,
-                icon: Broken.arrow_right_3,
-                iconSize: 20.0,
-                color: context.theme.cardColor,
-                visualDensity: const VisualDensity(horizontal: -3.0, vertical: -3.0),
-                title: data.title,
-                subtitle: data.subtitle,
-                active: false,
-                onTap: () {
-                  final wasTrue = pathsToDelete[data.path] == true;
-                  final willEnable = !wasTrue;
-                  pathsToDelete[data.path] = willEnable;
-                  if (willEnable) {
-                    totalSizeToDelete.value += itemSize(item);
-                  } else {
-                    totalSizeToDelete.value -= itemSize(item);
-                  }
-                  allSelected.value = false;
-                },
-                trailing: Obx(
-                  () => NamidaCheckMark(
-                    size: 16.0,
-                    active: pathsToDelete[data.path] == true,
-                  ),
-                ),
-              );
-            },
-          ),
-          Obx(
-            () {
-              final size = tempFilesSize.values.fold(0, (p, e) => p + e);
-              if (size <= 0) return const SizedBox();
-              return SmallListTile(
-                borderRadius: 12.0,
-                icon: Broken.broom,
-                iconSize: 20.0,
-                color: context.theme.cardColor,
-                visualDensity: const VisualDensity(horizontal: -3.0, vertical: -3.0),
-                title: lang.DELETE_TEMP_FILES,
-                subtitle: size.fileSizeFormatted,
-                active: false,
-                onTap: () {
-                  tempFilesDelete.value = !tempFilesDelete.value;
-                  if (tempFilesDelete.value) {
-                    totalSizeToDelete.value += size;
-                  } else {
-                    totalSizeToDelete.value -= size;
-                  }
-                },
-                trailing: Obx(
-                  () => NamidaCheckMark(
-                    size: 16.0,
-                    active: tempFilesDelete.value,
-                  ),
-                ),
-              );
-            },
-          ),
-        ],
-      );
+      });
     }
 
     NamidaNavigator.inst.navigateDialog(
@@ -576,22 +1042,29 @@ class YTUtils {
       dialogBuilder: (theme) => CustomBlurryDialog(
         theme: theme,
         normalTitleStyle: true,
-        icon: Broken.trash,
-        title: lang.CLEAR,
+        icon: Broken.broom,
+        title: lang.clear,
         trailingWidgets: [
           Obx(
-            () => Checkbox.adaptive(
-              splashRadius: 28.0,
-              materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(4.0.multipliedRadius),
-              ),
-              value: allSelected.value,
-              onChanged: (value) {
-                allSelected.value = !allSelected.value;
-                if (allSelected.value == true) {
-                  audiosCached.loop((e, _) => pathsToDelete[e.file.path] = true);
-                  videosCached.loop((e, _) => pathsToDelete[e.path] = true);
+            (context) => NamidaIconButton(
+              icon: null,
+              onPressed: () {
+                final newVal = allSelected.toggle();
+                if (newVal == true) {
+                  for (var e in audiosCached) {
+                    pathsToDelete[e.file.path] = true;
+                  }
+                  for (var e in videosCached) {
+                    pathsToDelete[e.path] = true;
+                  }
+                  if (extraTilesBuilt != null) {
+                    for (var e in extraTilesBuilt) {
+                      for (var item in e.items) {
+                        pathsToDelete[e.itemBuilder(item).path] = true;
+                      }
+                    }
+                  }
+
                   deleteTempAudio.value = true;
                   deleteTempVideo.value = true;
                 } else {
@@ -601,21 +1074,27 @@ class YTUtils {
                 }
                 reEvaluateTotalSize();
               },
+              child: NamidaCheckMark(
+                size: 18.0,
+                active: allSelected.valueR,
+              ),
             ),
           ),
         ],
         actions: [
           const CancelButton(),
           Obx(
-            () => NamidaButton(
-              enabled: deleteTempAudio.value || deleteTempVideo.value || pathsToDelete.values.any((element) => element),
-              text: "${lang.DELETE} (${totalSizeToDelete.value.fileSizeFormatted})",
-              onPressed: () async {
+            (context) => NamidaButton(
+              enabled: deleteTempAudio.valueR || deleteTempVideo.valueR || pathsToDelete.values.any((element) => element),
+              text: "${lang.delete} (${totalSizeToDelete.valueR.fileSizeFormatted})",
+              onTap: () async {
                 await Future.wait([
                   deleteItems(pathsToDelete.keys.where((element) => pathsToDelete[element] == true)),
                   if (deleteTempAudio.value) deleteItems(tempFilesSizeAudio.keys.map((e) => e.path)),
                   if (deleteTempVideo.value) deleteItems(tempFilesSizeVideo.keys.map((e) => e.path)),
                 ]);
+                afterDeleting?.call(pathsToDelete.value);
+                Player.inst.recheckCachedVideos(videoId);
                 NamidaNavigator.inst.closeDialog();
               },
             ),
@@ -623,8 +1102,8 @@ class YTUtils {
         ],
         child: Column(
           children: [
-            getExpansionTileWidget(
-              title: lang.VIDEO_CACHE,
+            NamidaClearDialogExpansionTile(
+              title: lang.videoCache,
               subtitle: videosSize.fileSizeFormatted,
               icon: Broken.video,
               items: videosCached,
@@ -638,42 +1117,166 @@ class YTUtils {
                   path: v.path,
                 );
               },
+              pathsToDelete: pathsToDelete,
+              totalSizeToDelete: totalSizeToDelete,
+              allSelected: allSelected,
             ),
-            getExpansionTileWidget(
-              title: lang.AUDIO_CACHE,
+            NamidaClearDialogExpansionTile(
+              title: lang.audioCache,
               subtitle: audiosSize.fileSizeFormatted,
               icon: Broken.musicnote,
               items: audiosCached,
-              itemSize: (item) => fileSizeLookup[item.file.path] ?? item.file.sizeInBytesSync(),
+              itemSize: (item) => fileSizeLookup[item.file.path] ?? item.file.fileSizeSync() ?? 0,
               tempFilesDelete: deleteTempAudio,
               tempFilesSize: tempFilesSizeAudio,
               itemBuilder: (a) {
                 final bitrateText = a.bitrate == null ? null : "${a.bitrate! ~/ 1000}kb/s";
                 final langText = a.langaugeName == null ? '' : " • ${a.langaugeName}";
                 return (
-                  title: "${bitrateText ?? lang.AUDIO}$langText",
+                  title: "${bitrateText ?? lang.audio}$langText",
                   subtitle: a.file.fileSizeFormatted() ?? '',
                   path: a.file.path,
                 );
               },
+              pathsToDelete: pathsToDelete,
+              totalSizeToDelete: totalSizeToDelete,
+              allSelected: allSelected,
             ),
+            ...?extraTilesBuilt,
           ],
         ),
       ),
     );
   }
 
-  void copyVideoUrl(String videoId) {
+  static void showCreateLocalYTPlaylistSheet() async {
+    final text = await showNamidaBottomSheetWithTextField(
+      title: lang.configure,
+      textfieldConfig: BottomSheetTextFieldConfig(
+        initalControllerText: '',
+        hintText: '',
+        labelText: lang.name,
+        validator: (value) => YoutubePlaylistController.inst.validatePlaylistName(value),
+      ),
+      buttonText: lang.add,
+      onButtonTap: (text) => true,
+    );
+    if (text != null) YoutubePlaylistController.inst.addNewPlaylist(text);
+  }
+
+  static void showFilenameBuilderOutputSheet({
+    required String groupName,
+    required bool showEditTags,
+    required void Function(String text) onChanged,
+  }) async {
+    final controller = TextEditingController(text: settings.youtube.downloadFilenameBuilder.value);
+    if (controller.text.isEmpty) controller.text = settings.youtube.defaultFilenameBuilder;
+    await showNamidaBottomSheetWithTextField(
+      title: lang.output,
+      textfieldConfig: BottomSheetTextFieldConfigWC(
+        controller: controller,
+        hintText: '',
+        labelText: lang.fileName,
+        validator: (value) {
+          if (value == null) return lang.pleaseEnterAName;
+          final file = FileParts.join(AppDirs.YOUTUBE_DOWNLOADS, groupName, value);
+          if (file.existsSync()) {
+            return "${lang.fileAlreadyExists}, ${lang.downloadingWillOverrideIt} (${file.fileSizeFormatted() ?? 0})";
+          }
+          if (!YoutubeController.filenameBuilder.isBuildingDefaultFilenameSafe(value)) {
+            return YoutubeController.filenameBuilder.encodedParamsThatShouldExistInFilename.join(' - ');
+          }
+          return null;
+        },
+      ),
+      buttonText: lang.save,
+      onButtonTap: (text) {
+        onChanged(text);
+        settings.youtube.downloadFilenameBuilder.save(text);
+        return true;
+      },
+      extraPreItemsBuilder: !showEditTags
+          ? null
+          : (formState) {
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 12.0),
+                child: CustomListTile(
+                  icon: Broken.edit,
+                  title: lang.editTags,
+                  trailing: const Icon(
+                    Broken.arrow_right_3,
+                    size: 22.0,
+                  ),
+                  onTap: () async {
+                    final tagMaps = Map.of(settings.youtube.initialDefaultMetadataTags.value);
+                    await showVideoDownloadOptionsSheet(
+                      videoTitle: null,
+                      videoUploader: null,
+                      tagMaps: tagMaps,
+                      tagMapsForFillingInfoOnly: YTUtils.getDefaultTagsFieldsBuilders(settings.youtube.autoExtractVideoTagsFromInfo.value),
+                      showSpecificFileOptions: false,
+                      onDownloadFilenameChanged: (filename) {}, // not visible
+                      onDownloadGroupNameChanged: (newGroupName) {}, // not visible
+                      preWidget: (controllerFn, onChangedFn) => Padding(
+                        padding: const EdgeInsets.only(top: 12.0, bottom: 4.0),
+                        child: YTDownloadFilenameBuilderRow(
+                          controller: null,
+                          controllerCallback: controllerFn,
+                          onChanged: onChangedFn,
+                        ),
+                      ),
+                      initialGroupName: groupName,
+                    );
+                    settings.youtube.initialDefaultMetadataTags.replace(tagMaps);
+                  },
+                ),
+              );
+            },
+      extraItemsBuilder: (formState) {
+        return Padding(
+          padding: const EdgeInsets.only(top: 12.0, bottom: 4.0),
+          child: YTDownloadFilenameBuilderRow(
+            controller: controller,
+          ),
+        );
+      },
+    );
+    controller.disposeAfterAnimation();
+  }
+
+  void copyCurrentVideoUrl(String videoId, {required bool withTimestamp}) {
     if (videoId != '') {
-      final atSeconds = Player.inst.nowPlayingPosition ~/ 1000;
-      final timeStamp = atSeconds > 0 ? '?t=$atSeconds' : '';
-      final finalUrl = "https://www.youtube.com/watch?v=$videoId$timeStamp";
-      Clipboard.setData(ClipboardData(text: finalUrl));
-      snackyy(
-        message: lang.COPIED_TO_CLIPBOARD,
-        top: false,
+      int? timeStampSeconds = withTimestamp ? Player.inst.nowPlayingPosition.value ~/ 1000 : null;
+      timeStampSeconds = timeStampSeconds.toIf(null, 0);
+      String finalUrl = YTUrlUtils.buildVideoUrl(videoId, timestampSeconds: timeStampSeconds);
+      NamidaUtils.copyToClipboard(
+        content: finalUrl,
+        maxLinesMessage: 2,
         leftBarIndicatorColor: CurrentColor.inst.miniplayerColor,
       );
     }
+  }
+}
+
+extension YoutiPieNotificationResultUtils on YoutiPieNotificationResult {
+  void playNotifications({int? startAtIndex, bool unreadOnly = false}) {
+    int startIndex = 0;
+    final itemsToPlay = <YoutubeID>[];
+    items.reverseLoopAdv(
+      (item, index) {
+        if (index == startAtIndex) startIndex = itemsToPlay.length;
+        if (item.isComment || item.id.isEmpty) return;
+        if (unreadOnly && item.isRead != false) return;
+        itemsToPlay.add(YoutubeID(id: item.id, playlistID: null));
+      },
+    );
+    if (itemsToPlay.isEmpty) return;
+
+    Player.inst.playOrPause(
+      startIndex,
+      itemsToPlay,
+      QueueSourceYoutubeID.ytNotificationsHosted,
+    );
+    YTUtils.expandMiniplayer();
   }
 }

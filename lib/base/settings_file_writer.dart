@@ -2,22 +2,22 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
+
 import 'package:namida/core/extensions.dart';
 
 mixin SettingsFileWriter {
   String get filePath;
-  Object get jsonToWrite;
+  Map<String, dynamic> buildJson();
+  Future<void> prepareSettingsFile();
+  Map<String, dynamic>? syncDelta(int sinceMS);
+  void applySyncDelta(Map delta);
   Duration get delay => const Duration(seconds: 2);
 
+  @visibleForTesting
+  Map<String, dynamic> debugFullJson();
+
   @protected
-  Future<dynamic> prepareSettingsFile_() async {
-    final file = await File(filePath).create(recursive: true);
-    try {
-      return await file.readAsJson();
-    } catch (e) {
-      printy(e, isError: true);
-    }
-  }
+  Future<dynamic> prepareSettingsFile_() => File(filePath).readAsJson();
 
   @protected
   Future<void> writeToStorage() async {
@@ -36,21 +36,28 @@ mixin SettingsFileWriter {
 
   Future<void> _writeToStorageRaw() async {
     final path = filePath;
-    try {
-      await File(path).writeAsJson(jsonToWrite);
+    final writtenFile = await File(path).writeAsJson(buildJson());
+    if (writtenFile == null) {
+      printy("Setting file write failed: ${path.getFilenameWOExt}", isError: true);
+    } else {
       printy("Setting file write: $path");
-    } catch (e) {
-      printy("Setting file write failed: ${path.getFilenameWOExt} => $e", isError: true);
     }
   }
 
   Timer? _writeTimer;
   bool _canWriteSettings = true;
 
+  static const kRedactedValue = '<redacted>';
+
+  Set<String> get sensitiveKeys => const {};
+
+  Map<String, dynamic> redactedJson();
+
   @protected
-  Map<K, V>? getEnumMap_<K, V>(dynamic jsonMap, List<K> enumKeys, K defaultKey, List<V> enumValues, V defaultValue) {
-    return ((jsonMap as Map?)?.map(
-      (key, value) => MapEntry(enumKeys.getEnum(key) ?? defaultKey, enumValues.getEnum(value) ?? defaultValue),
-    ));
+  Map<String, dynamic> redactSensitive_(Map<String, dynamic> json) {
+    for (final key in sensitiveKeys) {
+      if (json.containsKey(key)) json[key] = kRedactedValue;
+    }
+    return json;
   }
 }

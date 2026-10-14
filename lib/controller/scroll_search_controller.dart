@@ -2,139 +2,201 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/scheduler.dart';
 
-import 'package:get/get.dart';
+import 'package:youtipie/class/search_filters.dart';
 
+import 'package:namida/class/count_per_row.dart';
+import 'package:namida/controller/clipboard_controller.dart';
+import 'package:namida/controller/history_controller.dart';
 import 'package:namida/controller/miniplayer_controller.dart';
 import 'package:namida/controller/navigator_controller.dart';
 import 'package:namida/controller/search_sort_controller.dart';
 import 'package:namida/controller/settings_controller.dart';
+import 'package:namida/core/dimensions.dart';
 import 'package:namida/core/enums.dart';
 import 'package:namida/core/extensions.dart';
 import 'package:namida/core/namida_converter_ext.dart';
+import 'package:namida/core/utils.dart';
 import 'package:namida/packages/searchbar_animation.dart';
 import 'package:namida/ui/pages/main_page.dart';
+import 'package:namida/ui/widgets/custom_widgets.dart';
 import 'package:namida/youtube/pages/yt_search_results_page.dart';
 
 class ScrollSearchController {
   static ScrollSearchController get inst => _instance;
   static final ScrollSearchController _instance = ScrollSearchController._internal();
-  ScrollSearchController._internal() {
-    searchBarWidget = NamidaSearchBar(searchBarKey: searchBarKey);
-  }
+  ScrollSearchController._internal();
 
   final ytSearchKey = GlobalKey<YoutubeSearchResultsPageState>();
   final currentSearchType = SearchType.localTracks.obs;
 
-  final RxBool isGlobalSearchMenuShown = false.obs;
-  final TextEditingController searchTextEditingController = TextEditingController();
+  final isGlobalSearchMenuShown = false.obs;
+  final latestSubmittedYTSearch = ''.obs;
+  final searchTextEditingController = TextEditingController();
 
-  final Map<LibraryTab, RxBool> isSearchBoxVisibleMap = <LibraryTab, RxBool>{};
-  final Map<LibraryTab, RxBool> isBarVisibleMap = <LibraryTab, RxBool>{};
+  final isBarVisibleMap = <LibraryTab, Rx<bool>>{};
 
-  ScrollController scrollController = ScrollController();
-  final Map<LibraryTab, double> scrollPositionsMap = {};
+  var scrollController = NamidaScrollController.create();
+  final scrollPositionsMap = <LibraryTab, double>{};
 
-  final Map<LibraryTab, TextEditingController> textSearchControllers = {};
+  final _textSearchControllers = <LibraryTab, TextEditingController>{}.obs;
 
-  final FocusNode focusNode = FocusNode();
+  final _searchFocusNodes = <FocusNode>[];
 
   final searchBarKey = GlobalKey<SearchBarAnimationState>();
+  final tabViewKey = GlobalKey<NamidaTabViewState>();
 
-  late final NamidaSearchBar searchBarWidget;
+  late final searchBarWidget = NamidaSearchBar(searchBarKey: searchBarKey);
 
-  void animatePageController(LibraryTab tab) async {
-    if (tab == LibraryTab.search) {
-      ScrollSearchController.inst.toggleSearchMenu();
+  void openYoutubeSearch(String text, {YoutiPieSearchFilters? filters}) {
+    MiniPlayerController.inst.snapToMini();
+    MiniPlayerController.inst.ytMiniplayerKey.currentState?.animateToState(false); // -- useless really
+    // -- all these steps are important..
+    if (filters != null) YoutubeSearchResultsPageState.setFilters(filters);
+    currentSearchType.value = SearchType.youtube;
+    searchTextEditingController.text = text;
+    latestSubmittedYTSearch.value = text;
+    SearchSortController.inst.lastSearchText = text;
+    showSearchMenu();
+    WidgetsBinding.instance.addPostFrameCallback(
+      (_) {
+        // post frame, since preferred tab can be localTracks so let the widget does what it wants and then jump
+        tabViewKey.currentState?.jumpToTab(SearchType.youtube.index);
+      },
+    );
+    searchBarKey.currentState?.openCloseSearchBar(forceOpen: true);
+    ytSearchKey.currentState?.fetchSearch(customText: text);
+  }
+
+  void toggleSearch({bool forceOpen = false, bool instant = false}) async {
+    MiniPlayerController.inst.snapToMini();
+    MiniPlayerController.inst.ytMiniplayerKey.currentState?.animateToState(false);
+    final shouldShow = this.toggleSearchMenu();
+    void openFn() => ScrollSearchController.inst.searchBarKey.currentState?.openCloseSearchBar(forceOpen: shouldShow);
+    if (instant) {
+      openFn();
+    } else {
       await Future.delayed(const Duration(milliseconds: 100));
-      SchedulerBinding.instance.addPostFrameCallback((timeStamp) {
-        ScrollSearchController.inst.searchBarKey.currentState?.openCloseSearchBar();
+      SchedulerBinding.instance.addPostFrameCallback((_) {
+        openFn();
       });
+    }
+  }
+
+  void animatePageController(LibraryTab tab, {bool jumpToTopIfSamePage = true, bool restoreScrollPosition = true}) async {
+    if (tab == LibraryTab.search) {
+      toggleSearch();
       return;
     }
 
     final w = tab.toWidget();
     hideSearchMenu();
 
-    if (w.toNamidaRoute() == NamidaNavigator.inst.currentRoute) {
-      if (scrollController.hasClients) {
+    if (NamidaNavigator.inst.currentRoute?.isSameRouteAs(w) == true) {
+      final tabScrollController = tab.scrollController;
+      if (tabScrollController.hasClients) {
         MiniPlayerController.inst.snapToMini();
-        scrollController.animateToEff(0.0, duration: const Duration(milliseconds: 500), curve: Curves.easeInOutQuart);
+        if (jumpToTopIfSamePage) tabScrollController.animateToEff(0.0, duration: const Duration(milliseconds: 400), curve: Curves.easeInOutQuart);
       }
       return;
     }
 
-    final isPageToTheRight = tab.toInt() > settings.selectedLibraryTab.value.toInt();
-    final transition = isPageToTheRight ? Transition.rightToLeft : Transition.leftToRight;
+    if (tab.group == LibraryTab.tracks) SearchSortController.inst.setActiveTracksTab(tab);
 
-    _updateScrollPositions(settings.selectedLibraryTab.value, tab);
-    settings.save(selectedLibraryTab: tab);
-    NamidaNavigator.inst.navigateOffAll(w, transition: transition);
+    final isVertical = Dimensions.inst.showNavigationAtSide;
+    final isPageNext = tab.toInt() > settings.extra.selectedLibraryTab.value.toInt();
+    final transition = isVertical
+        ? isPageNext
+              ? Transition.downToUp
+              : Transition.upToDown
+        : isPageNext
+        ? Transition.rightToLeft
+        : Transition.leftToRight;
+
+    _updateScrollPositions(settings.extra.selectedLibraryTab.value, tab, restoreNewTabPosition: restoreScrollPosition);
+    settings.extra.setSelectedLibraryTab(tab);
+    NamidaNavigator.inst.navigateOffAll(w, transition: transition, durationMs: isVertical ? 300 : 400);
   }
 
-  int animateChangingGridSize(LibraryTab tab, int currentGridCount, {int minimum = 1, int maximum = 4, bool animateTiles = true}) {
-    final n = currentGridCount;
-    final nToSave = n < maximum ? n + 1 : minimum;
+  CountPerRow animateChangingGridSize(LibraryTab tab, CountPerRow gridCount) {
     _updateScrollPositions(tab, tab);
-    NamidaNavigator.inst.navigateOff(tab.toWidget(nToSave, false, true), durationInMs: 500);
-    return nToSave;
+    NamidaNavigator.inst.navigateOff(tab.toWidget(gridCount, false, true), durationInMs: 500);
+    return gridCount;
   }
 
   void initialize() {
-    _assignScrollController(settings.selectedLibraryTab.value);
+    final tab = settings.extra.selectedLibraryTab.value;
+    _assignScrollController(tab);
+    if (tab.group == LibraryTab.tracks) SearchSortController.inst.setActiveTracksTab(tab);
   }
 
   void _assignScrollController(LibraryTab tab) {
-    scrollController.removeListener(() {});
     scrollController.dispose();
-    scrollController = ScrollController(initialScrollOffset: tab.scrollPosition);
+    scrollController = NamidaScrollController.create(initialScrollOffset: tab.scrollPosition);
+
+    final rx = isBarVisibleMap[tab] ??= true.obs;
+    rx.value = true;
+
     scrollController.addListener(() {
-      isBarVisibleMap[tab]?.value = scrollController.positions.lastOrNull?.userScrollDirection == ScrollDirection.forward;
+      final position = scrollController.positions.lastOrNull;
+      final direction = position?.userScrollDirection;
+      if (direction != ScrollDirection.idle) {
+        var newIsVisible = direction != ScrollDirection.reverse;
+        if (!newIsVisible && (position?.pixels ?? 0) <= kExpandableBoxHeight) newIsVisible = true;
+        isBarVisibleMap[tab]?.value = newIsVisible;
+      } else if ((position?.pixels ?? 0) <= kExpandableBoxHeight) {
+        isBarVisibleMap[tab]?.value = true;
+      }
     });
   }
 
-  bool getIsSearchBoxVisible(LibraryTab tab) {
-    if (isSearchBoxVisibleMap[tab] != null) {
-      return isSearchBoxVisibleMap[tab]!.value;
-    }
-    isSearchBoxVisibleMap[tab] = false.obs;
-    return isSearchBoxVisibleMap[tab]!.value;
-  }
-
-  bool getIsBarVisible(LibraryTab tab) {
-    if (isBarVisibleMap[tab] != null) {
-      return isBarVisibleMap[tab]!.value;
-    }
-    isBarVisibleMap[tab] = true.obs;
-    return isBarVisibleMap[tab]!.value;
+  RxBaseCore<bool> getIsBarVisible(LibraryTab tab) {
+    return isBarVisibleMap[tab] ??= true.obs;
   }
 
   double getScrollPosition(LibraryTab tab) {
-    if (scrollPositionsMap[tab] != null) {
-      return scrollPositionsMap[tab]!;
-    }
-    scrollPositionsMap[tab] = 0.0;
-    return scrollPositionsMap[tab]!;
+    return scrollPositionsMap[tab] ??= 0.0;
   }
 
-  void _updateScrollPositions(LibraryTab oldTab, LibraryTab newTab) {
+  void _updateScrollPositions(LibraryTab oldTab, LibraryTab newTab, {bool restoreNewTabPosition = true}) {
     scrollPositionsMap[oldTab] = oldTab.offsetOrZero;
+    if (!restoreNewTabPosition) scrollPositionsMap.remove(newTab);
     _assignScrollController(newTab);
   }
 
   void hideSearchMenu() {
     unfocusKeyboard();
-    isGlobalSearchMenuShown.value = false;
+    showSearchMenu(false);
   }
 
   void showSearchMenu([bool show = true]) {
+    if (!show && isGlobalSearchMenuShown.value) saveCurrentSearchAsRecent();
     isGlobalSearchMenuShown.value = show;
   }
 
-  void toggleSearchMenu() {
+  void saveCurrentSearchAsRecent() {
+    final text = searchTextEditingController.text;
+    final hasResults = currentSearchType.value == SearchType.youtube ? text == latestSubmittedYTSearch.value : SearchSortController.inst.isSearching;
+    if (!hasResults) return;
+    final textTrimmed = text.trim();
+    if (textTrimmed.isEmpty) return;
+    settings.extra.addRecentSearch(textTrimmed);
+  }
+
+  void searchLocal(String text) {
+    searchTextEditingController.text = text;
+    searchTextEditingController.selection = TextSelection.collapsed(offset: text.length);
+    ClipboardController.inst.updateTextInControllerEmpty(text == '');
+    SearchSortController.inst.searchAll(text);
+  }
+
+  // returns wether search menu is now shown or not.
+  bool toggleSearchMenu() {
     if (isGlobalSearchMenuShown.value) {
       hideSearchMenu();
+      return false;
     } else {
       showSearchMenu();
+      return true;
     }
   }
 
@@ -143,49 +205,72 @@ class ScrollSearchController {
     SearchSortController.inst.searchAll('');
   }
 
-  void unfocusKeyboard() => Get.focusScope?.unfocus();
-  void focusKeyboard() => Get.focusScope?.requestFocus(focusNode);
+  void unfocusKeyboard() {
+    final globalFocusNode = searchBarKey.currentState?.focusNode;
+    final focusNode = FocusManager.instance.primaryFocus;
 
-  void switchSearchBoxVisibilty(LibraryTab libraryTab) {
-    textSearchControllers[libraryTab] ??= TextEditingController();
+    // // this causes issue on emulator when trying to edit textfield and yt miniplayer is shown,
+    // // but removing it makes keyboard shows after closing dialog on all devices.
+    // ^-- probably outdated
 
-    if (textSearchControllers[libraryTab]!.text == '') {
-      final isCurrentyVisible = isSearchBoxVisibleMap[libraryTab]!.value;
-      if (isCurrentyVisible) {
-        _closeTextController(libraryTab);
-      } else {
-        _openTextController(libraryTab);
-      }
+    focusNode?.unfocus();
+    globalFocusNode?.unfocus();
+  }
 
-      isSearchBoxVisibleMap[libraryTab]!.value = !isCurrentyVisible;
+  void focusKeyboard() {
+    final globalSearchState = searchBarKey.currentState;
+    if (globalSearchState != null && isGlobalSearchMenuShown.value) {
+      globalSearchState.focusNode.requestFocus();
+    } else {
+      _searchFocusNodes.lastOrNull?.requestFocus();
     }
   }
 
+  /// per-field nodes, a shared one gets detached once any field is disposed.
+  void registerSearchFocusNode(FocusNode node) => _searchFocusNodes.add(node);
+
+  void unregisterSearchFocusNode(FocusNode node) => _searchFocusNodes.remove(node);
+
+  bool onSearchBoxVisibiltyChange(LibraryTab libraryTab, bool newShow) {
+    _textSearchControllers[libraryTab] ??= TextEditingController();
+
+    if (_textSearchControllers.value[libraryTab]!.text == '') {
+      if (!newShow) {
+        _closeTextController(libraryTab);
+        return true;
+      } else {
+        _openTextController(libraryTab);
+        return true;
+      }
+    }
+    return false;
+  }
+
   void _closeTextController(LibraryTab libraryTab) {
-    textSearchControllers[libraryTab]?.dispose();
-    textSearchControllers.remove(libraryTab);
+    _textSearchControllers.value[libraryTab]?.dispose();
+    _textSearchControllers.remove(libraryTab);
     unfocusKeyboard();
-    isSearchBoxVisibleMap[libraryTab]!.value = false;
   }
 
   void _openTextController(LibraryTab libraryTab) {
-    textSearchControllers[libraryTab] ??= TextEditingController();
+    _textSearchControllers[libraryTab] ??= TextEditingController();
     focusKeyboard();
   }
 
   void clearSearchTextField(LibraryTab libraryTab) {
-    SearchSortController.inst.searchMedia('', libraryTab.toMediaType());
-    isSearchBoxVisibleMap[libraryTab]!.value = true;
+    final mediaType = libraryTab.toMediaType();
+    SearchSortController.inst.disposeMediaResources(mediaType);
+    SearchSortController.inst.searchMedia('', mediaType);
     _closeTextController(libraryTab);
   }
 }
 
 extension LibraryTabStuff on LibraryTab {
-  ScrollController get scrollController => ScrollSearchController.inst.scrollController;
-  TextEditingController? get textSearchController => ScrollSearchController.inst.textSearchControllers[this];
+  ScrollController get scrollController => this == LibraryTab.history ? HistoryController.inst.scrollController : ScrollSearchController.inst.scrollController;
+  TextEditingController? get textSearchController => ScrollSearchController.inst._textSearchControllers.value[this];
+  TextEditingController? get textSearchControllerR => ScrollSearchController.inst._textSearchControllers.valueR[this];
   double get scrollPosition => ScrollSearchController.inst.getScrollPosition(this);
-  bool get isBarVisible => ScrollSearchController.inst.getIsBarVisible(this);
-  bool get isSearchBoxVisible => ScrollSearchController.inst.getIsSearchBoxVisible(this);
-  double get offsetOrZero => (ScrollSearchController.inst.scrollController.hasClients) ? scrollController.positions.lastOrNull?.pixels ?? 0.0 : 0.0;
+  RxBaseCore<bool> get isBarVisible => ScrollSearchController.inst.getIsBarVisible(this);
+  double get offsetOrZero => scrollController.positions.lastOrNull?.pixels ?? 0.0;
   bool get shouldAnimateTiles => offsetOrZero == 0.0;
 }

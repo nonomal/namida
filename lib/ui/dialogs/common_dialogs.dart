@@ -1,18 +1,29 @@
+import 'dart:io';
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 
 import 'package:namida/class/folder.dart';
 import 'package:namida/class/track.dart';
+import 'package:namida/controller/folders_controller.dart';
 import 'package:namida/controller/history_controller.dart';
 import 'package:namida/controller/navigator_controller.dart';
 import 'package:namida/controller/playlist_controller.dart';
 import 'package:namida/controller/settings_controller.dart';
+import 'package:namida/controller/smart_playlists/smart_playlists_controller.dart';
+import 'package:namida/controller/vibrator_controller.dart';
 import 'package:namida/core/constants.dart';
+import 'package:namida/core/dimensions.dart';
 import 'package:namida/core/enums.dart';
 import 'package:namida/core/extensions.dart';
+import 'package:namida/core/icon_fonts/broken_icons.dart';
 import 'package:namida/core/namida_converter_ext.dart';
 import 'package:namida/core/translations/language.dart';
+import 'package:namida/core/utils.dart';
+import 'package:namida/main.dart';
 import 'package:namida/ui/dialogs/general_popup_dialog.dart';
 import 'package:namida/ui/widgets/custom_widgets.dart';
+import 'package:namida/ui/widgets/network_artwork.dart';
 
 class NamidaDialogs {
   static NamidaDialogs get inst => _instance;
@@ -25,73 +36,124 @@ class NamidaDialogs {
     String? playlistName,
     TrackWithDate? trackWithDate,
     int? index,
-    bool comingFromQueue = false,
-    bool isFromPlayerQueue = false,
-    Exception? errorPlayingTrack,
-    required QueueSource source,
-    String? additionalHero,
+    Object? errorPlayingTrack,
+    required QueueSourceBase source,
+    String? heroTag,
   }) async {
     final trExt = track.toTrackExt();
     await showGeneralPopupDialog(
       [track],
-      trExt.originalArtist,
-      trExt.title.overflow,
+      trExt.displayArtist(),
+      trExt.title,
       source,
-      thirdLineText: trExt.album.overflow,
+      thirdLineText: trExt.originalAlbum,
       forceSquared: settings.forceSquaredTrackThumbnail.value,
       tracksWithDates: trackWithDate == null ? [] : [trackWithDate],
       playlistName: playlistName,
       index: index,
-      comingFromQueue: comingFromQueue,
-      useTrackTileCacheHeight: true,
-      isFromPlayerQueue: isFromPlayerQueue,
       errorPlayingTrack: errorPlayingTrack,
-      additionalHero: additionalHero,
+      heroTag: heroTag,
     );
   }
 
-  Future<void> showAlbumDialog(String albumIdentifier) async {
+  Future<void> showAlbumDialog(AlbumIdentifierWrapper? albumIdentifier) async {
+    if (albumIdentifier == null) return;
     final tracks = albumIdentifier.getAlbumTracks();
     final artists = tracks.mappedUniquedList((e) => e.artistsList);
+    final name = albumIdentifier.displayAlbumName;
     await showGeneralPopupDialog(
       tracks,
-      tracks.album.overflow,
+      name,
       "${tracks.displayTrackKeyword} & ${artists.length.displayArtistKeyword}",
-      QueueSource.album,
-      thirdLineText: artists.join(', ').overflow,
-      forceSquared: shouldAlbumBeSquared,
+      QueueSource.album(albumIdentifier, name),
+      thirdLineText: artists.join(', '),
+      forceSquared: Dimensions.inst.shouldAlbumBeSquared(rootContext),
       forceSingleArtwork: true,
       heroTag: 'album_$albumIdentifier',
-      albumToAddFrom: (tracks.album, albumIdentifier),
+      albumToAddFrom: albumIdentifier,
+      networkArtworkInfo: NetworkArtworkInfo.albumAutoArtist(albumIdentifier),
     );
   }
 
   Future<void> showArtistDialog(String name, MediaType type) async {
     final tracks = name.getArtistTracksFor(type);
-    final albums = tracks.mappedUniqued((e) => e.album);
+    final albumsSet = <String>{};
+    for (final t in tracks) {
+      for (final a in t.albumsList) {
+        albumsSet.add(a);
+      }
+      albumsSet.add(t.originalAlbum); // -- if albums list was empty
+    }
+    final queueSource = type == MediaType.albumArtist
+        ? QueueSource.albumArtist(name)
+        : type == MediaType.composer
+        ? QueueSource.composer(name)
+        : QueueSource.artist(name);
     await showGeneralPopupDialog(
       tracks,
-      name.overflow,
-      "${tracks.displayTrackKeyword} & ${albums.length.displayAlbumKeyword}",
-      QueueSource.artist,
-      thirdLineText: albums.take(5).join(', ').overflow,
+      name,
+      "${tracks.displayTrackKeyword} & ${albumsSet.length.displayAlbumKeyword}",
+      queueSource,
+      thirdLineText: albumsSet.take(5).join(', '),
       forceSquared: true,
       forceSingleArtwork: true,
       heroTag: 'artist_$name',
       isCircle: true,
       artistToAddFrom: name,
+      networkArtworkInfo: NetworkArtworkInfo.artist(name),
     );
   }
 
-  Future<void> showGenreDialog(String name) async {
-    final tracks = name.getGenresTracks();
+  Future<void> showGenreDialog(String name, [MediaType type = MediaType.genre]) async {
+    final tracks = name.getGenresTracksFor(type);
+    final queueSource = switch (type) {
+      MediaType.style => QueueSource.style(name),
+      MediaType.language => QueueSource.language(name),
+      _ => QueueSource.genre(name),
+    };
     await showGeneralPopupDialog(
       tracks,
       name,
       [tracks.displayTrackKeyword, tracks.totalDurationFormatted].join(' - '),
-      QueueSource.genre,
+      queueSource,
       extractColor: false,
-      heroTag: 'genre_$name',
+      heroTag: type.toGenreHeroTag(name),
+      forceSquared: true,
+    );
+  }
+
+  Future<void> showMoodDialog(String name, List<Track> tracks) async {
+    await showGeneralPopupDialog(
+      tracks,
+      name,
+      [tracks.displayTrackKeyword, tracks.totalDurationFormatted].join(' - '),
+      QueueSource.moods(name),
+      extractColor: false,
+      heroTag: null,
+      forceSquared: true,
+    );
+  }
+
+  Future<void> showTagDialog(String name, List<Track> tracks) async {
+    await showGeneralPopupDialog(
+      tracks,
+      name,
+      [tracks.displayTrackKeyword, tracks.totalDurationFormatted].join(' - '),
+      QueueSource.tags(name),
+      extractColor: false,
+      heroTag: null,
+      forceSquared: true,
+    );
+  }
+
+  Future<void> showRatingDialog(String name, List<Track> tracks) async {
+    await showGeneralPopupDialog(
+      tracks,
+      name,
+      [tracks.displayTrackKeyword, tracks.totalDurationFormatted].join(' - '),
+      QueueSource.rating(name),
+      extractColor: false,
+      heroTag: null,
       forceSquared: true,
     );
   }
@@ -112,21 +174,29 @@ class NamidaDialogs {
         extractColor: false,
         heroTag: 'playlist_$k_PLAYLIST_NAME_HISTORY',
         forceSquared: true,
+        comingFromPlaylistMenu: true,
       );
       return;
     }
     if (playlistName == k_PLAYLIST_NAME_MOST_PLAYED) {
       final trs = HistoryController.inst.currentMostPlayedTracks.toList();
+      final firstTrack = trs.firstOrNull;
+      String thirdLineText = ''; // top track count + info
+      if (firstTrack != null) {
+        final currentListenCount = HistoryController.inst.currentTopTracksMapListens[firstTrack]?.length ?? 0;
+        thirdLineText = "↑ ${currentListenCount.formatDecimal()} • ${firstTrack.title}";
+      }
       await showGeneralPopupDialog(
         trs,
         k_PLAYLIST_NAME_MOST_PLAYED.translatePlaylistName(),
         trs.length.displayTrackKeyword,
         QueueSource.mostPlayed,
-        thirdLineText: "↑ ${HistoryController.inst.currentTopTracksMapListens[trs.firstOrNull]?.length.formatDecimal()} • ${trs.firstOrNull?.title}",
+        thirdLineText: thirdLineText,
         playlistName: k_PLAYLIST_NAME_MOST_PLAYED,
         extractColor: false,
         heroTag: 'playlist_$k_PLAYLIST_NAME_MOST_PLAYED',
         forceSquared: true,
+        comingFromPlaylistMenu: true,
       );
       return;
     }
@@ -143,33 +213,96 @@ class NamidaDialogs {
         playlist.name.translatePlaylistName(),
         [trackss.displayTrackKeyword, playlist.creationDate.dateFormatted].join(' • '),
         playlist.toQueueSource(),
-        thirdLineText: playlist.moods.join(', ').overflow,
+        thirdLineText: playlist.toTagsAndMoodsText(),
         playlistName: playlist.name,
         tracksWithDates: playlist.tracks,
         extractColor: false,
         heroTag: 'playlist_${playlist.name}',
         forceSquared: true,
+        comingFromPlaylistMenu: true,
       );
     }
   }
 
-  void showDeletePlaylistDialog(Playlist playlist) {
-    NamidaNavigator.inst.navigateDialog(
-      dialog: CustomBlurryDialog(
-        title: lang.WARNING,
-        bodyText: '${lang.DELETE_PLAYLIST}: "${playlist.name}"?',
-        actions: [
-          const CancelButton(),
-          NamidaButton(
-            text: lang.DELETE.toUpperCase(),
-            onPressed: () {
-              PlaylistController.inst.removePlaylist(playlist);
-              NamidaNavigator.inst.closeDialog();
-            },
-          )
-        ],
-      ),
-    );
+  Future<void> showDeletePlaylistDialog(LocalPlaylist playlist, {bool deleteM3uFileOnly = false, bool withUndo = false, void Function()? onM3uFileDeleted}) async {
+    final m3uPath = playlist.m3uPath;
+    if (withUndo && m3uPath == null && !deleteM3uFileOnly) {
+      Uint8List? artworkBytes;
+      final artworkFile = PlaylistController.inst.getArtworkFileForPlaylist(playlist.name);
+      if (await artworkFile.exists()) {
+        try {
+          artworkBytes = await artworkFile.readAsBytes();
+        } catch (_) {}
+      }
+
+      await PlaylistController.inst.removePlaylist(playlist);
+      snackyy(
+        title: lang.undoChanges,
+        message: lang.undoChangesDeletedPlaylist,
+        displayDuration: SnackDisplayDuration.long,
+        button: SnackbarButton(
+          text: lang.undo,
+          function: () async => await PlaylistController.inst.reAddPlaylist(playlist, playlist.modifiedDate, artworkBytes: artworkBytes),
+        ),
+      );
+    } else {
+      final hasM3u = m3uPath != null;
+      final alsoDeleteM3uRx = (hasM3u || deleteM3uFileOnly).obs;
+      NamidaNavigator.inst.navigateDialog(
+        onDisposing: () {
+          alsoDeleteM3uRx.close();
+        },
+        dialogBuilder: (theme) => CustomBlurryDialog(
+          isWarning: true,
+          normalTitleStyle: true,
+          actions: [
+            const CancelButton(),
+            ObxO(
+              rx: alsoDeleteM3uRx,
+              builder: (context, deletem3u) => NamidaButton(
+                text: (deleteM3uFileOnly ? lang.confirm : lang.delete).toUpperCase(),
+                colorScheme: deletem3u ? Colors.red : null,
+                onTap: () async {
+                  if (!deleteM3uFileOnly) await PlaylistController.inst.removePlaylist(playlist);
+                  if (alsoDeleteM3uRx.value && hasM3u) {
+                    onM3uFileDeleted?.call();
+                    await File(m3uPath).deleteIfExists();
+                  }
+                  NamidaNavigator.inst.closeDialog();
+                },
+              ),
+            ),
+          ],
+          child: Padding(
+            padding: const EdgeInsets.all(12.0),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  deleteM3uFileOnly ? lang.convertToNormalPlaylist : '${lang.deletePlaylist}: "${playlist.name.translatePlaylistName()}"?',
+                  style: theme.textTheme.displayMedium,
+                ),
+                if (hasM3u) ...[
+                  SizedBox(height: 12.0),
+                  ObxO(
+                    rx: alsoDeleteM3uRx,
+                    builder: (context, deletem3u) => ListTileWithCheckMark(
+                      dense: true,
+                      icon: Broken.broom,
+                      title: "${lang.delete}: ${lang.m3uPlaylist}",
+                      subtitle: m3uPath,
+                      active: deletem3u,
+                      onTap: deleteM3uFileOnly ? null : alsoDeleteM3uRx.toggle,
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ),
+      );
+    }
   }
 
   Future<void> showQueueDialog(int date) async {
@@ -178,7 +311,7 @@ class NamidaDialogs {
       queue.tracks,
       queue.date.dateFormatted,
       queue.date.clockFormatted,
-      QueueSource.queuePage,
+      QueueSource.queuePage(queue),
       thirdLineText: [
         queue.tracks.displayTrackKeyword,
         queue.tracks.totalDurationFormatted,
@@ -190,19 +323,48 @@ class NamidaDialogs {
     );
   }
 
-  Future<void> showFolderDialog({
-    required Folder folder,
-    required List<Track> tracks,
-  }) async {
+  Future<void> showSmartPlaylistDialog(SmartPlaylistWrapper? smartPlaylistWrapper) async {
+    if (smartPlaylistWrapper == null) return;
+    final tracks = smartPlaylistWrapper.resolve();
+
+    final smartPlaylist = smartPlaylistWrapper.value;
     await showGeneralPopupDialog(
       tracks,
-      folder.folderName,
+      smartPlaylist.name,
+      smartPlaylist.creationDate.dateFormatted,
+      QueueSource.smartPlaylist(smartPlaylist.key),
+      thirdLineText: [
+        tracks.displayTrackKeyword,
+        tracks.totalDurationFormatted,
+      ].join(' - '),
+      extractColor: false,
+      forceSquared: true,
+      smartPlaylistWrapper: smartPlaylistWrapper,
+      customArtworkManager: CustomArtworkManager.smartPlaylist(smartPlaylistWrapper),
+    );
+  }
+
+  Future<void> showFolderDialog({
+    required Folder folder,
+    required FoldersController controller,
+    required bool isTracksRecursive,
+    required List<Track> tracks,
+  }) async {
+    if (isTracksRecursive) VibratorController.medium();
+    final queueSource = controller.getQueueSource(folder);
+    final titleParts = folder.folderNameTryFormatNetworkAsParts();
+    await showGeneralPopupDialog(
+      tracks,
+      titleParts?.join(' | ') ?? folder.folderNameRaw,
       [
         tracks.displayTrackKeyword,
         tracks.totalDurationFormatted,
       ].join(' • '),
-      QueueSource.folder,
+      titleMaxLines: 2,
+      queueSource,
       thirdLineText: tracks.totalSizeFormatted,
+      trailingIcon: isTracksRecursive ? Broken.cards : Broken.card,
+      folder: folder,
     );
   }
 }

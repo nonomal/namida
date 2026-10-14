@@ -1,83 +1,93 @@
-import 'package:flutter/widgets.dart';
-import 'package:get/get.dart';
-import 'package:waveform_extractor/waveform_extractor.dart';
+import 'dart:typed_data';
 
+import 'package:namida/controller/player_controller.dart';
 import 'package:namida/controller/settings_controller.dart';
+import 'package:namida/controller/spectrum_controller.dart';
+import 'package:namida/controller/vibrator_controller.dart';
+import 'package:namida/controller/waveform_extractor.dart';
 import 'package:namida/core/extensions.dart';
-import 'package:namida/ui/widgets/waveform.dart';
+import 'package:namida/core/utils.dart';
+import 'package:namida_waveform/namida_waveform.dart';
 
 class WaveformController {
   static WaveformController get inst => _instance;
   static final WaveformController _instance = WaveformController._internal();
   WaveformController._internal();
 
-  final waveBarsKey = GlobalKey<WaveformComponentState>();
-  final waveBarsAltKey = GlobalKey<WaveformComponentState>();
+  int get _defaultUserBarsCount => settings.waveformTotalBars.value;
 
-  List<double> currentWaveformUI = [];
+  RxBaseCore<bool> get isWaveformUIEnabled => _isWaveformUIEnabled;
+  final _isWaveformUIEnabled = false.obso;
+
+  late final currentWaveformUIRx = List<double>.filled(_defaultUserBarsCount, -1, growable: false).obs;
 
   List<double> _currentWaveform = [];
 
-  final RxMap<int, double> _currentScaleMap = <int, double>{}.obs;
+  var _currentScaleLookup = <double>[];
+  int _currentScaleMaxIndex = -1;
 
   bool get isDummy => _currentWaveform.isEmpty;
 
   void resetWaveform() {
     _currentWaveform = [];
-    waveBarsKey.currentState?.setEnabled(false);
-    waveBarsAltKey.currentState?.setEnabled(false);
+    _currentScaleLookup = [];
+    _currentScaleMaxIndex = -1;
+    _isWaveformUIEnabled.value = false;
+    SpectrumController.inst.reset();
   }
 
   /// Extracts waveform data from a given track, or immediately read from .wave file if exists, then assigns wavedata to [_currentWaveform].
   Future<void> generateWaveform({required String path, required Duration duration, required bool Function(String path) stillPlaying}) async {
-    final samplePerSecond = _waveformExtractor.getSampleRateFromDuration(
+    final samplePerSecond = NamidaWaveform.sampleRateForDuration(
       audioDuration: duration,
       maxSampleRate: 400,
       scaleFactor: 0.4,
     );
 
-    List<int> waveformData = [];
+    Float32List waveformData = _emptyWaveformData;
     await Future.wait([
-      _waveformExtractor.extractWaveformDataOnly(path, samplePerSecond: samplePerSecond).then((value) {
-        waveformData = value;
-      }),
+      _waveformExtractor
+          .extractWaveformData(path, samplesPerSecond: samplePerSecond)
+          .then((value) => waveformData = value) //
+          .catchError((_) => waveformData = _emptyWaveformData),
       Future.delayed(const Duration(milliseconds: 800)),
     ]);
 
-    if (stillPlaying(path)) {
+    if (waveformData.isNotEmpty && stillPlaying(path)) {
       // ----- Updating [_currentWaveform]
       const maxWaveformCount = 2000;
-      final numberOfScales = duration.inMilliseconds ~/ 50;
-      final downscaledLists = await _downscaledWaveformLists.thready((
+      final numberOfScales = duration.inMilliseconds ~/ _positionDividor;
+      final downscaledLists = _downscaledWaveformLists(
         targetSizes: [maxWaveformCount, numberOfScales],
         original: waveformData,
-      ));
+      );
 
       _currentWaveform = downscaledLists[maxWaveformCount] ?? [];
-      calculateUIWaveform();
+      _currentScaleLookup = downscaledLists[numberOfScales] ?? [];
+      _currentScaleMaxIndex = _currentScaleLookup.length - 1;
 
-      // ----- Updating [currentScale]
-      _updateScaleMap(downscaledLists[numberOfScales] ?? []);
+      calculateUIWaveform();
+      _ensureHapticListener();
+      SpectrumController.inst.onSourceReady(path: path, duration: duration);
     }
   }
 
   void calculateUIWaveform() async {
     if (_currentWaveform.isEmpty) return;
-    final userBars = settings.waveformTotalBars.value;
-    final waveform = await _calculateUIWaveformIsolate.thready((
-      targetSize: userBars,
+
+    final waveform = _getCalculatedUIWaveform(
+      targetSize: _defaultUserBarsCount,
       original: _currentWaveform,
-    ));
-    currentWaveformUI = waveform;
-    waveBarsKey.currentState?.setEnabled(true);
-    waveBarsAltKey.currentState?.setEnabled(true);
+    );
+    currentWaveformUIRx.value = waveform;
+    _isWaveformUIEnabled.value = true;
   }
 
-  static List<double> _calculateUIWaveformIsolate(({List<double> original, int targetSize}) params) {
+  static List<double> _getCalculatedUIWaveform({required List<double> original, required int targetSize}) {
     const maxClamping = 64.0;
-    final clamping = params.original.isEmpty ? null : maxClamping;
-    final downscaled = params.original.changeListSize(
-      targetSize: params.targetSize,
+    final clamping = original.isEmpty ? null : maxClamping;
+    final downscaled = original.changeListSize(
+      targetSize: targetSize,
       multiplier: 0.9,
       clampToMax: clamping,
       enforceClampToMax: (minValue, maxValue) => false,
@@ -85,11 +95,11 @@ class WaveformController {
     return downscaled;
   }
 
-  static Map<int, List<double>> _downscaledWaveformLists(({List<int> original, List<int> targetSizes}) params) {
-    final newLists = <int, List<double>>{};
+  static Map<num, List<double>> _downscaledWaveformLists({required List<num> original, required List<int> targetSizes}) {
+    final newLists = <num, List<double>>{};
     const maxClamping = 64.0;
-    params.targetSizes.loop((targetSize, index) {
-      newLists[targetSize] = params.original.changeListSize(
+    for (var targetSize in targetSizes) {
+      newLists[targetSize] = original.changeListSize(
         targetSize: targetSize,
         clampToMax: maxClamping,
         enforceClampToMax: (minValue, maxValue) {
@@ -98,22 +108,87 @@ class WaveformController {
           return maxValue > maxClamping * 2.0;
         },
       );
-    });
+    }
     return newLists;
   }
 
-  void _updateScaleMap(List<double> doubleList) {
-    _currentScaleMap.value = doubleList.asMap();
-  }
+  static const _positionDividor = 50;
 
   double getCurrentAnimatingScale(int positionInMs) {
-    final posInMap = positionInMs ~/ 50;
-    final dynamicScale = _currentScaleMap[posInMap] ?? 0.01;
-    final intensity = settings.animatingThumbnailIntensity.value;
-    final finalScale = dynamicScale * intensity * 0.00005;
-
-    return finalScale.isNaN ? 0.01 : finalScale;
+    return _getCurrentAnimatingScaleGeneral(positionInMs, settings.animatingThumbnailIntensity.value);
   }
 
-  final _waveformExtractor = WaveformExtractor();
+  double getCurrentAnimatingScaleLyrics(int positionInMs) {
+    return _getCurrentAnimatingScaleGeneral(positionInMs, settings.animatingThumbnailIntensityLyrics.value);
+  }
+
+  double getCurrentAnimatingScaleMinimized(int positionInMs) {
+    return _getCurrentAnimatingScaleGeneral(positionInMs, settings.animatingThumbnailIntensityMinimized.value);
+  }
+
+  double getCurrentLevel(double positionInMs) {
+    final posInMap = positionInMs ~/ _positionDividor;
+    if (posInMap < 0 || posInMap > _currentScaleMaxIndex) return 0.0;
+    return (_currentScaleLookup[posInMap] / 64.0).clampDouble(0.0, 1.0);
+  }
+
+  double _getCurrentAnimatingScaleGeneral(int positionInMs, int intensity) {
+    if (intensity > 0) {
+      final posInMap = positionInMs ~/ _positionDividor;
+      final dynamicScale = posInMap < 0 || posInMap > _currentScaleMaxIndex ? _defaultMinimumScale : _currentScaleLookup[posInMap];
+      final finalScale = dynamicScale * intensity * 0.00005;
+      if (finalScale.isNaN || finalScale > 0.35) return _defaultMinimumScale;
+      return finalScale;
+    }
+
+    return _defaultMinimumScale;
+  }
+
+  bool _hapticListenerAdded = false;
+
+  void _ensureHapticListener() {
+    if (_hapticListenerAdded) return;
+    _hapticListenerAdded = true;
+    Player.inst.nowPlayingPosition.addListener(_onPositionChangedHaptic);
+  }
+
+  void _onPositionChangedHaptic() {
+    if (_currentScaleMaxIndex < 0) return;
+    if (settings.mediaWaveHaptic.value != true) return;
+    _vibrateHaptic(getCurrentAnimatingScale(Player.inst.nowPlayingPosition.value));
+  }
+
+  void _vibrateHaptic(double scale) {
+    if (Player.inst.isPlaying.value == false) return;
+    if (scale > _defaultMinimumScale) {
+      final haptic = VibratorController.interfaceHapticIgnoreSettings;
+      if (scale < 0.03) {
+        haptic.light();
+        haptic.light();
+        haptic.light();
+      } else if (scale < 0.06) {
+        haptic.light();
+        haptic.medium();
+        haptic.medium();
+        haptic.light();
+      } else if (scale < 0.10) {
+        haptic.medium();
+        haptic.high();
+        haptic.high();
+        haptic.high();
+        haptic.medium();
+      } else {
+        haptic.high();
+        haptic.high();
+        haptic.high();
+        haptic.high();
+      }
+    }
+  }
+
+  static const _defaultMinimumScale = 0.01;
+
+  static final _emptyWaveformData = Float32List(0);
+
+  final _waveformExtractor = WaveformExtractor()..init();
 }

@@ -1,144 +1,296 @@
+// ignore_for_file: avoid_rx_value_getter_outside_obx
 import 'dart:async';
 import 'dart:io';
 
-import 'package:audio_service/audio_service.dart';
-import 'package:get/get.dart';
-import 'package:just_audio/just_audio.dart';
-import 'package:newpipeextractor_dart/newpipeextractor_dart.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
+import 'package:audio_service/audio_service.dart';
+import 'package:basic_audio_handler/basic_audio_handler.dart';
+import 'package:just_audio/just_audio.dart';
+import 'package:namico_db_wrapper/namico_db_wrapper.dart';
+import 'package:youtipie/class/streams/audio_stream.dart';
+import 'package:youtipie/class/streams/video_stream.dart';
+import 'package:youtipie/class/streams/video_streams_result.dart';
+
+import 'package:namida/base/audio_handler.dart';
 import 'package:namida/class/audio_cache_detail.dart';
+import 'package:namida/class/custom_mpv_player.dart';
 import 'package:namida/class/track.dart';
 import 'package:namida/class/video.dart';
-import 'package:namida/base/audio_handler.dart';
-import 'package:namida/controller/settings.equalizer.dart';
-import 'package:namida/controller/namida_channel.dart';
+import 'package:namida/controller/audio_output_controller.dart';
+import 'package:namida/controller/indexer_controller.dart';
 import 'package:namida/controller/miniplayer_controller.dart';
 import 'package:namida/controller/navigator_controller.dart';
+import 'package:namida/controller/party/party_player_gate.dart';
+import 'package:namida/controller/platform/namida_channel/namida_channel.dart';
 import 'package:namida/controller/queue_controller.dart';
 import 'package:namida/controller/settings_controller.dart';
+import 'package:namida/controller/sync_manager/sync_manager.dart';
+import 'package:namida/controller/vibrator_controller.dart';
 import 'package:namida/controller/video_controller.dart';
 import 'package:namida/controller/wakelock_controller.dart';
+import 'package:namida/core/constants.dart';
 import 'package:namida/core/enums.dart';
 import 'package:namida/core/extensions.dart';
+import 'package:namida/core/functions.dart';
 import 'package:namida/core/icon_fonts/broken_icons.dart';
 import 'package:namida/core/namida_converter_ext.dart';
 import 'package:namida/core/translations/language.dart';
+import 'package:namida/core/utils.dart';
+import 'package:namida/ui/dialogs/common_dialogs.dart';
+import 'package:namida/ui/dialogs/general_popup_dialog.dart';
+import 'package:namida/ui/widgets/custom_widgets.dart';
 import 'package:namida/youtube/class/youtube_id.dart';
 import 'package:namida/youtube/controller/youtube_controller.dart';
+import 'package:namida/youtube/controller/youtube_info_controller.dart';
+import 'package:namida/youtube/yt_utils.dart';
+
+part 'player_controller.queue_replace.dart';
 
 class Player {
-  static Player get inst => _instance;
-  static final Player _instance = Player._internal();
-  Player._internal();
+  static final inst = Player._();
+  Player._();
+
+  static final audioConfigs = _AudioConfigsManager();
 
   late NamidaAudioVideoHandler<Playable> _audioHandler;
 
-  Map<String, List<AudioCacheDetails>> get audioCacheMap => _audioHandler.audioCacheMap;
+  RxBaseCore<bool> get playWhenReady => _audioHandler.playWhenReady;
 
-  Track get nowPlayingTrack => _audioHandler.currentTrack.track;
-  Selectable get nowPlayingTWD => _audioHandler.currentTrack;
-  List<Selectable> get currentQueue => _audioHandler.currentQueueSelectable;
+  Selectable? get currentTrack {
+    final item = _audioHandler.currentItem.value;
+    return item is Selectable ? item : null;
+  }
 
-  String get getCurrentVideoId => (YoutubeController.inst.currentYoutubeMetadataVideo.value ?? currentVideoInfo)?.id ?? nowPlayingVideoID?.id ?? nowPlayingTrack.youtubeID;
+  Selectable? get currentTrackR {
+    final item = _audioHandler.currentItem.valueR;
+    return item is Selectable ? item : null;
+  }
 
-  YoutubeID? get nowPlayingVideoID => _audioHandler.currentVideo;
-  List<YoutubeID> get currentQueueYoutube => _audioHandler.currentQueueYoutubeID;
+  YoutubeID? get currentVideo {
+    final item = _audioHandler.currentItem.value;
+    return item is YoutubeID ? item : null;
+  }
 
-  VideoInfoData? get videoPlayerInfo => _audioHandler.videoPlayerInfo.value;
-  bool get videoInitialized => videoPlayerInfo?.isInitialized ?? false;
+  YoutubeID? get currentVideoR {
+    final item = _audioHandler.currentItem.valueR;
+    return item is YoutubeID ? item : null;
+  }
 
-  AndroidEqualizer get equalizer => _audioHandler.equalizer;
-  AndroidLoudnessEnhancer get loudnessEnhancer => _audioHandler.loudnessEnhancer;
+  RxBaseCore<List<Playable>> get currentQueue => _audioHandler.currentQueue.queueRx;
+  List<int>? get currentQueueOriginalIndices => _audioHandler.currentQueue.originalIndices;
+  RxBaseCore<Playable?> get currentItem => _audioHandler.currentItem;
+  bool supportsSkipSilence(Playable? item) => NamidaAudioVideoHandler.supportsSkipSilence(item);
+
+  RxBaseCore<List<AudioTrack>?> get audioTracks => _audioHandler.audioTracks;
+  RxBaseCore<List<TextTrack>?> get textTracks => _audioHandler.textTracks;
+  RxBaseCore<String?> get subtitleText => _audioHandler.subtitleText;
+  bool get rendersSubtitlesInternally => _audioHandler.rendersSubtitlesInternally;
+  RxBaseCore<VideoInfoData?> get videoPlayerInfo => _audioHandler.videoPlayerInfo;
+
+  EqualizerExtended? get equalizerExtended => _audioHandler.equalizerExtended;
+  LoudnessEnhancerExtended? get loudnessEnhancerExtended => _audioHandler.loudnessEnhancerExtended;
   int? get androidSessionId => _audioHandler.androidSessionId;
+  Future<void> executeWithPausedOutput(Future<void> Function() fn) => _audioHandler.executeWithPausedOutput(fn);
+  Rx<double> get replayGainLinearVolumeMultiplierRx => _audioHandler.replayGainLinearVolumeMultiplierRx;
 
-  VideoInfo? get currentVideoInfo => _audioHandler.currentVideoInfo.value;
-  YoutubeChannel? get currentChannelInfo => _audioHandler.currentChannelInfo.value;
-  VideoOnlyStream? get currentVideoStream => _audioHandler.currentVideoStream.value;
-  AudioOnlyStream? get currentAudioStream => _audioHandler.currentAudioStream.value;
-  File? get currentVideoThumbnail => _audioHandler.currentVideoThumbnail.value;
-  NamidaVideo? get currentCachedVideo => _audioHandler.currentCachedVideo.value;
-  AudioCacheDetails? get currentCachedAudio => _audioHandler.currentCachedAudio.value;
+  // RxBaseCore<VideoInfo?> get currentVideoInfo => _audioHandler.currentVideoInfo;
+  // RxBaseCore<YoutubeChannel?> get currentChannelInfo => _audioHandler.currentChannelInfo;
+  RxBaseCore<VideoStream?> get currentVideoStream => _audioHandler.currentVideoStream;
+  RxBaseCore<AudioStream?> get currentAudioStream => _audioHandler.currentAudioStream;
+  RxBaseCore<NamidaVideo?> get currentCachedVideo => _audioHandler.currentCachedVideo;
+  RxBaseCore<AudioCacheDetails?> get currentCachedAudio => _audioHandler.currentCachedAudio;
 
-  Duration get getCurrentVideoDuration {
-    Duration? playerDuration = Player.inst.currentItemDuration;
+  Duration get getCurrentVideoDurationR {
+    Duration? playerDuration = currentItemDuration.valueR;
     if (playerDuration == null || playerDuration == Duration.zero) {
-      playerDuration = Player.inst.currentAudioStream?.durationMS?.milliseconds ??
-          Player.inst.currentVideoStream?.durationMS?.milliseconds ??
-          (nowPlayingVideoID == null ? VideoController.inst.currentVideo.value?.durationMS.milliseconds : YoutubeController.inst.currentYoutubeMetadataVideo.value?.duration) ??
+      playerDuration =
+          currentAudioStream.valueR?.duration ??
+          currentVideoStream.valueR?.duration ??
+          (currentVideo == null
+              ? VideoController.inst.currentVideo.valueR?.durationMS.milliseconds
+              : YoutubeInfoController.current.currentYTStreams.valueR?.videoStreams.firstOrNull?.duration) ??
           Duration.zero;
     }
     return playerDuration;
   }
 
-  bool get isAudioOnlyPlayback => _audioHandler.isAudioOnlyPlayback;
-  bool get isCurrentAudioFromCache => _audioHandler.isCurrentAudioFromCache;
-
-  Stream<int> get positionStream => _audioHandler.positionStream;
-  int get currentIndex => _audioHandler.currentIndex;
-  int get nowPlayingPosition => _audioHandler.currentPositionMS;
-  double get currentSpeed => _audioHandler.currentSpeed;
-  Duration? get currentItemDuration => _audioHandler.currentItemDuration;
-  bool get isPlaying => _audioHandler.isPlaying;
-  bool get isBuffering => _audioHandler.currentState == ProcessingState.buffering;
-  bool get isLoading => _audioHandler.currentState == ProcessingState.loading;
-  bool get isFetchingInfo => _audioHandler.isFetchingInfo;
-  bool get shouldShowLoadingIndicator {
-    if (isBuffering || isLoading) return true;
-    if (isFetchingInfo && _audioHandler.currentState != ProcessingState.ready) return true;
-    return false;
+  Duration get getCurrentVideoDuration {
+    Duration? playerDuration = currentItemDuration.value;
+    if (playerDuration == null || playerDuration == Duration.zero) {
+      playerDuration =
+          currentAudioStream.value?.duration ??
+          currentVideoStream.value?.duration ??
+          (currentVideo == null
+              ? VideoController
+                    .inst
+                    .currentVideo
+                    .value
+                    ?.durationMS
+                    .milliseconds //
+              : YoutubeInfoController.current.currentYTStreams.valueR?.videoStreams.firstOrNull?.duration) ??
+          Duration.zero;
+    }
+    return playerDuration;
   }
 
-  Duration get buffered => _audioHandler.buffered;
-  int get numberOfRepeats => _audioHandler.numberOfRepeats;
+  bool get isCurrentAudioFromCache => _audioHandler.isCurrentAudioFromCache;
+
+  RxBaseCore<int> get currentIndex => _audioHandler.currentIndex;
+  RxBaseCore<int> get nowPlayingPosition => _audioHandler.currentPositionMS;
+  int get nowPlayingPositionR => _audioHandler.currentPositionMS.valueR;
+
+  /// [nowPlayingPosition] is updated every ~200ms, this one is exact.
+  int getExactPositionMS() => _audioHandler.currentPlayer.position.inMilliseconds;
+
+  int get seekCount => _audioHandler.seekCount;
+  int get lastSeekPositionMS => _audioHandler.lastSeekPositionMS;
+  RxBaseCore<double> get currentSpeed => _audioHandler.currentSpeed;
+  double get userPlayerVolumeForItem => _audioHandler.userPlayerVolumeForItem;
+  RxBaseCore<Duration?> get currentItemDuration => _audioHandler.currentItemDuration;
+  RxBaseCore<bool> get isPlaying => _audioHandler.isPlaying;
+  bool get isBufferingR => _audioHandler.currentState.valueR == ProcessingState.buffering;
+  bool get isLoadingR => _audioHandler.currentState.valueR == ProcessingState.loading;
+  RxBaseCore<bool> get isFetchingInfo => _audioHandler.isFetchingInfo;
+  bool get shouldShowLoadingIndicatorR {
+    if (isBufferingR || isLoadingR) return true;
+    final state = _audioHandler.currentState.valueR;
+    if (state == ProcessingState.idle) return false;
+    if (!isFetchingInfo.valueR) return false;
+    if (state != ProcessingState.ready) return true;
+    final isWaitingToPlay = _audioHandler.playWhenReady.valueR && !isPlaying.valueR;
+    return isWaitingToPlay;
+  }
+
+  RxBaseCore<Duration> get buffered => _audioHandler.buffered;
+  RxBaseCore<int> get numberOfRepeats => _audioHandler.numberOfRepeats;
   int get latestInsertedIndex => _audioHandler.latestInsertedIndex;
 
-  bool get enableSleepAfterTracks => _audioHandler.enableSleepAfterItems;
-  bool get enableSleepAfterMins => _audioHandler.enableSleepAfterMins;
-  int get sleepAfterMin => _audioHandler.sleepAfterMin;
-  int get sleepAfterTracks => _audioHandler.sleepAfterItems;
-  bool get isLastItem => _audioHandler.isLastItem;
-  bool get canJumpToNext => !isLastItem || settings.player.infiniyQueueOnNextPrevious.value;
-  bool get canJumpToPrevious => currentIndex != 0 || settings.player.infiniyQueueOnNextPrevious.value;
+  PlayerConfig getDefaultPlayerConfig(Playable? item) => _audioHandler.getDefaultPlayerConfig(item);
+  PlayerConfig getDefaultPlayerConfigR(Playable? item) => _audioHandler.getDefaultPlayerConfigR(item);
+
+  RxBaseCore<SleepTimerConfig> get sleepTimerConfig => _audioHandler.sleepTimerConfig;
+
+  bool get canJumpToNext => _audioHandler.isShuffleEnabled || !_audioHandler.isLastItem || settings.player.infiniyQueueOnNextPrevious.value;
+
+  /// wraps around on both ends.
+  int refineIndex(int index) {
+    final length = currentQueue.value.length;
+    if (length <= 0) return 0;
+    if (index <= -1) return length - 1;
+    if (index >= length) return 0;
+    return index;
+  }
+
+  /// index the player would jump to on next, shuffle aware only when [current] is the playing index.
+  int nextIndexFor(int current) {
+    if (current == currentIndex.value) {
+      final shuffleIndex = _audioHandler.shuffleNextIndex();
+      if (shuffleIndex != null) return shuffleIndex;
+    }
+    return refineIndex(current + 1);
+  }
+
+  /// index the player would jump to on previous, shuffle aware only when [current] is the playing index.
+  int previousIndexFor(int current) {
+    if (current == currentIndex.value) {
+      final shuffleIndex = _audioHandler.shufflePeekPreviousIndex();
+      if (shuffleIndex != null) return shuffleIndex;
+    }
+    return refineIndex(current - 1);
+  }
 
   RxMap<String, int>? get totalListenedTimeInSec => _audioHandler.totalListenedTimeInSec;
 
-  int get sleepingTrackIndex => sleepAfterTracks + currentIndex - 1;
+  Future<void> importTotalListenTimeFile(File file) => _audioHandler.importTotalListenTimeFile(file);
+
+  int sleepingItemIndex(int sleepAfterItems, int currentIndex) => sleepAfterItems + currentIndex - 1;
+
+  int? sleepAfterItemsForIndex(int index) {
+    final current = currentIndex.value;
+    return index >= current ? index - current + 1 : null;
+  }
+
+  bool isSleepingAfterItems(int itemsCount) {
+    final config = sleepTimerConfig.value;
+    return config.enableSleepAfterItems && config.sleepAfterItems == itemsCount;
+  }
+
+  bool get isStoppingAfterCurrent => isSleepingAfterItems(1);
+
+  bool toggleStopAfterCurrent() {
+    final shouldStop = !isStoppingAfterCurrent;
+    updateSleepTimerValues(enableSleepAfterItems: shouldStop, sleepAfterItems: shouldStop ? 1 : 0, isAnchoredToItem: shouldStop);
+    return shouldStop;
+  }
+
+  bool get isModifyingQueue => _audioHandler.isModifyingQueue;
+
+  void refreshPlatformIcons() => _audioHandler.refreshPlatformIcons();
+
+  MediaItem? get currentMediaItem => _audioHandler.mediaItem.value;
+  void republishMediaItem(MediaItem media) => _audioHandler.republishMediaItem(media);
 
   // -- error playing track
   void cancelPlayErrorSkipTimer() => _audioHandler.cancelPlayErrorSkipTimer();
-  int get playErrorRemainingSecondsToSkip => _audioHandler.playErrorRemainingSecondsToSkip;
+  RxBaseCore<int> get playErrorRemainingSecondsToSkip => _audioHandler.playErrorRemainingSecondsToSkip;
 
-  StreamSubscription? _videoPlayerInfoSub;
+  RxBaseCore<bool?> get isSpeedModifierActive => _isSpeedModifierActive;
+  final _isSpeedModifierActive = Rxn<bool>();
+
   StreamSubscription? _notificationClickedSub;
 
   Future<void> initializePlayer() async {
-    _audioHandler = await AudioService.init(
-      builder: () => NamidaAudioVideoHandler(),
-      config: const AudioServiceConfig(
-        androidNotificationChannelId: 'com.msob7y.namida',
-        androidNotificationChannelName: 'Namida',
-        androidNotificationChannelDescription: 'Namida Media Notification',
-        androidNotificationIcon: 'drawable/ic_stat_musicnote',
-        androidNotificationOngoing: false,
-        androidStopForegroundOnPause: false,
-      ),
-      cacheKeyResolver: (mediaItem) {
-        final imagePath = mediaItem.artUri?.path;
-        return imagePath != null ? File(imagePath).statSync().toString() : '';
-      },
-    );
-    _videoPlayerInfoSub?.cancel();
-    _videoPlayerInfoSub = _audioHandler.videoPlayerInfo.listen((info) {
+    if (Platform.isAndroid || Platform.isIOS) {
+      final handler = NamidaAudioVideoHandler<Playable>();
+      _audioHandler = handler;
+      await AudioService.init(
+        builder: () => _MediaSessionAudioHandler(handler),
+        config: const AudioServiceConfig(
+          androidNotificationChannelId: 'com.msob7y.namida',
+          androidNotificationChannelName: 'Namida',
+          androidNotificationChannelDescription: 'Namida Media Notification',
+          androidNotificationIcon: 'drawable/ic_stat_musicnote',
+          androidNotificationOngoing: false,
+          androidStopForegroundOnPause: false,
+        ),
+      );
+    } else {
+      _audioHandler = NamidaAudioVideoHandler();
+    }
+    _audioHandler.refreshCrossfadeTransition();
+
+    void videoInfoListener() {
+      final info = _audioHandler.videoPlayerInfo.value;
+      VideoController.inst.onVideoInfoChanged(info);
       if (info == null || info.width == -1 || info.height == -1) {
         WakelockController.inst.updateVideoStatus(false);
       } else {
         WakelockController.inst.updateVideoStatus(true);
         NamidaChannel.inst.updatePipRatio(width: info.width, height: info.height);
+        VideoController.inst.fillCurrentVideoInfoFromPlayer(info);
       }
-    });
+    }
+
+    AudioOutputController.inst.init();
+
+    _audioHandler.videoPlayerInfo.removeListener(videoInfoListener);
+    _audioHandler.videoPlayerInfo.addListener(videoInfoListener);
+    _audioHandler.onVideoError = (e, _) {
+      VideoController.inst.dropVideoFrameHold();
+      if (e is PlatformException) {
+        final itemId = currentVideo?.id ?? currentTrack?.track.youtubeID;
+        final button = itemId != null ? SnackbarButton(text: lang.clearVideoCache, function: () => const YTUtils().showVideoClearDialog(itemId)) : null;
+        final details = e.details.toString();
+        final detailsTrimmed = details.length > 600 ? details.substring(0, 600) : details;
+        snackyy(message: detailsTrimmed, title: '${lang.error}: ${e.message}', isError: true, top: false, button: button, maxLinesMessage: 8);
+      }
+    };
+
     prepareTotalListenTime();
     setSkipSilenceEnabled(settings.player.skipSilenceEnabled.value);
-    AudioService.setLockScreenArtwork(settings.player.lockscreenArtwork.value);
+    if (NamidaFeaturesVisibility.displayArtworkOnLockscreen) AudioService.setLockScreenArtwork(settings.player.lockscreenArtwork.value);
     _notificationClickedSub?.cancel();
     _notificationClickedSub = AudioService.notificationClicked.listen((clicked) {
       if (clicked) {
@@ -146,36 +298,43 @@ class Player {
           case NotificationTapAction.openApp:
             break;
           case NotificationTapAction.openMiniplayer:
-            MiniPlayerController.inst.snapToExpanded();
+            WidgetsBinding.instance.addPostFrameCallback(
+              (_) {
+                try {
+                  MiniPlayerController.inst.snapToExpanded();
+                } catch (_) {}
+                try {
+                  final ytMiniplayer = MiniPlayerController.inst.ytMiniplayerKey.currentState;
+                  if (ytMiniplayer != null && ytMiniplayer.isExpanded == false) ytMiniplayer.animateToState(true);
+                } catch (_) {}
+              },
+            );
             break;
           case NotificationTapAction.openQueue:
-            MiniPlayerController.inst.snapToQueue();
+            WidgetsBinding.instance.addPostFrameCallback(
+              (_) {
+                try {
+                  MiniPlayerController.inst.snapToQueue();
+                } catch (_) {}
+                try {
+                  final ytMiniplayer = MiniPlayerController.inst.ytMiniplayerKey.currentState;
+                  if (ytMiniplayer != null && ytMiniplayer.isExpanded == false) ytMiniplayer.animateToState(true);
+                } catch (_) {}
+                Future.delayed(const Duration(milliseconds: 100), () {
+                  try {
+                    final ytQueue = NamidaNavigator.inst.ytQueueSheetKey.currentState;
+                    if (ytQueue != null && ytQueue.isOpened == false) ytQueue.openSheet();
+                  } catch (_) {}
+                });
+              },
+            );
+
             break;
-          default:
-            null;
         }
       }
     });
-    _initializeEqualizer();
-  }
 
-  void _initializeEqualizer() async {
-    final eq = EqualizerSettings.inst;
-    _audioHandler.equalizer.setEnabled(eq.equalizerEnabled);
-    if (eq.preset != null) {
-      _audioHandler.equalizer.setPreset(eq.preset!);
-    } else {
-      if (eq.equalizer.isNotEmpty) {
-        _audioHandler.equalizer.parameters.then((parameters) {
-          parameters.bands.loop((b, index) {
-            final userGain = eq.equalizer[b.centerFrequency];
-            if (userGain != null) b.setGain(userGain);
-          });
-        });
-      }
-    }
-    _audioHandler.loudnessEnhancer.setTargetGain(eq.loudnessEnhancer);
-    _audioHandler.loudnessEnhancer.setEnabled(eq.loudnessEnhancerEnabled);
+    unawaited(audioConfigs.prepareAll());
   }
 
   void onVolumeChangeAddListener(String key, void Function(double musicVolume) fn) {
@@ -190,9 +349,22 @@ class Player {
     _audioHandler.prepareTotalListenTime();
   }
 
-  void refreshNotification() {
-    _audioHandler.refreshNotification();
+  void toggleFavouriteForCurrentItem() {
+    final current = currentItem.value;
+    if (current != null) _audioHandler.toggleItemFavourite(current);
   }
+
+  bool get displayFavouriteButtonAsLike => _audioHandler.displayFavouriteButtonAsLikeInNotification;
+
+  void refreshNotification() {
+    try {
+      _audioHandler.refreshNotification();
+    } catch (_) {
+      // -- late init
+    }
+  }
+
+  void refreshChapterNotificationButtons() => _audioHandler.refreshChapterNotificationButtons();
 
   Future<void> setAudioOnlyPlayback(bool audioOnly) async {
     await _audioHandler.setAudioOnlyPlayback(audioOnly);
@@ -202,71 +374,192 @@ class Player {
     await _audioHandler.setSkipSilenceEnabled(enabled);
   }
 
-  Future<void> setPlayerPitch(double value) async {
-    await _audioHandler.setPlayerPitch(value);
+  Future<void> setReplayGainLinearVolume(double vol) async {
+    this.replayGainLinearVolumeMultiplierRx.value = vol;
+    await this.setVolume(Player.inst.userPlayerVolumeForItem); // refresh volume
   }
 
-  Future<void> setPlayerSpeed(double value) async {
-    await _audioHandler.setPlayerSpeed(value);
+  Future<void> refreshCurrentItemPlayerConfig() async {
+    await _audioHandler.refreshCurrentItemPlayerConfig();
   }
 
-  Future<void> setPlayerVolume(double value) async {
-    await _audioHandler.setPlayerVolume(value);
+  /// desktop only, android pushes its path through [AudioOutputController.signalPath].
+  Future<AudioSignalPath?> getDesktopSignalPath() async {
+    final player = _audioHandler.currentPlayer;
+    return player is CustomMPVPlayer ? player.getSignalPath() : null;
+  }
+
+  /// desktop players each own their output, android ones are routed through [AudioOutputController].
+  Future<void> applyAudioOutput() {
+    final device = settings.player.audioOutputDevice.value;
+    final bitPerfect = settings.player.bitPerfect.value;
+    final exclusive = settings.player.exclusiveMode.value;
+    final mono = settings.player.monoAudio.value;
+    return _audioHandler.executeOnPlayers((player) => player.setAudioOutput(device, bitPerfect: bitPerfect, exclusive: exclusive, mono: mono));
+  }
+
+  /// saves the global equalizer and applies it, unless the current item has its own.
+  Future<void> setGlobalEqualizer(ParametricEqualizer equalizer, {required EqualizerPreset? preset}) async {
+    settings.equalizer.equalizer.save(equalizer);
+    settings.equalizer.preset.save(preset);
+    final overrides = Player.audioConfigs.getForCurrentItem();
+    if (overrides?.equalizer != null) return;
+    final enabled = overrides?.equalizerEnabled ?? settings.equalizer.equalizerEnabled.value;
+    await equalizerExtended?.apply(enabled, equalizer);
+  }
+
+  double volumeUp() {
+    final val = settings.player.volume.value;
+    final newVal = (val + 0.05).withMaximum(1.0);
+    setVolume(newVal);
+    settings.player.volume.save(newVal);
+    return newVal;
+  }
+
+  double volumeDown() {
+    final val = settings.player.volume.value;
+    final newVal = (val - 0.05).withMinimum(0.0);
+    setVolume(newVal);
+    settings.player.volume.save(newVal);
+    return newVal;
+  }
+
+  double get _defaultSpeedUpValue => settings.player.longPressSpeed.value;
+  Timer? _fastForwardTimer;
+  Timer? _rewindTimer;
+
+  void startSpeedUp([_]) {
+    final speed = _defaultSpeedUpValue;
+    if (speed <= 0) return;
+    Player.inst.setSpeed(speed);
+    _isSpeedModifierActive.value = true;
+  }
+
+  void endSpeedUp([_]) {
+    final speed = _defaultSpeedUpValue;
+    if (speed <= 0) return;
+    restoreUserSpeed();
+    _isSpeedModifierActive.value = null;
+  }
+
+  /// the item's own speed, or the global one.
+  Future<void> restoreUserSpeed() {
+    final overrides = Player.audioConfigs.getForCurrentItem();
+    final originalSpeed = overrides?.speed ?? settings.player.speed.value;
+    return Player.inst.setSpeed(originalSpeed);
+  }
+
+  void startFastForward([_]) {
+    _fastForwardTimer?.cancel();
+    _fastForwardTimer = Timer.periodic(
+      const Duration(milliseconds: 100),
+      (_) => seekSecondsForward(),
+    );
+  }
+
+  void endFastForward([_]) {
+    _fastForwardTimer?.cancel();
+  }
+
+  void startRewind([_]) {
+    _rewindTimer?.cancel();
+    _rewindTimer = Timer.periodic(
+      const Duration(milliseconds: 100),
+      (_) => seekSecondsBackward(),
+    );
+  }
+
+  void endRewind([_]) {
+    _rewindTimer?.cancel();
   }
 
   void refreshRxVariables() {
-    _audioHandler.refreshRxVariables();
+    try {
+      _audioHandler.refreshRxVariables();
+    } catch (_) {
+      // -- late init
+    }
   }
 
   void updateNumberOfRepeats(int newNumber) {
     _audioHandler.updateNumberOfRepeats(newNumber);
   }
 
+  /// [times] is for [PlayerRepeatMode.forNtimes].
+  void setRepeatMode(PlayerRepeatMode repeatMode, {int? times}) {
+    _audioHandler.userSetRepeatMode(repeatMode, times: times);
+  }
+
+  /// returns the requested mode.
+  PlayerRepeatMode cycleRepeatMode() {
+    return _audioHandler.userCycleRepeatMode();
+  }
+
   void updateSleepTimerValues({
-    bool? enableSleepAfterTracks,
+    bool? enableSleepAfterItems,
     bool? enableSleepAfterMins,
     int? sleepAfterMin,
-    int? sleepAfterTracks,
+    int? sleepAfterItems,
+    bool? isAnchoredToItem,
   }) {
     _audioHandler.updateSleepTimerValues(
-      enableSleepAfterItems: enableSleepAfterTracks,
+      enableSleepAfterItems: enableSleepAfterItems,
       enableSleepAfterMins: enableSleepAfterMins,
       sleepAfterMin: sleepAfterMin,
-      sleepAfterItems: sleepAfterTracks,
+      sleepAfterItems: sleepAfterItems,
+      isAnchoredToItem: isAnchoredToItem,
     );
   }
 
   void resetSleepAfterTimer() {
-    _audioHandler.resetSleepAfterTimer();
+    _audioHandler.resetSleepTimer();
   }
 
   Future<void> setVolume(double volume) async {
-    await _audioHandler.setVolume(volume);
+    await _audioHandler.setVolumeWithMultiplier(volume);
+  }
+
+  Future<void> setPitch(double value) async {
+    await _audioHandler.setPlayerPitch(value);
+  }
+
+  Future<void> setSpeed(double value) async {
+    await _audioHandler.setPlayerSpeed(value);
+  }
+
+  void invokeQueueModifyLock() {
+    _audioHandler.invokeQueueModifyLock();
+  }
+
+  void invokeQueueModifyLockRelease() {
+    _audioHandler.invokeQueueModifyLockRelease();
+  }
+
+  void invokeQueueModifyOnModifyCancel() {
+    _audioHandler.invokeQueueModifyLockRelease(isCanceled: true);
   }
 
   void reorderTrack(int oldIndex, int newIndex) {
+    if (_audioHandler.partyGate?.interceptReorder(oldIndex, newIndex) == true) {
+      invokeQueueModifyOnModifyCancel();
+      return;
+    }
     _audioHandler.reorderItems(oldIndex, newIndex);
   }
 
   FutureOr<void> shuffleTracks(bool allTracks) async {
+    if (_audioHandler.partyGate?.interceptQueueRewrite(allTracks ? .shuffleAll : .shuffleNext) == true) return;
     if (allTracks) {
-      if (currentQueue.isNotEmpty) {
-        _audioHandler.shuffleAllItems((element) => (element as Selectable).track);
-      } else {
-        _audioHandler.shuffleAllItems((element) => (element as YoutubeID).id);
-      }
-      MiniPlayerController.inst.animateQueueToCurrentTrack(jump: true, minZero: true);
+      _audioHandler.shuffleAllItems();
+      MiniPlayerController.inst.queueFollower.jumpToCurrentItem();
     } else {
       await _audioHandler.shuffleNextItems();
     }
   }
 
   int removeDuplicatesFromQueue() {
-    if (currentQueue.isNotEmpty) {
-      return _audioHandler.removeDuplicatesFromQueue((element) => (element as Selectable).track);
-    } else {
-      return _audioHandler.removeDuplicatesFromQueue((element) => (element as YoutubeID).id);
-    }
+    if (_audioHandler.partyGate?.interceptQueueRewrite(.removeDuplicates) == true) return 0;
+    return _audioHandler.removeDuplicatesFromQueue();
   }
 
   /// returns true if tracks aren't empty.
@@ -278,64 +571,186 @@ class Player {
     bool showSnackBar = true,
     String? emptyTracksMessage,
   }) async {
-    final insertionDetails = insertionType?.toQueueInsertion();
-    final shouldInsertNext = insertionDetails?.insertNext ?? insertNext;
-    final maxCount = insertionDetails?.numberOfTracks == 0 ? null : insertionDetails?.numberOfTracks;
-    if (tracks.firstOrNull is Selectable) {
-      final finalTracks = List<Selectable>.from(tracks.withLimit(maxCount));
-      insertionType?.shuffleOrSort(finalTracks);
+    final insertion = insertionType?.toQueueInsertion();
+    final shouldInsertNext = insertion?.insertNext ?? insertNext;
+    final newItem = tracks.firstOrNull;
+    return await newItem?.execute(
+          selectable: (_) async {
+            final tracksCopy = List<Selectable>.from(tracks);
+            final finalTracks = insertion?.apply(tracksCopy) ?? tracksCopy;
 
-      if (showSnackBar && finalTracks.isEmpty) {
-        snackyy(title: lang.NOTE, message: emptyTracksMessage ?? lang.NO_TRACKS_FOUND);
-        return false;
-      }
-      await _audioHandler.addToQueue(
-        finalTracks,
-        insertNext: shouldInsertNext,
-        insertAfterLatest: insertAfterLatest,
-      );
-      if (showSnackBar) {
-        final addins = shouldInsertNext ? lang.INSERTED : lang.ADDED;
-        snackyy(
-          icon: shouldInsertNext ? Broken.redo : Broken.add_circle,
-          message: '${addins.capitalizeFirst} ${finalTracks.displayTrackKeyword}',
-        );
-      }
-      return true;
-    } else if (tracks.firstOrNull is YoutubeID) {
-      final finalVideos = List<YoutubeID>.from(tracks.withLimit(maxCount));
-      insertionType?.shuffleOrSortYT(finalVideos);
+            if (showSnackBar && finalTracks.isEmpty) {
+              snackyy(title: lang.note, message: emptyTracksMessage ?? lang.noTracksFound, top: false);
+              return false;
+            }
+            await _addToQueueGated(finalTracks, insertNext: shouldInsertNext, insertAfterLatest: insertAfterLatest);
+            if (showSnackBar) {
+              final addins = shouldInsertNext ? lang.inserted : lang.added;
+              final addinsCapitalized = addins.capitalizeFirst();
+              String toMessage(int total) => '$addinsCapitalized: ${total.displayTrackKeyword}';
+              snackyy(
+                icon: shouldInsertNext ? Broken.redo : Broken.add_circle,
+                message: toMessage(finalTracks.length),
+                top: false,
+                displayDuration: SnackDisplayDuration.mediumLow,
+                animationDurationMS: 400,
+                merge: SnackbarMerge(
+                  group: shouldInsertNext ? .queueInsertTracks : .queueAddTracks,
+                  count: finalTracks.length,
+                  toMessage: toMessage,
+                ),
+              );
+            }
+            return true;
+          },
+          youtubeID: (_) async {
+            final tracksCopy = List<YoutubeID>.from(tracks);
+            final finalVideos = insertion?.applyYoutube(tracksCopy) ?? tracksCopy;
 
-      if (showSnackBar && finalVideos.isEmpty) {
-        snackyy(title: lang.NOTE, message: emptyTracksMessage ?? lang.NO_TRACKS_FOUND, top: false);
-        return false;
-      }
-      await _audioHandler.addToQueue(
-        finalVideos,
-        insertNext: shouldInsertNext,
-        insertAfterLatest: insertAfterLatest,
-      );
-      if (showSnackBar) {
-        final addins = shouldInsertNext ? lang.INSERTED : lang.ADDED;
-        snackyy(
-          icon: shouldInsertNext ? Broken.redo : Broken.add_circle,
-          message: '${addins.capitalizeFirst} ${finalVideos.length.displayVideoKeyword}',
-          top: false,
-        );
-      }
-      return true;
-    }
+            if (showSnackBar && finalVideos.isEmpty) {
+              snackyy(title: lang.note, message: emptyTracksMessage ?? lang.noTracksFound, top: false);
+              return false;
+            }
+            await _addToQueueGated(finalVideos, insertNext: shouldInsertNext, insertAfterLatest: insertAfterLatest);
+            if (showSnackBar) {
+              final addins = shouldInsertNext ? lang.inserted : lang.added;
+              final addinsCapitalized = addins.capitalizeFirst();
+              String toMessage(int total) => '$addinsCapitalized: ${total.displayVideoKeyword}';
+              snackyy(
+                icon: shouldInsertNext ? Broken.redo : Broken.add_circle,
+                message: toMessage(finalVideos.length),
+                top: false,
+                displayDuration: SnackDisplayDuration.mediumLow,
+                animationDurationMS: 400,
+                merge: SnackbarMerge(
+                  group: shouldInsertNext ? .queueInsertVideos : .queueAddVideos,
+                  count: finalVideos.length,
+                  toMessage: toMessage,
+                ),
+              );
+            }
+            return true;
+          },
+        ) ??
+        false;
+  }
 
-    return false;
+  FutureOr<void> _addToQueueGated(Iterable<Playable> items, {required bool insertNext, required bool insertAfterLatest}) {
+    if (_audioHandler.partyGate?.interceptAdd(items, insertNext: insertNext || insertAfterLatest) == true) return null;
+    return _audioHandler.addToQueue(items, insertNext: insertNext, insertAfterLatest: insertAfterLatest);
   }
 
   Future<void> insertInQueue(Iterable<Playable> tracks, int index) async {
+    if (_audioHandler.partyGate?.interceptAdd(tracks, insertNext: false, atIndex: index) == true) return;
     await _audioHandler.insertInQueue(tracks, index);
   }
 
+  Future<bool> moveToNext(int index, {bool vibrate = true}) async {
+    final isIntercepted = _audioHandler.partyGate?.interceptReorder(index, currentIndex.value + 1) == true;
+    final done = isIntercepted || await _audioHandler.moveToNext(index);
+    if (done && vibrate) VibratorController.light();
+    return done;
+  }
+
+  Future<bool> moveToAfterLatestInserted(int index, {bool vibrate = true}) async {
+    final gate = _audioHandler.partyGate;
+    bool isIntercepted = false;
+    if (gate != null) {
+      final latestIndex = latestInsertedIndex.withMinimum(0);
+      isIntercepted = gate.interceptReorder(index, latestIndex + 1);
+    }
+    final done = isIntercepted || await _audioHandler.moveToAfterLatestInserted(index);
+    if (done && vibrate) VibratorController.light();
+    return done;
+  }
+
+  Future<bool> moveToLast(int index, {bool vibrate = true}) async {
+    final isIntercepted = _audioHandler.partyGate?.interceptReorder(index, currentQueue.value.length) == true;
+    final done = isIntercepted || await _audioHandler.moveToLast(index);
+    if (done && vibrate) VibratorController.light();
+    return done;
+  }
+
+  Future<bool> moveItemsToNext(List<int> indices, {bool vibrate = true}) async {
+    final gate = _audioHandler.partyGate;
+    final isIntercepted = gate != null && _interceptMoveItems(gate, indices, toLast: false);
+    final done = isIntercepted || await _audioHandler.moveItemsToNext(indices);
+    if (done && vibrate) VibratorController.light();
+    return done;
+  }
+
+  Future<bool> moveItemsToLast(List<int> indices, {bool vibrate = true}) async {
+    final gate = _audioHandler.partyGate;
+    final isIntercepted = gate != null && _interceptMoveItems(gate, indices, toLast: true);
+    final done = isIntercepted || await _audioHandler.moveItemsToLast(indices);
+    if (done && vibrate) VibratorController.light();
+    return done;
+  }
+
+  bool _interceptMoveItems(PartyPlayerGate gate, List<int> indices, {required bool toLast}) {
+    final move = partyMoveOf(indices, queueLength: currentQueue.value.length, currentIndex: currentIndex.value, toLast: toLast);
+    return gate.interceptMoveItems(move.sortedIndices, afterIndex: move.afterIndex);
+  }
+
+  /// same result as the local [moveItemsToNext] & [moveItemsToLast], items already in place are left out.
+  @visibleForTesting
+  static ({List<int> sortedIndices, int afterIndex}) partyMoveOf(List<int> indices, {required int queueLength, required int currentIndex, required bool toLast}) {
+    final sortedIndices = indices.where((i) => i >= 0 && i < queueLength && i != currentIndex).toSet().toList();
+    sortedIndices.sort();
+    if (toLast) {
+      var afterIndex = queueLength - 1;
+      while (sortedIndices.isNotEmpty && sortedIndices.last == afterIndex) {
+        sortedIndices.removeLast();
+        afterIndex--;
+      }
+      return (sortedIndices: sortedIndices, afterIndex: afterIndex);
+    }
+    var afterIndex = currentIndex;
+    var inPlaceCount = 0;
+    while (inPlaceCount < sortedIndices.length && sortedIndices[inPlaceCount] == afterIndex + 1) {
+      inPlaceCount++;
+      afterIndex++;
+    }
+    sortedIndices.removeRange(0, inPlaceCount);
+    return (sortedIndices: sortedIndices, afterIndex: afterIndex);
+  }
+
+  /// every queue index holding one of [tracks], duplicates included.
+  List<int> queueIndicesOf(Iterable<Selectable> tracks) {
+    final tracksSet = tracks.map((e) => e.track).toSet();
+    final queue = currentQueue.value;
+    final indices = <int>[];
+    for (int i = 0; i < queue.length; i++) {
+      final item = queue[i];
+      if (item is Selectable && tracksSet.contains(item.track)) indices.add(i);
+    }
+    return indices;
+  }
+
+  SnackbarController? _latestSnacky;
+  Future<void> removeFromQueueWithUndo(int index) async {
+    _latestSnacky?.close();
+    final item = this.currentQueue.value[index];
+    this.removeFromQueue(index);
+    _latestSnacky = snackyy(
+      icon: Broken.rotate_left,
+      title: lang.undoChanges,
+      message: lang.undoChangesDeletedTrack,
+      top: false,
+      button: SnackbarButton(
+        text: lang.undo,
+        function: () => this.insertInQueue([item], index),
+      ),
+    );
+  }
+
   Future<void> removeFromQueue(int index) async {
-    // why [isPlaying] ? imagine removing while paused
-    await _audioHandler.removeFromQueue(index, isPlaying && _audioHandler.defaultShouldStartPlayingWhenPaused);
+    if (_audioHandler.partyGate?.interceptRemove(index, index + 1) == true) {
+      invokeQueueModifyOnModifyCancel();
+      return;
+    }
+    // do not modify playWhenReady here, its useless
+    await _audioHandler.removeFromQueue(index);
   }
 
   Future<void> replaceAllTracksInQueue(Playable oldTrack, Playable newTrack) async {
@@ -346,21 +761,21 @@ class Player {
     await _audioHandler.replaceAllItemsInQueueBulk(oldNewTrack);
   }
 
-  Future<void> replaceTracksDirectoryInQueue(String oldDir, String newDir, {Iterable<String>? forThesePathsOnly, bool ensureNewFileExists = false}) async {
-    String getNewPath(String old) => old.replaceFirst(oldDir, newDir);
-    if (currentQueue.isNotEmpty) {
+  Future<void> replaceTracksDirectoryInQueue(String normalizedOldDir, String normalizedNewDir, {Iterable<String>? forThesePathsOnly, bool ensureNewFileExists = false}) async {
+    if (currentItem.value is Selectable) {
+      final pathsOnlySet = forThesePathsOnly?.toSet();
+      final existenceCache = <String, bool>{};
+      final normalizedPathCache = <String, String>{};
       await _audioHandler.replaceWhereInQueue(
         (e) {
-          final trackPath = (e as Selectable).track.path;
-          if (ensureNewFileExists) {
-            if (!File(getNewPath(trackPath)).existsSync()) return false;
-          }
-          final firstC = forThesePathsOnly != null ? forThesePathsOnly.contains(e.track.path) : true;
-          final secondC = trackPath.startsWith(oldDir);
-          return firstC && secondC;
+          final tr = (e as Selectable).track;
+          normalizedPathCache[tr.path] ??= replaceFunctionNormalizePath(tr.path);
+          return replaceFunctionForUpdatedPaths(tr.path, normalizedOldDir, normalizedNewDir, pathsOnlySet, ensureNewFileExists, existenceCache);
         },
         (old) {
-          final newtr = Track(getNewPath((old as Selectable).track.path));
+          old as Selectable;
+          final normalized = normalizedPathCache[old.track.path] ?? replaceFunctionNormalizePath(old.track.path);
+          final newtr = Track.fromTypeParameter(old.track.runtimeType, replaceFunctionGetNewPath(normalized, normalizedOldDir, normalizedNewDir));
           if (old is TrackWithDate) {
             return TrackWithDate(
               dateAdded: old.dateAdded,
@@ -375,11 +790,34 @@ class Player {
     }
   }
 
-  void removeRangeFromQueue(int start, int end) {
-    _audioHandler.removeRangeFromQueue(start, end);
+  int removeRangeFromQueue(int start, int end) {
+    if (_audioHandler.partyGate?.interceptRemove(start, end) == true) return 0;
+    return _audioHandler.removeRangeFromQueue(start, end);
+  }
+
+  int removeAllPrevious() {
+    if (_audioHandler.partyGate?.interceptRemove(0, currentIndex.value) == true) return 0;
+    return _audioHandler.removeAllPrevious();
+  }
+
+  int removeAllNext() {
+    if (_audioHandler.partyGate?.interceptRemove(currentIndex.value + 1, currentQueue.value.length) == true) return 0;
+    return _audioHandler.removeAllNext();
+  }
+
+  int removeAllQueueExceptCurrent() {
+    final gate = _audioHandler.partyGate;
+    if (gate != null) {
+      // -- next ones first so that previous indices stay valid
+      final nextTaken = gate.interceptRemove(currentIndex.value + 1, currentQueue.value.length);
+      final previousTaken = gate.interceptRemove(0, currentIndex.value);
+      if (nextTaken || previousTaken) return 0;
+    }
+    return _audioHandler.removeAllExceptCurrent();
   }
 
   Future<void> onItemPlayYoutubeIDSetQuality({
+    required VideoStreamsResult? mainStreams,
     required VideoStream? stream,
     required File? cachedFile,
     required bool useCache,
@@ -387,6 +825,7 @@ class Player {
     NamidaVideo? videoItem,
   }) async {
     await _audioHandler.onItemPlayYoutubeIDSetQuality(
+      mainStreams: mainStreams,
       stream: stream,
       cachedFile: cachedFile,
       useCache: useCache,
@@ -396,12 +835,14 @@ class Player {
   }
 
   Future<void> onItemPlayYoutubeIDSetAudio({
-    required AudioOnlyStream? stream,
+    required VideoStreamsResult? mainStreams,
+    required AudioStream? stream,
     required File? cachedFile,
     bool useCache = true,
     required String videoId,
   }) async {
     await _audioHandler.onItemPlayYoutubeIDSetAudio(
+      mainStreams: mainStreams,
       stream: stream,
       cachedFile: cachedFile,
       useCache: useCache,
@@ -409,16 +850,30 @@ class Player {
     );
   }
 
+  Future<void> recheckCachedVideos(String videoId) {
+    return _audioHandler.recheckCachedVideos(videoId);
+  }
+
   Future<void> play() async {
-    await _audioHandler.play();
+    await _audioHandler.userPlay();
   }
 
   Future<void> playRaw() async {
     await _audioHandler.onPlayRaw();
   }
 
-  Future<void> pause() async {
-    await _audioHandler.pause();
+  /// [fadeMillis] 0 pauses right away, null uses the fade setting.
+  Future<void> pause({int? fadeMillis}) async {
+    await _audioHandler.userPause(pauseFadeMillis: fadeMillis);
+  }
+
+  /// Pauses without the party gate, closing the app shouldn't pause the party for everyone.
+  Future<void> disposeForExit() async {
+    try {
+      await _audioHandler.pause(awaitLastPositionReport: true);
+    } finally {
+      await _audioHandler.onDispose();
+    }
   }
 
   Future<void> dispose() async {
@@ -426,90 +881,297 @@ class Player {
   }
 
   Future<void> clearQueue() async {
+    if (_audioHandler.partyGate?.interceptQueueRewrite(.clear) == true) return;
+    await _audioHandler.onDispose().ignoreError();
     await _audioHandler.clearQueue();
   }
+
+  Future<void> resetGaplessPlaybackData() async {
+    await _audioHandler.resetGaplessPlaybackData();
+  }
+
+  void refreshCrossfadeTransition() => _audioHandler.refreshCrossfadeTransition();
 
   Future<void> pauseRaw() async {
     await _audioHandler.onPauseRaw();
   }
 
   Future<void> togglePlayPause() async {
-    await _audioHandler.togglePlayPause();
+    await _audioHandler.userTogglePlayPause();
   }
 
-  Future<void> next() async {
-    await _audioHandler.skipToNext();
+  /// [jumpChapters] false always leaves the item, ex: swipes.
+  Future<void> next({bool jumpChapters = true}) async {
+    await _audioHandler.userSkipToNext(jumpChapters: jumpChapters);
   }
 
-  Future<void> previous() async {
-    await _audioHandler.skipToPrevious();
+  Future<void> previous({bool jumpChapters = true}) async {
+    await _audioHandler.userSkipToPrevious(jumpChapters: jumpChapters);
   }
+
+  /// previous replaying the item, skips jumping between chapters or a single item queue, the ui shouldn't animate towards another item.
+  bool skipWillStayInItem({required bool forward, required bool jumpChapters}) => _audioHandler.skipWillStayInItem(forward: forward, jumpChapters: jumpChapters);
 
   Future<void> skipToQueueItem(int index) async {
-    _audioHandler.skipToQueueItem(index, andPlay: true);
+    if (_audioHandler.partyGate == null) _audioHandler.setPlayWhenReady(true);
+    await _audioHandler.userSkipToQueueItem(index);
   }
 
   Future<void> seek(Duration position) async {
-    await _audioHandler.seek(position);
+    await _audioHandler.userSeek(position);
+  }
+
+  bool isCurrentItem(Playable item) {
+    final current = _audioHandler.currentItem.value;
+    if (current == null) return false;
+    final isSame = item.execute(
+      selectable: (finalItem) => current is Selectable && current.track == finalItem.track,
+      youtubeID: (finalItem) => current is YoutubeID && current.id == finalItem.id,
+    );
+    return isSame == true;
+  }
+
+  /// seeks when [item] is already playing, otherwise plays it next from [position].
+  void seekOrPlayAt(Playable item, Duration position) {
+    if (isCurrentItem(item)) {
+      seek(position);
+      return;
+    }
+    final source = item.execute<QueueSourceBase>(
+      selectable: (_) => QueueSource.others(null),
+      youtubeID: (_) => QueueSourceYoutubeID.ytPlayerQueue,
+    );
+    if (source == null) return;
+    playOrPause(0, [item], source, gentlePlay: true, startPosition: position);
   }
 
   /// Default value is set to user preference [seekDurationInSeconds]
   Future<void> seekSecondsForward({int? seconds, void Function(int finalSeconds)? onSecondsReady}) async {
     final newSeconds = _secondsToSeek(seconds);
+    if (newSeconds == 0) return;
     onSecondsReady?.call(newSeconds);
-    await _audioHandler.seek(Duration(milliseconds: nowPlayingPosition + newSeconds * 1000));
+    await _audioHandler.userSeek(Duration(milliseconds: nowPlayingPosition.value + newSeconds * 1000));
   }
 
   /// Default value is set to user preference [seekDurationInSeconds]
   Future<void> seekSecondsBackward({int? seconds, void Function(int finalSeconds)? onSecondsReady}) async {
     final newSeconds = _secondsToSeek(seconds);
+    if (newSeconds == 0) return;
     onSecondsReady?.call(newSeconds);
-    await _audioHandler.seek(Duration(milliseconds: nowPlayingPosition - newSeconds * 1000));
+    await _audioHandler.userSeek(Duration(milliseconds: nowPlayingPosition.value - newSeconds * 1000));
   }
 
   int _secondsToSeek([int? seconds]) {
     int? newSeconds = seconds;
     if (newSeconds == null) {
       if (settings.player.isSeekDurationPercentage.value) {
-        final sFromP = (currentItemDuration?.inSeconds ?? 0) * (settings.player.seekDurationInPercentage.value / 100);
-        newSeconds = sFromP.toInt();
+        final percentage = settings.player.seekDurationInPercentage.value;
+        if (percentage > 0) {
+          final sFromP = (currentItemDuration.value?.inSeconds ?? 0) * (percentage / 100);
+          newSeconds = sFromP.toInt();
+          if (newSeconds == 0) newSeconds = 5; // fallback only for >0 percentage
+        } else {
+          newSeconds = 0;
+        }
       } else {
         newSeconds = settings.player.seekDurationInSeconds.value;
       }
     }
-    return newSeconds == 0 ? 5 : newSeconds;
+    // if 0 then it's what user wants
+    return newSeconds;
   }
 
-  Future<void> playOrPause<Q extends Playable>(
+  /// asks how to play [queue] regardless of [settings.askBeforeReplacingQueue].
+  Future<void> playWithOptions(int index, Iterable<Playable> queue, QueueSourceBase source) async {
+    final queueList = queue is List<Playable> ? queue : queue.toFixedList();
+    if (queueList.isEmpty) return;
+    if (_audioHandler.partyGate != null || currentQueue.value.isEmpty) {
+      await playOrPause(index, queueList, source);
+      return;
+    }
+    final shouldReplace = await _askBeforeReplacingQueue(queueList, index, source, shuffle: false, startPlaying: true, startPosition: null);
+    if (shouldReplace) await playOrPause(index, queueList, source, canAskBeforeReplacing: false);
+  }
+
+  Future<void> playOrPause(
     int index,
-    Iterable<Q> queue,
-    QueueSource source, {
+    Iterable<Playable> queue,
+    QueueSourceBase source, {
     HomePageItems? homePageItem,
     bool shuffle = false,
+    List<int>? originalIndices,
     bool startPlaying = true,
-    bool addAsNewQueue = true,
+    bool updateQueue = true,
+    int? maximumItems,
     void Function(Playable currentItem)? onAssigningCurrentItem,
+
+    /// add items next and play them instead of assigning them as a new queue
+    bool gentlePlay = false,
+
+    /// the item at [index] starts from here instead of its restored position.
+    Duration? startPosition,
+
+    /// false when the play options were already picked, see [playWithOptions].
+    bool canAskBeforeReplacing = true,
   }) async {
+    if (gentlePlay) {
+      if (index == 0 && queue.hasSingleItem()) {
+        final isSameAsCurrent = queue.elementAt(index) == Player.inst.currentItem.value;
+        if (isSameAsCurrent) {
+          Player.inst.togglePlayPause();
+          return;
+        }
+      }
+      _audioHandler.setPlayWhenReady(startPlaying);
+      await addToQueue(
+        queue,
+        insertNext: true,
+        showSnackBar: false,
+      );
+      if (startPosition != null) _audioHandler.requestStartPosition(queue.elementAt(index), startPosition);
+      await next();
+      return;
+    }
+
+    if (_audioHandler.partyGate?.interceptNewQueue(queue, index, startPlaying: startPlaying, shuffle: shuffle, isPlayerQueue: source == QueueSource.playerQueue) == true) return;
+
+    void togglePlayPauseExclusive() {
+      _audioHandler.discardRequestedStartPosition(); // -- nothing new started, it would otherwise wait for a later replay of that item
+      // -- since `_audioHandler.assignNewQueue` calls setPlayWhenReady(true) by default
+      _audioHandler.setPlayWhenReady(isPlaying.value);
+      _audioHandler.togglePlayPause();
+    }
+
+    if (source.supportResuming) {
+      queue = queue.map(
+        (queueItem) =>
+            queueItem.execute(
+                  selectable: (e) => e is TrackWithDate
+                      ? TrackWithDate(
+                          dateAdded: e.dateAdded,
+                          track: e.track,
+                          queueSource: source,
+                          source: e.sourceNull,
+                        )
+                      : TrackWithDate(
+                          dateAdded: 0, // 0 to allow correct comparison with old queue
+                          track: e.track,
+                          queueSource: source,
+                          source: null,
+                        ),
+                  youtubeID: (e) => YoutubeID(
+                    id: e.id,
+                    playlistID: e.playlistID,
+                    queueSource: source,
+                    source: e.sourceNull,
+                    watchNull: e.watchNull,
+                  ),
+                )
+                as Playable,
+      );
+    }
+
+    if (canAskBeforeReplacing && settings.askBeforeReplacingQueue.value && source != QueueSource.playerQueue && _audioHandler.partyGate == null && currentQueue.value.isNotEmpty) {
+      final queueList = queue is List<Playable> ? queue : queue.toFixedList();
+      queue = queueList;
+      if (queueList.isNotEmpty && !_audioHandler.isSameAsOriginalQueue(queueList)) {
+        final shouldReplace = await _askBeforeReplacingQueue(queueList, index, source, shuffle: shuffle, startPlaying: startPlaying, startPosition: startPosition);
+        if (!shouldReplace) return;
+      }
+    }
+
+    _audioHandler.latestQueueSource = source;
+    if (startPosition != null) _audioHandler.requestStartPosition(queue.elementAt(index), startPosition);
     await _audioHandler.assignNewQueue(
       playAtIndex: index,
       queue: queue,
-      maximumItems: 1000,
-      onIndexAndQueueSame: _audioHandler.togglePlayPause,
-      onQueueDifferent: (finalizedQueue) {
-        if (queue.firstOrNull is Selectable) {
-          if (addAsNewQueue) {
-            final trs = finalizedQueue.cast<Selectable>().tracks.toList();
-            QueueController.inst.addNewQueue(source: source, homePageItem: homePageItem, tracks: trs);
-          }
+      maximumItems: maximumItems,
+      onIndexAndQueueSame: togglePlayPauseExclusive,
+      onQueueDifferent: (finalizedQueue, originalIndices) {
+        if (updateQueue) {
+          QueueController.inst.updateLatestQueue(
+            finalizedQueue,
+            originalIndices: originalIndices,
+            source: source,
+            homePageItem: homePageItem,
+          );
         }
-        QueueController.inst.updateLatestQueue(finalizedQueue);
       },
-      onQueueEmpty: _audioHandler.togglePlayPause,
+      onQueueEmpty: togglePlayPauseExclusive,
       startPlaying: startPlaying,
       shuffle: shuffle,
+      shuffleKeepingItem: source != QueueSource.playerQueue && _audioHandler.isQueueShuffled,
+      originalIndices: originalIndices,
       onAssigningCurrentItem: onAssigningCurrentItem,
+      duplicateRemover: source == QueueSource.history || source == QueueSourceYoutubeID.ytHistory
+          ? (item) {
+              return item.execute(
+                selectable: (finalItem) => finalItem.track.path,
+                youtubeID: (finalItem) => finalItem.id,
+              );
+            }
+          : null,
     );
   }
+
+  // ------- party, raw operations that never go through the gate -------
+
+  PartyPlayerGate? get partyGate => _audioHandler.partyGate;
+  RxBaseCore<PlayerRepeatMode?> get forcedRepeatMode => _audioHandler.forcedRepeatMode;
+  set partyGate(PartyPlayerGate? gate) => _audioHandler.partyGate = gate;
+
+  void partySetRepeat(PlayerRepeatMode repeatMode, int times) {
+    if (repeatMode == PlayerRepeatMode.forNtimes) _audioHandler.updateNumberOfRepeats(times);
+    _audioHandler.forcedRepeatMode.value = repeatMode;
+  }
+
+  Future<void> partyAssignQueue(List<Playable> queue, int index, {required bool startPlaying, required String roomName}) {
+    _audioHandler.latestQueueSource = QueueSource.others(roomName);
+    return _audioHandler.assignNewQueue(playAtIndex: index, queue: queue, startPlaying: startPlaying);
+  }
+
+  Future<void> partyClearQueue() async {
+    await _audioHandler.onDispose().ignoreError();
+    await _audioHandler.clearQueue();
+  }
+
+  Future<void> partyRestoreQueue(List<Playable> queue, int index) {
+    _audioHandler.latestQueueSource = QueueSource.playerQueue;
+    return _audioHandler.assignNewQueue(playAtIndex: index, queue: queue, startPlaying: false);
+  }
+
+  FutureOr<void> partyInsert(List<Playable> items, int index) => _audioHandler.insertInQueue(items, index);
+  FutureOr<void> partyRemoveAt(int index) => _audioHandler.removeFromQueue(index);
+
+  /// [toIndex] is the final index of the item.
+  FutureOr<void> partyMove(int fromIndex, int toIndex) => _audioHandler.reorderItems(fromIndex, toIndex > fromIndex ? toIndex + 1 : toIndex);
+  Future<void> partyReplace(Playable oldItem, Playable newItem) => _audioHandler.replaceAllItemsInQueue(oldItem, newItem);
+
+  Future<void> partyPlay() => _audioHandler.play(checkIfPlaybackEnded: false);
+  Future<void> partyPause() => _audioHandler.pause(isUserInitiated: false);
+  Future<void> partySeek(Duration position) => _audioHandler.seek(position);
+  Future<void> partySkipTo(int index, {required bool startPlaying}) {
+    _audioHandler.setPlayWhenReady(startPlaying);
+    return _audioHandler.skipToQueueItem(index, isManualSkip: false);
+  }
+
+  Future<void> tryAddingMixPlaylist() async {
+    final currentId = currentVideo?.id;
+    if (currentId != null) {
+      return await _audioHandler.tryAddingMixPlaylist(currentId);
+    }
+  }
+
+  Future<void> setAudioTrackAndSave(String? trackId) async {
+    currentItem.value?.execute(
+      selectable: (finalItem) => Indexer.inst.updateTrackAudioTrackId(finalItem.track, audioTrackId: trackId),
+      youtubeID: (finalItem) => YoutubeController.inst.statsManager.updateAudioTrackId(finalItem, audioTrackId: trackId),
+    );
+    await _audioHandler.setAudioTrack(trackId);
+  }
+
+  Future<void> setTextTrack(String? trackId) => _audioHandler.setTextTrack(trackId);
+  Future<bool> setExternalSubtitle(String? uri) => _audioHandler.setExternalSubtitle(uri);
 
   // ------- video -------
 
@@ -517,11 +1179,246 @@ class Player {
     return _audioHandler.tryGenerateWaveform(video);
   }
 
-  Future<void> setVideo({required String source, String cacheKey = '', bool loopingAnimation = false, required bool isFile}) async {
-    await _audioHandler.setVideoSource(source: source, cacheKey: cacheKey, loopingAnimation: loopingAnimation, isFile: isFile);
+  Future<void> setVideo({
+    required AudioVideoSource source,
+    bool loopingAnimation = false,
+    int? sourceDurationMS,
+    required bool isFile,
+    bool videoOnly = false,
+  }) async {
+    await _audioHandler.setVideoSource(
+      source: source,
+      loopingAnimation: loopingAnimation,
+      sourceDurationMS: sourceDurationMS,
+      isFile: isFile,
+      videoOnly: videoOnly,
+    );
   }
 
   Future<void> disposeVideo() async {
     await _audioHandler.setVideo(null);
+  }
+
+  // ======================
+
+  static AVPlayer createTempPlayer({bool disableVideo = true}) {
+    return NamidaAudioVideoHandler.createPlayer(
+      disableVideo: disableVideo,
+      exoplayerCreator: () => AudioPlayer(preferSWDecoders: false),
+      exoplayerSWCreator: () => AudioPlayer(preferSWDecoders: true),
+    );
+  }
+}
+
+class _AudioConfigsManager {
+  RxBaseCore<Map<String, PlayerConfigOverrides>> get map => _mapRx;
+  static final _mapRx = <String, PlayerConfigOverrides>{}.obs;
+
+  Timer? _updateDebouncer;
+
+  late final _dBManager = DBWrapper.openFromInfo(
+    fileInfo: AppPaths.AUDIO_CONFIGS,
+    config: const DBConfig(createIfNotExist: true),
+  );
+
+  Future<void> prepareAll() async {
+    final res = await _dBManager.loadEverythingKeyedResult();
+    for (final entry in res.entries) {
+      try {
+        final config = PlayerConfigOverrides.fromMap(entry.value);
+        _mapRx.value[entry.key] ??= config;
+      } catch (_) {}
+    }
+    _mapRx.refresh();
+  }
+
+  FutureOr<PlayerConfigOverrides?> get(String key) async {
+    var config = _mapRx.value[key];
+    if (config != null) return config;
+    try {
+      final configMapInDb = await _dBManager.get(key);
+      if (configMapInDb != null) {
+        config = PlayerConfigOverrides.fromMap(configMapInDb);
+        _mapRx[key] ??= config;
+        return config;
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  bool itemHasCustomConfig(String? key) => key == null ? false : _mapRx.value[key] != null;
+  PlayerConfigOverrides? getSyncOrNull(String key) => _mapRx.value[key];
+  PlayerConfigOverrides? getForCurrentItem() {
+    final key = Player.inst.currentItem.value?.key;
+    return key == null ? null : _mapRx.value[key];
+  }
+
+  /// no overrides left means the item is removed
+  Future<void> updateProperty(String key, PlayerConfigOverrides Function(PlayerConfigOverrides current) builder) async {
+    final currentConfig = await get(key);
+    final config = builder(currentConfig ?? PlayerConfigOverrides.none);
+    if (config.isEmpty) return delete(key);
+    _mapRx.value[key] = config.copyWith(modifiedDate: currentTimeMS);
+    _scheduleSave(key);
+  }
+
+  Iterable<MapEntry<String, PlayerConfigOverrides>> buildSyncEntries() => _mapRx.value.entries;
+
+  /// [incomingWins] skips the newest wins check, ex: restoring a backup.
+  Future<void> import(Iterable<MapEntry<String, PlayerConfigOverrides>> incomingConfigs, String senderDeviceId, {bool incomingWins = false}) async {
+    final dbEntries = <MapEntry<String, Map<String, dynamic>>>[];
+    for (final e in incomingConfigs) {
+      final incoming = e.value;
+      final key = SyncPathResolver.resolvePath(senderDeviceId, e.key) ?? e.key;
+      final local = _mapRx.value[key];
+      if (!incomingWins && local != null && local.modifiedDate >= incoming.modifiedDate) continue;
+      _mapRx.value[key] = incoming;
+      dbEntries.add(MapEntry(key, incoming.toMap()));
+    }
+    if (dbEntries.isEmpty) return;
+    _mapRx.refresh();
+    await _dBManager.putAll(dbEntries, (e) => e);
+  }
+
+  final _dirtyKeys = <String>{};
+
+  void _scheduleSave(String key) {
+    _dirtyKeys.add(key);
+    _updateDebouncer?.cancel();
+    _updateDebouncer = Timer(
+      const Duration(milliseconds: 600),
+      () async {
+        final keys = _dirtyKeys.toFixedList();
+        _dirtyKeys.clear();
+        _mapRx.refresh();
+        for (final key in keys) {
+          final config = _mapRx.value[key];
+          if (config == null) continue; // -- deleted meanwhile
+          await _dBManager.put(key, config.toMap());
+        }
+      },
+    );
+  }
+
+  Future<void> move(String oldKey, String newKey) async {
+    final oldValue = _mapRx.value.remove(oldKey);
+    if (oldValue != null) {
+      _mapRx.value[newKey] = oldValue;
+      _mapRx.refresh();
+    }
+    final oldValueDB = await _dBManager.get(oldKey);
+    await _dBManager.put(newKey, oldValueDB);
+    await delete(oldKey);
+  }
+
+  Future<void> delete(String key) async {
+    _mapRx.remove(key);
+    await _dBManager.delete(key);
+  }
+
+  Future<void> deleteMultiple(List<String> keys) async {
+    for (final key in keys) {
+      _mapRx.value.remove(key);
+    }
+    _mapRx.refresh();
+    await _dBManager.deleteBulk(keys);
+  }
+
+  Future<void> movePaths(Map<Track, Track> oldNewMap) async {
+    for (final entry in oldNewMap.entries) {
+      final k = entry.key.path;
+      final v = entry.value.path;
+      final oldValue = _mapRx.value.remove(k);
+      if (oldValue != null) {
+        _mapRx.value[v] = oldValue;
+        _mapRx.refresh();
+      }
+      final oldValueDB = await _dBManager.get(k);
+      await _dBManager.put(v, oldValueDB);
+      // await _dBManager.delete(k); // not so important ig, preserve just in case
+    }
+  }
+
+  Future<void> moveDirectory(
+    String normalizedOldDir,
+    String normalizedNewDir, {
+    Iterable<String>? forThesePathsOnly,
+    bool ensureNewFileExists = false,
+  }) async {
+    final pathsOnlySet = forThesePathsOnly?.toSet();
+    final existenceCache = <String, bool>{};
+    final toUpdate = <String, String>{};
+
+    for (final key in _mapRx.value.keys.toFixedList()) {
+      final normalizedKey = replaceFunctionNormalizePath(key);
+      final shouldUpdate = replaceFunctionForUpdatedPaths(
+        key,
+        normalizedOldDir,
+        normalizedNewDir,
+        pathsOnlySet,
+        ensureNewFileExists,
+        existenceCache,
+      );
+      if (shouldUpdate) {
+        final newKey = replaceFunctionGetNewPath(normalizedKey, normalizedOldDir, normalizedNewDir);
+        toUpdate[key] = newKey;
+      }
+    }
+
+    if (toUpdate.isEmpty) return;
+
+    for (final entry in toUpdate.entries) {
+      final config = _mapRx.value.remove(entry.key);
+      if (config != null) _mapRx.value[entry.value] = config;
+    }
+    _mapRx.refresh();
+
+    for (final entry in toUpdate.entries) {
+      final oldValueDB = await _dBManager.get(entry.key);
+      await _dBManager.put(entry.value, oldValueDB);
+      // await _dBManager.delete(entry.key); // preserve just in case
+    }
+  }
+}
+
+/// media session callbacks (notification, android auto, wear..) are user actions.
+class _MediaSessionAudioHandler extends CompositeAudioHandler {
+  final NamidaAudioVideoHandler _handler;
+  _MediaSessionAudioHandler(this._handler) : super(_handler);
+
+  @override
+  Future<void> play() {
+    if (_handler.partyGate?.interceptPlay() == true) return Future.value();
+    return super.play();
+  }
+
+  @override
+  Future<void> pause() {
+    if (_handler.partyGate?.interceptPause(isUserInitiated: true) == true) return Future.value();
+    return super.pause();
+  }
+
+  @override
+  Future<void> seek(Duration position) {
+    if (_handler.partyGate?.interceptSeek(position) == true) return Future.value();
+    return super.seek(position);
+  }
+
+  @override
+  Future<void> skipToNext() {
+    if (_handler.partyGate?.interceptSkip(offset: 1) == true) return Future.value();
+    return super.skipToNext();
+  }
+
+  @override
+  Future<void> skipToPrevious() {
+    if (_handler.partyGate?.interceptSkip(offset: -1) == true) return Future.value();
+    return super.skipToPrevious();
+  }
+
+  @override
+  Future<void> skipToQueueItem(int index) {
+    if (index != _handler.currentIndex.value && _handler.partyGate?.interceptSkip(index: index) == true) return Future.value();
+    return super.skipToQueueItem(index);
   }
 }

@@ -1,9 +1,13 @@
-import 'package:flutter/material.dart';
-import 'package:newpipeextractor_dart/models/stream_info_item.dart';
-import 'package:share_plus/share_plus.dart';
+import 'dart:async';
 
-import 'package:namida/controller/navigator_controller.dart';
+import 'package:flutter/material.dart';
+
+import 'package:youtipie/class/stream_info_item/stream_info_item.dart';
+import 'package:youtipie/class/youtipie_feed/playlist_basic_info.dart';
+
+import 'package:namida/class/route.dart';
 import 'package:namida/controller/player_controller.dart';
+import 'package:namida/core/constants.dart';
 import 'package:namida/core/enums.dart';
 import 'package:namida/core/extensions.dart';
 import 'package:namida/core/icon_fonts/broken_icons.dart';
@@ -36,19 +40,23 @@ class YTVideosActionBarOptions {
 }
 
 class YTVideosActionBar extends StatelessWidget {
+  final QueueSourceYoutubeID queueSource;
   final String title;
-  final String url;
-  final List<YoutubeID> Function() videosCallback;
-  final Map<String, StreamInfoItem> Function()? infoLookupCallback;
+  final String Function()? urlBuilder;
+  final List<YoutubeID>? Function() videosCallback;
+  final Map<String, StreamInfoItem>? Function()? infoLookupCallback;
+  final PlaylistBasicInfo? Function()? playlistBasicInfo;
   final YTVideosActionBarOptions barOptions;
   final YTVideosActionBarOptions menuOptions;
 
   const YTVideosActionBar({
     super.key,
+    required this.queueSource,
     required this.title,
-    required this.url,
+    required this.urlBuilder,
     required this.videosCallback,
     this.infoLookupCallback,
+    this.playlistBasicInfo,
     this.barOptions = const YTVideosActionBarOptions(),
     this.menuOptions = const YTVideosActionBarOptions(
       shuffle: false,
@@ -61,47 +69,60 @@ class YTVideosActionBar extends StatelessWidget {
     ),
   });
 
-  List<YoutubeID> get videos => videosCallback();
-  Map<String, StreamInfoItem> get infoLookup => infoLookupCallback?.call() ?? {};
-
   Future<void> _onDownloadTap() async {
-    await NamidaNavigator.inst.navigateTo(
-      YTPlaylistDownloadPage(
-        ids: videos,
-        playlistName: title,
-        infoLookup: infoLookup,
-      ),
-    );
+    final videos = videosCallback();
+    if (videos == null) return;
+    YTPlaylistDownloadPage(
+      ids: videos,
+      playlistName: title,
+      infoLookup: infoLookupCallback?.call() ?? {},
+      playlistInfo: playlistBasicInfo?.call(),
+    ).navigate();
   }
 
   Future<void> _onShuffle() async {
-    await Player.inst.playOrPause(0, videos, QueueSource.others, shuffle: true);
+    final videos = videosCallback();
+    if (videos == null) return;
+    await Player.inst.playOrPause(0, videos, queueSource, shuffle: true);
   }
 
   Future<void> _onPlay() async {
-    await Player.inst.playOrPause(0, videos, QueueSource.others);
+    final videos = videosCallback();
+    if (videos == null) return;
+    await Player.inst.playOrPause(0, videos, queueSource);
   }
 
   Future<void> _onPlayNext() async {
+    final videos = videosCallback();
+    if (videos == null) return;
     await Player.inst.addToQueue(videos, insertNext: true);
   }
 
   Future<void> _onPlayAfter() async {
+    final videos = videosCallback();
+    if (videos == null) return;
     await Player.inst.addToQueue(videos, insertAfterLatest: true);
   }
 
   Future<void> _onPlayLast() async {
+    final videos = videosCallback();
+    if (videos == null) return;
     await Player.inst.addToQueue(videos, insertNext: false);
   }
 
   void _onAddToPlaylist() {
+    final videos = videosCallback();
+    if (videos == null) return;
+
     final ids = <String>[];
     final info = <String, String?>{};
-    videos.loop((e, index) {
+
+    final infoLookup = infoLookupCallback?.call() ?? {};
+    for (var e in videos) {
       final id = e.id;
       ids.add(id);
-      info[id] = infoLookup[id]?.name;
-    });
+      info[id] = infoLookup[id]?.title;
+    }
 
     showAddToPlaylistSheet(
       ids: ids,
@@ -109,123 +130,127 @@ class YTVideosActionBar extends StatelessWidget {
     );
   }
 
-  List<NamidaPopupItem> getMenuItems() {
-    final countText = videos.length;
-    final playAfterVid = menuOptions.playAfter ? YTUtils.getPlayerAfterVideo() : null;
+  FutureOr<List<NamidaPopupItem>> getMenuItems() async {
+    final videos = videosCallback();
+    final videosCount = videos?.length ?? 0;
+    final playAfterVid = menuOptions.playAfter ? await YTUtils.getPlayerAfterVideo() : null;
+    final url = urlBuilder?.call();
     return [
       if (menuOptions.addToPlaylist)
         NamidaPopupItem(
           icon: Broken.music_playlist,
-          title: lang.ADD_TO_PLAYLIST,
+          title: lang.addToPlaylist,
           onTap: _onAddToPlaylist,
         ),
-      if (url != '')
+      if (url != null && url != '')
         NamidaPopupItem(
           icon: Broken.share,
-          title: lang.SHARE,
-          onTap: () => Share.share(url),
+          title: lang.share,
+          onTap: () => NamidaUtils.shareUri(url),
         ),
       if (menuOptions.download)
         NamidaPopupItem(
           icon: Broken.import,
-          title: lang.DOWNLOAD,
+          title: lang.download,
           onTap: _onDownloadTap,
         ),
-      if (menuOptions.shuffle)
-        NamidaPopupItem(
-          icon: Broken.shuffle,
-          title: "${lang.SHUFFLE} ($countText)",
-          onTap: _onShuffle,
-        ),
-      if (menuOptions.play)
-        NamidaPopupItem(
-          icon: Broken.play,
-          title: "${lang.PLAY} ($countText)",
-          onTap: _onPlay,
-        ),
-      if (menuOptions.playNext)
-        NamidaPopupItem(
-          icon: Broken.next,
-          title: "${lang.PLAY_NEXT} ($countText)",
-          onTap: _onPlayNext,
-        ),
-      if (playAfterVid != null)
-        NamidaPopupItem(
-          icon: Broken.hierarchy_square,
-          title: "${lang.PLAY_AFTER}: ${playAfterVid.diff.displayVideoKeyword}",
-          subtitle: playAfterVid.name,
-          oneLinedSub: true,
-          onTap: _onPlayAfter,
-        ),
-      if (menuOptions.playLast)
-        NamidaPopupItem(
-          icon: Broken.play_cricle,
-          title: "${lang.PLAY_LAST} ($countText)",
-          onTap: _onPlayLast,
-        ),
+      if (videosCount > 0) ...[
+        if (menuOptions.shuffle)
+          NamidaPopupItem(
+            icon: Broken.shuffle,
+            title: "${lang.shuffle} ($videosCount)",
+            onTap: _onShuffle,
+          ),
+        if (menuOptions.play)
+          NamidaPopupItem(
+            icon: Broken.play,
+            title: "${lang.play} ($videosCount)",
+            onTap: _onPlay,
+          ),
+        if (menuOptions.playNext)
+          NamidaPopupItem(
+            icon: Broken.next,
+            title: "${lang.playNext} ($videosCount)",
+            onTap: _onPlayNext,
+          ),
+        if (playAfterVid != null)
+          NamidaPopupItem(
+            icon: Broken.hierarchy_square,
+            title: "${lang.playAfter}: ${playAfterVid.diff.displayVideoKeyword}",
+            subtitle: playAfterVid.name,
+            oneLinedSub: true,
+            onTap: _onPlayAfter,
+          ),
+        if (menuOptions.playLast)
+          NamidaPopupItem(
+            icon: Broken.play_cricle,
+            title: "${lang.playLast} ($videosCount)",
+            onTap: _onPlayLast,
+          ),
+      ],
     ];
   }
 
   @override
   Widget build(BuildContext context) {
-    final playAfterVid = barOptions.playAfter ? YTUtils.getPlayerAfterVideo() : null;
+    // final playAfterVid = barOptions.playAfter ? YTUtils.getPlayerAfterVideo() : null;
     return Row(
       children: [
         if (barOptions.addToPlaylist)
           _ActionItem(
             icon: Broken.music_playlist,
-            tooltip: lang.ADD_TO_PLAYLIST,
+            tooltip: lang.addToPlaylist,
             onTap: _onAddToPlaylist,
           ),
         if (barOptions.download)
           _ActionItem(
             icon: Broken.import,
-            tooltip: lang.DOWNLOAD,
+            tooltip: lang.download,
             onTap: _onDownloadTap,
           ),
         if (barOptions.shuffle)
           _ActionItem(
             icon: Broken.shuffle,
-            tooltip: lang.SHUFFLE,
+            tooltip: lang.shuffle,
             onTap: _onShuffle,
           ),
         if (barOptions.play)
           _ActionItem(
             icon: Broken.play,
-            tooltip: lang.PLAY,
+            tooltip: lang.play,
             onTap: _onPlay,
           ),
         if (barOptions.playNext)
           _ActionItem(
             icon: Broken.next,
-            tooltip: lang.PLAY_NEXT,
+            tooltip: lang.playNext,
             onTap: _onPlayNext,
           ),
-        if (playAfterVid != null)
-          _ActionItem(
-            icon: Broken.hierarchy_square,
-            tooltip: "${lang.PLAY_AFTER}: ${playAfterVid.diff.displayVideoKeyword}",
-            onTap: _onPlayAfter,
-          ),
+        // if (playAfterVid != null)
+        //   _ActionItem(
+        //     icon: Broken.hierarchy_square,
+        //     tooltip: "${lang.playAfter}: ${playAfterVid.diff.displayVideoKeyword}",
+        //     onTap: _onPlayAfter,
+        //   ),
         if (barOptions.playLast)
           _ActionItem(
             icon: Broken.play_cricle,
-            tooltip: lang.PLAY_LAST,
+            tooltip: lang.playLast,
             onTap: _onPlayLast,
           ),
-        if (getMenuItems().isNotEmpty)
-          NamidaPopupWrapper(
-            openOnLongPress: false,
-            childrenDefault: getMenuItems,
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 3.0),
-              child: Icon(
-                Broken.more_2,
-                size: 24.0,
-                color: context.defaultIconColor(),
-              ),
+
+        NamidaPopupWrapper(
+          openOnLongPress: false,
+          childrenDefault: getMenuItems,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 3.0),
+            child: Icon(
+              Broken.more_2,
+              size: 24.0,
+              color: context.defaultIconColor(),
             ),
           ),
+        ),
       ],
     );
   }
@@ -249,7 +274,7 @@ class _ActionItem extends StatelessWidget {
       horizontalPadding: 6.0,
       iconColor: context.defaultIconColor(),
       icon: icon,
-      tooltip: tooltip,
+      tooltip: () => tooltip,
       onPressed: onTap,
     );
   }

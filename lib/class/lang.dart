@@ -1,4 +1,9 @@
-import 'package:namida/core/constants.dart';
+import 'dart:ui' show Locale;
+
+import 'package:namida/core/translations/arb/app_localizations.dart';
+import 'package:namida/core/utils.dart';
+
+part 'package:namida/core/translations/localized_language_names.dart';
 
 class NamidaLanguage {
   /// ex: en_US
@@ -10,34 +15,99 @@ class NamidaLanguage {
   /// ex: United States
   final String country;
 
-  const NamidaLanguage({
+  final String codeOnly;
+
+  final String? countryCodeOnly;
+
+  final Locale locale;
+
+  const NamidaLanguage._({
     required this.code,
     required this.name,
     required this.country,
+    required this.codeOnly,
+    required this.countryCodeOnly,
+    required this.locale,
   });
 
-  factory NamidaLanguage.fromJson(Map<String, dynamic>? json) {
-    if (json == null) return kDefaultLang;
-    return NamidaLanguage(
-      code: json["code"],
-      name: json["name"],
-      country: json["country"],
+  static (String, String?) _splitCode(String code) {
+    final codeSplits = code.split('_');
+    final codeOnly = codeSplits.first;
+    final countryCodeOnly = codeSplits.length > 1 ? codeSplits[1] : null;
+    return (codeOnly, countryCodeOnly);
+  }
+
+  static String? _tryGetDefaultNameForCodeOnly(String codeOnly) {
+    final withCountryCode = _allLocalizedLanguagePrefferredNamesWithCountryMap[codeOnly];
+    return _allLocalizedLanguageNamesMap[withCountryCode];
+  }
+
+  factory NamidaLanguage.fromCode(String code) {
+    final langSplits = _splitCode(code);
+    final localeWithCountry = Locale(langSplits.$1, langSplits.$2);
+
+    if (localeWithCountry.countryCode != null) {
+      final localeWithCountrySupported = AppLocalizations.supportedLocales.contains(localeWithCountry);
+      if (localeWithCountrySupported) {
+        // -- only if country included, for example `en_US` will fallback to `en` to align with available locales
+        return NamidaLanguage.fromLocale(localeWithCountry);
+      }
+    }
+
+    return NamidaLanguage.fromLocale(Locale(langSplits.$1));
+  }
+
+  factory NamidaLanguage.fromLocale(Locale locale) {
+    final codeOnly = locale.languageCode;
+    final countryCodeOnly = locale.countryCode;
+    final code = [codeOnly, ?countryCodeOnly].join('_');
+
+    String? nameAndCountry;
+    if (countryCodeOnly != null) {
+      // only get name if code has country
+      nameAndCountry = _allLocalizedLanguageNamesMap[code];
+    }
+    nameAndCountry ??= _tryGetDefaultNameForCodeOnly(codeOnly) ?? _allLocalizedLanguageNamesMap[codeOnly];
+
+    String? name;
+    String? country;
+
+    if (nameAndCountry != null) {
+      final match = RegExp(r'^(.+?)\s*\((.+)\)$').firstMatch(nameAndCountry);
+      if (match != null) {
+        name = match.group(1);
+        country = match.group(2);
+      } else {
+        name = nameAndCountry;
+      }
+    }
+    return NamidaLanguage._(
+      code: code,
+      name: name?.capitalizeFirst() ?? nameAndCountry?.capitalizeFirst() ?? '?',
+      country: country ?? '',
+      codeOnly: codeOnly,
+      countryCodeOnly: countryCodeOnly,
+      locale: Locale(codeOnly, countryCodeOnly),
     );
   }
-  Map<String, String> toJson() {
+
+  /// name and country are always derived, ones stored by older versions can be outdated.
+  factory NamidaLanguage.fromJson(Map<String, dynamic> json) {
+    final langSplits = _splitCode(json["code"] as String);
+    return NamidaLanguage.fromLocale(Locale(langSplits.$1, langSplits.$2));
+  }
+
+  Map<String, String?> toJson() {
     return {
       "code": code,
-      "name": name,
-      "country": country,
     };
   }
 
   @override
-  bool operator ==(other) {
-    if (other is NamidaLanguage) {
-      return code == other.code && name == other.name && country == other.country;
-    }
-    return false;
+  bool operator ==(Object other) {
+    if (identical(this, other)) return true;
+    if (other is! NamidaLanguage) return false;
+    return code == other.code;
   }
 
   @override

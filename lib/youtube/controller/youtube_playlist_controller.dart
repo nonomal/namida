@@ -3,101 +3,170 @@
 import 'dart:async';
 import 'dart:io';
 
-import 'package:get/get.dart';
-import 'package:playlist_manager/module/playlist_id.dart';
 import 'package:playlist_manager/playlist_manager.dart';
 
+import 'package:namida/class/sort_chain.dart';
 import 'package:namida/class/video.dart';
+import 'package:namida/controller/navigator_controller.dart';
+import 'package:namida/controller/player_controller.dart';
+import 'package:namida/controller/queue_controller.dart';
+import 'package:namida/controller/search_sort_controller.dart';
 import 'package:namida/controller/settings_controller.dart';
 import 'package:namida/core/constants.dart';
 import 'package:namida/core/enums.dart';
 import 'package:namida/core/extensions.dart';
+import 'package:namida/core/functions.dart';
 import 'package:namida/core/translations/language.dart';
+import 'package:namida/core/utils.dart';
+import 'package:namida/youtube/class/download_task_base.dart';
 import 'package:namida/youtube/class/youtube_id.dart';
+import 'package:namida/youtube/controller/youtube_history_controller.dart';
+import 'package:namida/youtube/controller/youtube_info_controller.dart';
 
-typedef YoutubePlaylist = GeneralPlaylist<YoutubeID>;
+typedef YoutubePlaylist = GeneralPlaylist<YoutubeID, SortEntry<YTSortType>>;
 
-class YoutubePlaylistController extends PlaylistManager<YoutubeID> {
+class YoutubePlaylistController extends PlaylistManager<YoutubeID, String, SortEntry<YTSortType>> {
   static YoutubePlaylistController get inst => _instance;
   static final YoutubePlaylistController _instance = YoutubePlaylistController._internal();
   YoutubePlaylistController._internal();
 
-  final canReorderVideos = false.obs;
+  @override
+  RegExp get cleanupFilenameRegex => DownloadTaskFilename.cleanupFilenameRegex;
 
-  void addNewPlaylist(
+  @override
+  String identifyBy(YoutubeID item) => item.id;
+
+  Future<YoutubePlaylist?> addNewPlaylist(
     String name, {
-    Iterable<String> videoIds = const <String>[],
+    Iterable<String>? videoIds,
     int? creationDate,
     String comment = '',
     List<String> moods = const [],
-    PlaylistID? playlistID,
-  }) async {
-    super.addNewPlaylistRaw(
+  }) {
+    final videoIdsList = videoIds?.toList() ?? [];
+    return super.addNewPlaylistRaw(
       name,
-      tracks: (playlistID) {
-        final newTracks = videoIds
-            .map(
-              (id) => YoutubeID(
-                id: id,
-                watchNull: YTWatch(dateNull: DateTime.now(), isYTMusic: false),
-                playlistID: playlistID,
-              ),
-            )
-            .toList();
-        return newTracks;
+      tracks: videoIdsList,
+      convertItem: (id, dateAdded, playlistID) {
+        return YoutubeID(
+          id: id,
+          watchNull: YTWatch(dateMSNull: dateAdded, isYTMusic: false),
+          playlistID: playlistID,
+        );
       },
       creationDate: creationDate,
       comment: comment,
       moods: moods,
-      playlistID: playlistID,
+      actionIfAlreadyExists: () => NamidaOnTaps.inst.showDuplicatedDialogAction(PlaylistAddDuplicateAction.valuesForAdd),
     );
   }
 
-  /// Returns added ids, when [preventDuplicates] is true;
-  Future<Iterable<YoutubeID>> addTracksToPlaylist(YoutubePlaylist playlist, Iterable<String> videoIds, {bool preventDuplicates = true}) async {
-    late Iterable<String> idsToAdd;
+  Future<void> addTracksToPlaylist(
+    YoutubePlaylist playlist,
+    Iterable<String> videoIds, {
+    List<PlaylistAddDuplicateAction> duplicationActions = PlaylistAddDuplicateAction.valuesForAdd,
+  }) async {
+    final originalModifyDate = playlist.modifiedDate;
+    final oldVideosList = List<YoutubeID>.from(playlist.tracks); // for undo
 
-    if (preventDuplicates) {
-      final existingIds = <String, bool>{};
-      playlist.tracks.loop((e, index) {
-        existingIds[e.id] = true;
-      });
-      // only add ids that doesnt exist inside playlist.
-      idsToAdd = videoIds.where((element) => existingIds[element] == null);
-    } else {
-      idsToAdd = videoIds;
-    }
-    final newtracks = idsToAdd
-        .map(
-          (id) => YoutubeID(
-            id: id,
-            watchNull: YTWatch(dateNull: DateTime.now(), isYTMusic: false),
-            playlistID: playlist.playlistID,
-          ),
-        )
-        .toList();
-    await super.addTracksToPlaylistRaw(playlist, newtracks);
-    return newtracks;
+    final videoIdsList = videoIds.toList();
+    final addedVideosLength = await super.addTracksToPlaylistRaw(
+      playlist,
+      videoIdsList,
+      () => NamidaOnTaps.inst.showDuplicatedDialogAction(duplicationActions),
+      (id, dateAdded) => _toPlaylistItem(id, dateAdded, playlist),
+    );
+
+    if (addedVideosLength == null) return;
+
+    String toMessage(int total) => "${lang.added}: ${total.displayVideoKeyword}";
+    final didAddVideos = addedVideosLength > 0;
+    snackyy(
+      message: toMessage(addedVideosLength),
+      button: didAddVideos
+          ? SnackbarButton(
+              text: lang.undo,
+              function: () async => await updatePropertyInPlaylist(playlist.name, tracks: oldVideosList, modifiedDate: originalModifyDate),
+            )
+          : null,
+      merge: didAddVideos
+          ? SnackbarMerge(
+              group: .playlistAddVideos,
+              id: playlist.name,
+              count: addedVideosLength,
+              toMessage: toMessage,
+            )
+          : null,
+    );
   }
 
-  Future<bool> favouriteButtonOnPressed(String id) async {
-    return await super.toggleTrackFavourite(
-      newTrack: YoutubeID(
-        id: id,
-        watchNull: YTWatch(dateNull: DateTime.now(), isYTMusic: false),
+  /// adds [videoId] without prompting, or removes it when already inside [playlist].
+  Future<void> toggleVideoInPlaylist(YoutubePlaylist playlist, String videoId) async {
+    final index = playlist.tracks.indexWhere((e) => e.id == videoId);
+    if (index >= 0) {
+      await removeTracksFromPlaylist(playlist, [index]);
+    } else {
+      await addTracksToPlaylistRaw(playlist, [videoId], null, (id, dateAdded) => _toPlaylistItem(id, dateAdded, playlist));
+    }
+  }
+
+  static YoutubeID _toPlaylistItem(String videoId, int dateAdded, YoutubePlaylist playlist) {
+    return YoutubeID(
+      id: videoId,
+      watchNull: YTWatch(dateMSNull: dateAdded, isYTMusic: false),
+      playlistID: playlist.playlistID,
+    );
+  }
+
+  bool favouriteButtonOnPressed(String videoId, {bool refreshNotification = true}) {
+    final res = super.toggleTrackFavourite(
+      YoutubeID(
+        id: videoId,
+        watchNull: YTWatch(dateMSNull: DateTime.now().millisecondsSinceEpoch, isYTMusic: false),
         playlistID: favouritesPlaylist.value.playlistID,
       ),
-      identifyBy: (ytid) => ytid.id == id,
     );
+    if (refreshNotification) {
+      final currentItem = Player.inst.currentItem.value;
+      if (currentItem is YoutubeID && currentItem.id == videoId) {
+        Player.inst.refreshNotification();
+      }
+    }
+    return res;
   }
 
-  void sortYTPlaylists({GroupSortType? sortBy, bool? reverse}) {
+  void setVideoFavourite(String videoId, bool favourite) {
+    if (favouritesPlaylist.isSubItemFavourite(videoId) == favourite) return;
+    favouriteButtonOnPressed(videoId, refreshNotification: false);
+  }
+
+  void sortYTPlaylists({GroupSortType? sortBy, bool? reverse}) async {
+    await waitForPlaylistsLoad;
+
     sortBy ??= settings.ytPlaylistSort.value;
     reverse ??= settings.ytPlaylistSortReversed.value;
 
-    final playlistList = playlistsMap.entries.toList();
-    void sortThis(Comparable Function(MapEntry<String, GeneralPlaylist<YoutubeID>> p) comparable) =>
-        reverse! ? playlistList.sortByReverse(comparable) : playlistList.sortBy(comparable);
+    final playlistList = playlistsMap.entries.toFixedList();
+    _performSortYTPlaylists(playlistList, sortBy: sortBy, reverse: reverse, customIndicesOrder: customIndicesOrderRx.value);
+    playlistsMap.assignAllEntries(playlistList);
+
+    settings.transaction(() {
+      settings.ytPlaylistSort.save(sortBy);
+      settings.ytPlaylistSortReversed.save(reverse);
+    });
+  }
+
+  static void _performSortYTPlaylists(
+    List<MapEntry<String, YoutubePlaylist>> playlistList, {
+    required GroupSortType sortBy,
+    required bool reverse,
+    required List<String>? customIndicesOrder,
+  }) {
+    void sortThis(Comparable Function(MapEntry<String, YoutubePlaylist> p) comparable) => reverse ? playlistList.sortByReverse(comparable) : playlistList.sortBy(comparable);
+
+    if (sortBy == GroupSortType.custom && customIndicesOrder == null) {
+      sortBy = GroupSortType.title;
+    }
 
     switch (sortBy) {
       case GroupSortType.title:
@@ -110,36 +179,56 @@ class YoutubePlaylistController extends PlaylistManager<YoutubeID> {
         sortThis((p) => p.value.modifiedDate);
         break;
       case GroupSortType.numberOfTracks:
-        sortThis((p) => p.value.tracks.length);
+        sortThis((p) => -p.value.tracks.length);
+        break;
+      case GroupSortType.playCount:
+        sortThis((e) => -e.value.tracks.getTotalListenCount());
+        break;
+      case GroupSortType.firstListen:
+        sortThis((e) => e.value.tracks.getFirstListen() ?? DateTime(99999).millisecondsSinceEpoch);
+        break;
+      case GroupSortType.latestPlayed:
+        sortThis((e) => -(e.value.tracks.getLatestListen() ?? 0));
+        break;
+      case GroupSortType.lastPlayed:
+        sortThis((e) => -(QueueController.latestPlayedForSourceManager.latestPlayedTime(QueueSourceYoutubeID.ytPlaylist(e.key)) ?? 0));
         break;
       case GroupSortType.shuffle:
         playlistList.shuffle();
+        break;
+      case GroupSortType.shuffleDaily:
+        sortThis(SearchSortController.createDailyShuffleComparable<MapEntry<String, YoutubePlaylist>>((p) => p.key));
+        break;
+      case GroupSortType.custom:
+        final indices = <String, int>{};
+        int index = 0;
+        for (final item in customIndicesOrder!) {
+          indices[item] = index;
+          index++;
+        }
+        sortThis((p) => indices[p.key] ?? (playlistList.length - 1));
         break;
 
       default:
         null;
     }
 
-    playlistsMap
-      ..clear()
-      ..addEntries(playlistList);
-
-    settings.save(ytPlaylistSort: sortBy, ytPlaylistSortReversed: reverse);
+    playlistList.movePinnedFirst();
   }
 
   Future<void> prepareAllPlaylists() async => await super.prepareAllPlaylistsFile();
 
   @override
-  String get EMPTY_NAME => lang.PLEASE_ENTER_A_NAME;
+  String get EMPTY_NAME => lang.pleaseEnterAName;
 
   @override
-  String get NAME_CONTAINS_BAD_CHARACTER => lang.NAME_CONTAINS_BAD_CHARACTER;
+  String get NAME_CONTAINS_BAD_CHARACTER => lang.nameContainsBadCharacter;
 
   @override
-  String get SAME_NAME_EXISTS => lang.PLEASE_ENTER_A_DIFFERENT_NAME;
+  String get SAME_NAME_EXISTS => lang.pleaseEnterADifferentName;
 
   @override
-  String get NAME_IS_NOT_ALLOWED => lang.PLEASE_ENTER_A_DIFFERENT_NAME;
+  String get NAME_IS_NOT_ALLOWED => lang.pleaseEnterADifferentName;
 
   @override
   String get PLAYLIST_NAME_FAV => k_PLAYLIST_NAME_FAV;
@@ -157,7 +246,26 @@ class YoutubePlaylistController extends PlaylistManager<YoutubeID> {
   }
 
   @override
+  void onPlaylistRemovedFromMap(List<String> names) {
+    // -- the ui uses the playlist map directly. this can be used to remove from other lists if required.
+
+    QueueController.latestPlayedForSourceManager.deleteMultiple(names.map(QueueSourceYoutubeID.ytPlaylist));
+  }
+
+  @override
+  Future<bool> renamePlaylist(String playlistName, String newName) async {
+    final didRename = await super.renamePlaylist(playlistName, newName);
+    if (didRename) {
+      QueueController.latestPlayedForSourceManager.move(QueueSourceYoutubeID.ytPlaylist(playlistName), QueueSourceYoutubeID.ytPlaylist(newName));
+    }
+    return didRename;
+  }
+
+  @override
   Map<String, dynamic> itemToJson(YoutubeID item) => item.toJson();
+
+  @override
+  dynamic sortToJson(List<SortEntry<YTSortType>> items) => YTSortType.sortsToJson(items);
 
   @override
   String get favouritePlaylistPath => AppPaths.YT_LIKES_PLAYLIST;
@@ -166,40 +274,140 @@ class YoutubePlaylistController extends PlaylistManager<YoutubeID> {
   String get playlistsDirectory => AppDirs.YT_PLAYLISTS;
 
   @override
-  Future<Map<String, YoutubePlaylist>> prepareAllPlaylistsFunction() async {
-    return await _readPlaylistFilesCompute.thready(playlistsDirectory);
+  String get playlistsArtworksDirectory => AppDirs.YT_PLAYLISTS_ARTWORKS;
+
+  @override
+  String get playlistsMetadataDirectory => AppDirs.YT_PLAYLISTS_METADATA;
+
+  @override
+  bool get sortAfterPreparing => false;
+
+  @override
+  bool get addTracksAtBeginning => settings.playlistAddTracksAtBeginningYT.value;
+
+  @override
+  Future<Map<String, YoutubePlaylist>> prepareAllPlaylistsFunction() => readPlaylistsDirectory(playlistsDirectory);
+
+  /// the playlists inside [directoryPath], ex: an extracted backup.
+  Future<Map<String, YoutubePlaylist>> readPlaylistsDirectory(String directoryPath) async {
+    final params = _ReadPlaylistFilesParams(
+      path: directoryPath,
+      sortBy: settings.ytPlaylistSort.value,
+      reverse: settings.ytPlaylistSortReversed.value,
+      customIndicesOrder: customIndicesOrderRx.value,
+    );
+
+    return await _readPlaylistFilesCompute.thready(params);
   }
 
   @override
-  Future<YoutubePlaylist?> prepareFavouritePlaylistFunction() async {
-    return await _prepareFavouritesFile.thready(favouritePlaylistPath);
-  }
+  Future<YoutubePlaylist?> prepareFavouritePlaylistFunction() => readFavouritesFile(favouritePlaylistPath);
 
-  static Future<YoutubePlaylist?> _prepareFavouritesFile(String path) async {
+  Future<YoutubePlaylist?> readFavouritesFile(String path) => _prepareFavouritesFile.thready(path);
+
+  static YoutubePlaylist? _prepareFavouritesFile(String path) {
     try {
       final response = File(path).readAsJsonSync();
-      return YoutubePlaylist.fromJson(response, (itemJson) => YoutubeID.fromJson(itemJson));
+      return YoutubePlaylist.fromJson(response, YoutubeID.fromJson, YTSortType.sortListFromJsonList);
     } catch (_) {
       return null;
     }
   }
 
-  static Future<Map<String, YoutubePlaylist>> _readPlaylistFilesCompute(String path) async {
-    final map = <String, YoutubePlaylist>{};
-    for (final f in Directory(path).listSyncSafe()) {
+  static Map<String, YoutubePlaylist> _readPlaylistFilesCompute(_ReadPlaylistFilesParams params) {
+    final entries = <MapEntry<String, YoutubePlaylist>>[];
+    final files = Directory(params.path).listSyncSafe();
+    for (final f in files) {
       if (f is File) {
         try {
-          final response = f.readAsJsonSync();
-          final pl = YoutubePlaylist.fromJson(response, (itemJson) => YoutubeID.fromJson(itemJson));
-          map[pl.name] = pl;
-        } catch (e) {
-          continue;
-        }
+          final response = f.readAsJsonSync(ensureExists: false);
+          final pl = YoutubePlaylist.fromJson(response, YoutubeID.fromJson, YTSortType.sortListFromJsonList);
+          entries.add(MapEntry(pl.name, pl));
+        } catch (_) {}
       }
     }
-    return map;
+
+    _performSortYTPlaylists(entries, sortBy: params.sortBy, reverse: params.reverse, customIndicesOrder: params.customIndicesOrder);
+    return Map<String, YoutubePlaylist>.fromEntries(entries);
   }
 
   @override
   void sortPlaylists() => sortYTPlaylists();
+
+  @override
+  Future<void> onPlaylistItemsSort(List<SortEntry<YTSortType>> sorts, bool reverse, List<YoutubeID> items) async {
+    final sorting = SortChain(sorts, reverse: reverse);
+    await _ensureItemsHasDataForSorting(sorting, items);
+    final comparables = SortChainComparables.of(sorting, _mediaTracksSortingComparables);
+    items.sortByChain(comparables);
+  }
+
+  String Function(YoutubePlaylist playlist)? getGroupSortExtraTextResolverPlaylist(GroupSortType sort) => switch (sort) {
+    GroupSortType.title => (playlist) => playlist.name,
+    GroupSortType.creationDate => (playlist) => playlist.creationDate.dateFormatted,
+    GroupSortType.modifiedDate => (playlist) => playlist.modifiedDate.dateFormatted,
+    GroupSortType.numberOfTracks => (p) => p.tracks.length.toString(),
+    GroupSortType.playCount => (p) => p.tracks.getTotalListenCount().toString(),
+    GroupSortType.firstListen => (p) => p.tracks.getFirstListen()?.dateFormattedOriginal ?? '',
+    GroupSortType.latestPlayed => (p) => p.tracks.getLatestListen()?.dateFormattedOriginal ?? '',
+    GroupSortType.lastPlayed => (p) => QueueController.latestPlayedForSourceManager.latestPlayedTime(QueueSourceYoutubeID.ytPlaylist(p.name))?.dateFormattedOriginal ?? '',
+    GroupSortType.duration => null,
+    GroupSortType.shuffle => null,
+    GroupSortType.shuffleDaily => null,
+    GroupSortType.custom => null,
+
+    // -- local tracks
+    GroupSortType.album => null,
+    GroupSortType.artistsList => null,
+    GroupSortType.composer => null,
+    GroupSortType.albumArtist => null,
+    GroupSortType.label => null,
+    GroupSortType.releaseType => null,
+    GroupSortType.bpm => null,
+    GroupSortType.genresList => null,
+    GroupSortType.albumsCount => null,
+    GroupSortType.year => null,
+    GroupSortType.dateAdded => null,
+    GroupSortType.dateModified => null,
+    GroupSortType.albumSort => null,
+    GroupSortType.albumArtistSort => null,
+    GroupSortType.artistSort => null,
+    GroupSortType.composerSort => null,
+    // ----
+  };
+
+  Future<void> _ensureItemsHasDataForSorting(SortChain<YTSortType> sorting, List<YoutubeID> items) async {
+    if (sorting.hasType(YTSortType.title)) await Future.wait(items.map((e) => YoutubeInfoController.utils.getVideoName(e.id)));
+    if (sorting.hasType(YTSortType.channelTitle)) await Future.wait(items.map((e) => YoutubeInfoController.utils.getVideoChannelName(e.id)));
+    if (sorting.hasType(YTSortType.duration)) await Future.wait(items.map((e) => YoutubeInfoController.utils.getVideoDurationSeconds(e.id)));
+    if (sorting.hasType(YTSortType.date)) await Future.wait(items.map((e) => YoutubeInfoController.utils.getVideoReleaseDate(e.id)));
+  }
+
+  Comparable Function(YoutubeID e)? _mediaTracksSortingComparables(YTSortType type) {
+    return switch (type) {
+      YTSortType.title => (e) => YoutubeInfoController.utils.getVideoNameSync(e.id, checkFromStorage: false) ?? '',
+      YTSortType.channelTitle => (e) => YoutubeInfoController.utils.getVideoChannelNameSync(e.id, checkFromStorage: false) ?? '',
+      YTSortType.duration => (e) => YoutubeInfoController.utils.getVideoDurationSecondsSyncTemp(e.id) ?? 0,
+      YTSortType.date => (e) => YoutubeInfoController.utils.getVideoReleaseDateSyncTemp(e.id) ?? DateTime(0),
+      YTSortType.dateAdded => (e) => e.dateAddedMS,
+      YTSortType.shuffle => null,
+      YTSortType.mostPlayed => (e) => -(YoutubeHistoryController.inst.topTracksMapListens.value[e.id]?.length ?? 0),
+      YTSortType.latestPlayed => (e) => -(YoutubeHistoryController.inst.topTracksMapListens.value[e.id]?.lastOrNull ?? 0),
+      YTSortType.firstListen => (e) => YoutubeHistoryController.inst.topTracksMapListens.value[e.id]?.firstOrNull ?? DateTime(99999).millisecondsSinceEpoch,
+    };
+  }
+}
+
+class _ReadPlaylistFilesParams {
+  final String path;
+  final GroupSortType sortBy;
+  final bool reverse;
+  final List<String>? customIndicesOrder;
+
+  const _ReadPlaylistFilesParams({
+    required this.path,
+    required this.sortBy,
+    required this.reverse,
+    required this.customIndicesOrder,
+  });
 }

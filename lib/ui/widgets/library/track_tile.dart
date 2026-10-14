@@ -1,489 +1,991 @@
 import 'package:flutter/material.dart';
-
-import 'package:get/get.dart';
+import 'package:flutter/services.dart';
 
 import 'package:namida/class/track.dart';
+import 'package:namida/class/video.dart';
 import 'package:namida/controller/current_color.dart';
+import 'package:namida/controller/history_controller.dart';
+import 'package:namida/controller/indexer_controller.dart';
 import 'package:namida/controller/player_controller.dart';
+import 'package:namida/controller/queue_controller.dart';
 import 'package:namida/controller/scroll_search_controller.dart';
 import 'package:namida/controller/selected_tracks_controller.dart';
 import 'package:namida/controller/settings_controller.dart';
+import 'package:namida/controller/time_ago_controller.dart';
+import 'package:namida/core/constants.dart';
 import 'package:namida/core/dimensions.dart';
 import 'package:namida/core/enums.dart';
 import 'package:namida/core/extensions.dart';
 import 'package:namida/core/icon_fonts/broken_icons.dart';
 import 'package:namida/core/namida_converter_ext.dart';
-import 'package:namida/ui/widgets/artwork.dart';
-import 'package:namida/ui/widgets/custom_widgets.dart';
+import 'package:namida/core/utils.dart';
 import 'package:namida/ui/dialogs/common_dialogs.dart';
 import 'package:namida/ui/dialogs/track_info_dialog.dart';
+import 'package:namida/ui/widgets/animated_widgets.dart';
+import 'package:namida/ui/widgets/artwork.dart';
+import 'package:namida/ui/widgets/custom_widgets.dart';
+import 'package:namida/ui/widgets/server_cache_widgets.dart';
 
-class TrackTile extends StatelessWidget {
-  final int index;
-  final Selectable trackOrTwd;
-  final bool displayRightDragHandler;
-  final bool draggableThumbnail;
-  final Color? bgColor;
-  final Widget? trailingWidget;
-  final VoidCallback? onTap;
-  final VoidCallback? onPlaying;
-  final String? playlistName;
-  final String thirdLineText;
-  final bool displayTrackNumber;
+class TrackTilePropertiesProvider extends StatelessWidget {
+  final TrackTilePropertiesConfigs configs;
+  final Widget Function(TrackTileProperties properties) builder;
 
-  /// Disable if you want to have priority to hold & reorder instead of selecting.
-  final bool selectable;
-  final QueueSource queueSource;
-  final void Function()? onRightAreaTap;
-  final double cardColorOpacity;
-  final double fadeOpacity;
-
-  const TrackTile({
+  const TrackTilePropertiesProvider({
     super.key,
-    required this.trackOrTwd,
-    this.displayRightDragHandler = false,
-    this.draggableThumbnail = true,
-    this.bgColor,
-    this.onTap,
-    this.onPlaying,
-    this.trailingWidget,
-    this.playlistName,
-    required this.index,
-    this.thirdLineText = '',
-    this.displayTrackNumber = false,
-    this.selectable = true,
-    required this.queueSource,
-    this.onRightAreaTap,
-    this.cardColorOpacity = 0.9,
-    this.fadeOpacity = 0.0,
+    required this.builder,
+    required this.configs,
   });
-
-  bool get _isFromQueue => queueSource == QueueSource.playerQueue;
-
-  Track get _tr => trackOrTwd.track;
-  TrackWithDate? get _twd => trackOrTwd.trackWithDate;
-
-  void _triggerTrackDialog() => NamidaDialogs.inst.showTrackDialog(
-        _tr,
-        playlistName: playlistName,
-        index: index,
-        comingFromQueue: _isFromQueue,
-        trackWithDate: trackOrTwd.trackWithDate,
-        source: queueSource,
-        additionalHero: additionalHero,
-      );
-
-  void _triggerTrackInfoDialog() => showTrackInfoDialog(
-        _tr,
-        true,
-        comingFromQueue: _isFromQueue,
-        index: index,
-        queueSource: queueSource,
-        additionalHero: additionalHero,
-      );
-
-  void _selectTrack() => SelectedTracksController.inst.selectOrUnselect(trackOrTwd, queueSource, playlistName);
-
-  String? get additionalHero => trackOrTwd.trackWithDate?.dateAdded.toString();
 
   @override
   Widget build(BuildContext context) {
-    final track = _tr;
-    final trackWithDate = _twd;
-    final comingFromQueue = _isFromQueue;
-    final canHaveDuplicates = comingFromQueue ||
-        queueSource == QueueSource.playlist ||
-        queueSource == QueueSource.queuePage ||
-        queueSource == QueueSource.playerQueue ||
-        queueSource == QueueSource.history;
+    final theme = context.theme;
+    final queueSource = configs.queueSource;
+    final queueSupportResuming = queueSource.supportResuming;
+    final comingFromQueue = queueSource == QueueSource.playerQueue;
+    final canHaveDuplicates = queueSource.canHaveDuplicates;
 
-    final isInSelectedTracksPreview = queueSource == QueueSource.selectedTracks;
-    final additionalHero = this.additionalHero;
-    return Stack(
-      alignment: Alignment.centerRight,
-      children: [
-        Obx(
-          () {
-            final willSleepAfterThis = queueSource == QueueSource.playerQueue && Player.inst.enableSleepAfterTracks && Player.inst.sleepingTrackIndex == index;
+    final backgroundColorNotPlaying = theme.cardTheme.color ?? Colors.transparent;
+    final selectionColorLayer = theme.focusColor;
+    final highlightColorLayer = queueSupportResuming ? theme.focusColor.withOpacityExt(0.2) : null;
 
-            final double thumbnailSize = settings.trackThumbnailSizeinList.value;
-            final double trackTileHeight = settings.trackListTileHeight.value;
-            final bool isTrackSelected = SelectedTracksController.inst.isTrackSelected(trackOrTwd);
-            final bool isTrackSame = track == CurrentColor.inst.currentPlayingTrack.value?.track;
-            final bool isRightHistoryList = queueSource == QueueSource.history ? trackWithDate == CurrentColor.inst.currentPlayingTrack.value?.trackWithDate : true;
-            final bool isRightIndex = canHaveDuplicates ? index == CurrentColor.inst.currentPlayingIndex.value : true;
-            final bool isTrackCurrentlyPlaying = isRightIndex && isTrackSame && isRightHistoryList;
+    final listenToTopHistoryItems = settings.trackItem.value.values.any(
+      (element) => element == TrackTileItem.listenCount || element == TrackTileItem.latestListenDate || element == TrackTileItem.firstListenDate,
+    );
 
-            final textColor = isTrackCurrentlyPlaying && !isTrackSelected ? Colors.white : null;
-            final row1Text = TrackTileManager.joinTrackItems(TrackTilePosition.row1Item1, TrackTilePosition.row1Item2, TrackTilePosition.row1Item3, track);
-            final row2Text = TrackTileManager.joinTrackItems(TrackTilePosition.row2Item1, TrackTilePosition.row2Item2, TrackTilePosition.row2Item3, track);
-            final row3Text = TrackTileManager.joinTrackItems(TrackTilePosition.row3Item1, TrackTilePosition.row3Item2, TrackTilePosition.row3Item3, track);
-            final rightItem1Text = TrackTileManager.getChoosenTrackTileItem(TrackTilePosition.rightItem1, track);
-            final rightItem2Text = TrackTileManager.getChoosenTrackTileItem(TrackTilePosition.rightItem2, track);
+    final listenToStatsMap = settings.trackItem.value.values.any(
+      (element) => element == TrackTileItem.rating || element == TrackTileItem.moods || element == TrackTileItem.tags,
+    );
 
-            final backgroundColor = bgColor ??
-                Color.alphaBlend(
-                  isTrackSelected & !isInSelectedTracksPreview ? context.theme.focusColor : Colors.transparent,
-                  isTrackCurrentlyPlaying
-                      ? comingFromQueue
-                          ? CurrentColor.inst.miniplayerColor
-                          : CurrentColor.inst.color
-                      : context.theme.cardTheme.color!.withOpacity(cardColorOpacity),
-                );
+    return ObxO(
+      rx: settings.forceSquaredTrackThumbnail,
+      builder: (context, forceSquaredThumbnails) => ObxO(
+        rx: settings.displayThirdRow,
+        builder: (context, displayThirdRow) => ObxO(
+          rx: settings.displayFavouriteIconInListTile,
+          builder: (context, displayFavouriteIconInListTile) => ObxO(
+            rx: settings.trackThumbnailSizeinList,
+            builder: (context, thumbnailSize) => ObxO(
+              rx: settings.onTrackSwipeLeft,
+              builder: (context, onTrackSwipeLeft) => ObxO(
+                rx: settings.onTrackSwipeRight,
+                builder: (context, onTrackSwipeRight) => ObxO(
+                  rx: settings.thumbnailTapAction,
+                  builder: (context, thumbnailTapAction) => ObxO(
+                    rx: settings.thumbnailLongPressAction,
+                    builder: (context, thumbnailLongPressAction) => ObxO(
+                      rx: settings.trackListTileHeight,
+                      builder: (context, trackTileHeight) => ObxO(
+                        rx: Indexer.inst.tracksInfoList,
+                        builder: (context, _) => ObxPrefer(
+                          enabled: listenToStatsMap,
+                          rx: Indexer.inst.trackStatsMap,
+                          builder: (context, trackStatsMap) => ObxPrefer(
+                            enabled: queueSupportResuming,
+                            rx: QueueController.latestPlayedForSourceManager.map,
+                            builder: (context, latestPlayedForSource) {
+                              Selectable? currentHighlightedTrack;
+                              final currentHighlightedPlayable = latestPlayedForSource?[queueSource];
+                              if (currentHighlightedPlayable is Selectable) currentHighlightedTrack = currentHighlightedPlayable;
+                              return ObxO(
+                                rx: SelectedTracksController.inst.existingTracksMap,
+                                builder: (context, selectedTracksMap) => ObxPrefer(
+                                  rx: HistoryController.inst.topTracksMapListens,
+                                  enabled: listenToTopHistoryItems,
+                                  builder: (context, _) => ObxO(
+                                    rx: CurrentColor.inst.currentPlayingTrack,
+                                    builder: (context, currentPlayingTrack) => ObxO(
+                                      rx: CurrentColor.inst.currentPlayingIndex,
+                                      builder: (context, currentPlayingIndex) => Obx(
+                                        (context) {
+                                          int? sleepingIndex;
+                                          if (comingFromQueue) {
+                                            final sleepconfig = Player.inst.sleepTimerConfig.valueR;
+                                            if (sleepconfig.enableSleepAfterItems) {
+                                              final repeatMode = settings.player.repeatMode.valueR;
+                                              if (repeatMode == PlayerRepeatMode.all || repeatMode == PlayerRepeatMode.none) {
+                                                sleepingIndex = Player.inst.sleepingItemIndex(sleepconfig.sleepAfterItems, Player.inst.currentIndex.valueR);
+                                              }
+                                            }
+                                          }
 
-            return Padding(
-              padding: const EdgeInsets.only(bottom: Dimensions.tileBottomMargin),
-              child: Material(
-                type: MaterialType.transparency,
-                child: InkWell(
-                  onTap: onTap ??
-                      () async {
-                        if (SelectedTracksController.inst.selectedTracks.isNotEmpty && !isInSelectedTracksPreview) {
-                          _selectTrack();
-                        } else {
-                          if (onPlaying != null) {
-                            onPlaying!();
-                            return;
-                          }
-                          if (queueSource == QueueSource.search) {
-                            ScrollSearchController.inst.unfocusKeyboard();
-                            await Player.inst.playOrPause(
-                              settings.trackPlayMode.value.shouldBeIndex0 ? 0 : index,
-                              settings.trackPlayMode.value.getQueue(track),
-                              queueSource,
-                            );
-                          } else {
-                            await Player.inst.playOrPause(
-                              index,
-                              queueSource.toTracks(null, trackWithDate?.dateAdded.toDaysSince1970()),
-                              queueSource,
-                            );
-                          }
-                        }
-                      },
-                  onLongPress: !selectable || onTap != null
-                      ? null
-                      : () {
-                          if (!isInSelectedTracksPreview) {
-                            ScrollSearchController.inst.unfocusKeyboard();
-                            _selectTrack();
-                          }
-                        },
-                  child: ColoredBox(
-                    color: backgroundColor,
-                    child: SizedBox(
-                      height: Dimensions.inst.trackTileItemExtent,
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(vertical: Dimensions.tileVerticalPadding),
-                        child: Row(
-                          children: [
-                            const SizedBox(width: 12.0),
-                            Stack(
-                              alignment: Alignment.center,
-                              children: [
-                                AnimatedScale(
-                                  duration: const Duration(milliseconds: 400),
-                                  scale: isTrackCurrentlyPlaying ? 0.96 : 1.0,
-                                  curve: Curves.easeInOut,
-                                  child: SizedBox(
-                                    width: thumbnailSize,
-                                    height: thumbnailSize,
-                                    child: NamidaHero(
-                                      tag: '$comingFromQueue${index}_sussydialogs_${track.path}$additionalHero',
-                                      child: ArtworkWidget(
-                                        key: Key("$willSleepAfterThis${trackOrTwd.hashCode}"),
-                                        track: track,
-                                        thumbnailSize: thumbnailSize,
-                                        path: track.pathToImage,
-                                        forceSquared: settings.forceSquaredTrackThumbnail.value,
-                                        useTrackTileCacheHeight: true,
-                                        onTopWidgets: [
-                                          if (displayTrackNumber)
-                                            Positioned(
-                                              bottom: 0,
-                                              right: 0,
-                                              child: NamidaBlurryContainer(
-                                                padding: const EdgeInsets.symmetric(horizontal: 4.0, vertical: 1.0),
-                                                borderRadius: BorderRadius.only(topLeft: Radius.circular(4.0.multipliedRadius)),
-                                                child: Text(
-                                                  (track.trackNo).toString(),
-                                                  style: context.textTheme.displaySmall,
-                                                ),
-                                              ),
-                                            ),
-                                          if (willSleepAfterThis)
-                                            Positioned(
-                                              bottom: 0,
-                                              right: 0,
-                                              child: Container(
-                                                padding: const EdgeInsets.all(2.0),
-                                                decoration: BoxDecoration(
-                                                  color: context.theme.colorScheme.background.withAlpha(160),
-                                                  borderRadius: BorderRadius.circular(12.0.multipliedRadius),
-                                                ),
-                                                child: const Icon(
-                                                  Broken.timer_1,
-                                                  size: 16.0,
-                                                ),
-                                              ),
-                                            )
-                                        ],
+                                          final pageColorScheme = CurrentColor.inst.currentColorScheme;
+                                          final backgroundColorPlaying = comingFromQueue || settings.autoColor.valueR
+                                              ? CurrentColor.inst.miniplayerColor
+                                              : pageColorScheme; // always follow track color
+
+                                          Color? backgroundColorPlayingAlt;
+
+                                          final palette = CurrentColor.inst.miniplayerColorM.palette;
+                                          if (palette.isNotEmpty) {
+                                            backgroundColorPlayingAlt = palette[0].withOpacityExt(0.4);
+                                          }
+
+                                          final properties = TrackTileProperties(
+                                            pageColorScheme: pageColorScheme,
+                                            backgroundColorPlaying: backgroundColorPlaying,
+                                            backgroundColorPlayingAlt: backgroundColorPlayingAlt,
+                                            backgroundColorNotPlaying: backgroundColorNotPlaying,
+                                            selectionColorLayer: selectionColorLayer,
+                                            highlightColorLayer: highlightColorLayer,
+                                            thumbnailSize: thumbnailSize,
+                                            trackTileHeight: trackTileHeight,
+                                            forceSquaredThumbnails: forceSquaredThumbnails,
+                                            sleepingIndex: sleepingIndex,
+                                            displayThirdRow: displayThirdRow,
+                                            displayFavouriteIconInListTile: displayFavouriteIconInListTile,
+                                            comingFromQueue: comingFromQueue,
+                                            configs: configs,
+                                            canHaveDuplicates: canHaveDuplicates,
+                                            currentPlayingTrack: currentPlayingTrack,
+                                            currentPlayingIndex: currentPlayingIndex,
+                                            currentHighlightedTrack: currentHighlightedTrack,
+                                            isTrackSelected: (trOrTwd) => selectedTracksMap[trOrTwd.track] != null,
+                                            allowSwipeLeft: !comingFromQueue && onTrackSwipeLeft != TrackExecuteActions.none,
+                                            allowSwipeRight: !comingFromQueue && onTrackSwipeRight != TrackExecuteActions.none,
+                                            thumbnailTapAction: thumbnailTapAction,
+                                            thumbnailLongPressAction: thumbnailLongPressAction,
+                                          );
+                                          return builder(properties);
+                                        },
                                       ),
                                     ),
                                   ),
                                 ),
-                                if (draggableThumbnail)
-                                  NamidaReordererableListener(
-                                    durationMs: 80,
-                                    isInQueue: queueSource == QueueSource.playerQueue,
-                                    index: index,
-                                    child: Container(
-                                      color: Colors.transparent,
-                                      height: trackTileHeight,
-                                      width: thumbnailSize,
-                                    ),
-                                  ),
-                              ],
-                            ),
-                            const SizedBox(width: 12.0),
-                            Expanded(
-                              child: trackOrTwd.track.toTrackExtOrNull() == null
-                                  ? Text(
-                                      trackOrTwd.track.path,
-                                      style: context.textTheme.displaySmall,
-                                    )
-                                  : Column(
-                                      mainAxisAlignment: MainAxisAlignment.center,
-                                      crossAxisAlignment: CrossAxisAlignment.start,
-                                      children: [
-                                        // check if first row isnt empty
-                                        if (row1Text != '')
-                                          Text(
-                                            row1Text,
-                                            overflow: TextOverflow.ellipsis,
-                                            maxLines: 1,
-                                            style: context.textTheme.displayMedium!.copyWith(
-                                              color: textColor?.withAlpha(170),
-                                            ),
-                                          ),
-
-                                        // check if second row isnt empty
-                                        if (row2Text != '')
-                                          Text(
-                                            row2Text,
-                                            style: context.textTheme.displaySmall?.copyWith(
-                                              fontWeight: FontWeight.w500,
-                                              color: textColor?.withAlpha(140),
-                                            ),
-                                            maxLines: 1,
-                                            overflow: TextOverflow.ellipsis,
-                                          ),
-
-                                        // check if third row isnt empty
-                                        if (thirdLineText == '' && settings.displayThirdRow.value)
-                                          if (row3Text != '')
-                                            Text(
-                                              row3Text,
-                                              style: context.textTheme.displaySmall?.copyWith(
-                                                color: textColor?.withAlpha(130),
-                                              ),
-                                              maxLines: 1,
-                                              overflow: TextOverflow.ellipsis,
-                                            ),
-
-                                        if (thirdLineText != '')
-                                          Text(
-                                            thirdLineText,
-                                            style: context.textTheme.displaySmall?.copyWith(color: textColor?.withAlpha(130)),
-                                            maxLines: 1,
-                                            overflow: TextOverflow.ellipsis,
-                                          ),
-                                      ],
-                                    ),
-                            ),
-                            const SizedBox(width: 6.0),
-                            if (settings.displayFavouriteIconInListTile.value || rightItem1Text != '' || rightItem2Text != '')
-                              Column(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                  if (rightItem1Text != '')
-                                    Text(
-                                      rightItem1Text,
-                                      style: context.textTheme.displaySmall?.copyWith(
-                                        fontWeight: FontWeight.w500,
-                                        color: textColor?.withAlpha(170),
-                                      ),
-                                      overflow: TextOverflow.ellipsis,
-                                    ),
-                                  if (rightItem2Text != '')
-                                    Text(
-                                      rightItem2Text,
-                                      style: context.textTheme.displaySmall?.copyWith(
-                                        fontWeight: FontWeight.w500,
-                                        color: textColor?.withAlpha(170),
-                                      ),
-                                      overflow: TextOverflow.ellipsis,
-                                    ),
-                                  if (settings.displayFavouriteIconInListTile.value)
-                                    NamidaLikeButton(
-                                      track: track,
-                                      size: 22.0,
-                                      color: textColor?.withAlpha(140) ?? context.textTheme.displayMedium?.color?.withAlpha(140),
-                                    ),
-                                ],
-                              ),
-                            if (displayRightDragHandler) ...[
-                              const SizedBox(width: 8.0),
-                              NamidaReordererableListener(
-                                durationMs: 20,
-                                isInQueue: queueSource == QueueSource.playerQueue,
-                                index: index,
-                                child: FittedBox(
-                                  child: Icon(
-                                    Broken.menu_1,
-                                    color: textColor?.withAlpha(160),
-                                  ),
-                                ),
-                              ),
-                            ],
-                            const SizedBox(width: 2.0),
-                            MoreIcon(
-                              padding: 6.0,
-                              iconColor: textColor?.withAlpha(160),
-                              onPressed: _triggerTrackDialog,
-                              onLongPress: _triggerTrackInfoDialog,
-                            ),
-                            if (trailingWidget == null) const SizedBox(width: 4.0),
-                            if (trailingWidget != null) ...[
-                              trailingWidget!,
-                              const SizedBox(width: 10.0),
-                            ],
-                          ],
+                              );
+                            },
+                          ),
                         ),
                       ),
                     ),
                   ),
                 ),
               ),
-            );
-          },
+            ),
+          ),
         ),
+      ),
+    );
+  }
+}
+
+class TrackTilePropertiesConfigs {
+  final QueueSourceBase queueSource;
+
+  /// Disable if you want to have priority to hold & reorder instead of selecting.
+  final bool Function()? selectable;
+  final bool draggableThumbnail;
+  final bool displayRightDragHandler;
+  final bool displayTrackNumber;
+  final bool fallbackToAlbumCover;
+  final bool horizontalGestures;
+  final String? playlistName;
+  final Rx<bool>? reorderableRx;
+
+  /// for ranged selection when the list isn't the current route's, ex: inside dialogs.
+  final List<Selectable>? rangeSelectionTracks;
+
+  const TrackTilePropertiesConfigs({
+    required this.queueSource,
+    this.selectable,
+    this.draggableThumbnail = false,
+    this.displayRightDragHandler = false,
+    this.displayTrackNumber = false,
+    this.fallbackToAlbumCover = false,
+    this.horizontalGestures = true,
+    this.playlistName,
+    this.reorderableRx,
+    this.rangeSelectionTracks,
+  });
+}
+
+class TrackTileProperties {
+  final TrackTilePropertiesConfigs configs;
+  final Color pageColorScheme;
+  final Color backgroundColorPlaying;
+  final Color? backgroundColorPlayingAlt;
+  final Color backgroundColorNotPlaying;
+  final Color selectionColorLayer;
+  final Color? highlightColorLayer;
+
+  final double thumbnailSize;
+  final double trackTileHeight;
+  final bool forceSquaredThumbnails;
+  final int? sleepingIndex;
+  final bool displayThirdRow;
+  final bool displayFavouriteIconInListTile;
+  final bool comingFromQueue;
+  final bool canHaveDuplicates;
+  final Selectable? currentPlayingTrack;
+  final int? currentPlayingIndex;
+  final Selectable? currentHighlightedTrack;
+  final bool Function(Selectable trOrTwd) isTrackSelected;
+
+  final bool allowSwipeLeft;
+  final bool allowSwipeRight;
+  final TrackExecuteActions thumbnailTapAction;
+  final TrackExecuteActions thumbnailLongPressAction;
+
+  const TrackTileProperties({
+    required this.configs,
+    required this.pageColorScheme,
+    required this.backgroundColorPlaying,
+    required this.backgroundColorPlayingAlt,
+    required this.backgroundColorNotPlaying,
+    required this.selectionColorLayer,
+    required this.highlightColorLayer,
+    required this.thumbnailSize,
+    required this.trackTileHeight,
+    required this.forceSquaredThumbnails,
+    required this.sleepingIndex,
+    required this.displayThirdRow,
+    required this.displayFavouriteIconInListTile,
+    required this.comingFromQueue,
+    required this.canHaveDuplicates,
+    required this.currentPlayingTrack,
+    required this.currentPlayingIndex,
+    required this.currentHighlightedTrack,
+    required this.isTrackSelected,
+    required this.allowSwipeLeft,
+    required this.allowSwipeRight,
+    required this.thumbnailTapAction,
+    required this.thumbnailLongPressAction,
+  });
+}
+
+class TrackTile extends StatelessWidget {
+  static const _thumbnailLeftPadding = 12.0;
+
+  final int index;
+  final Selectable trackOrTwd;
+  final List<Playable> tracks;
+  final TrackTileProperties properties;
+  final HomePageItems? homePageItem;
+  final VoidCallback? onTap;
+  final VoidCallback? onPlaying;
+
+  final Color? bgColor;
+  final double cardColorOpacity;
+  final double fadeOpacity;
+  final void Function()? onRightAreaTap;
+  final Widget? trailingWidget;
+  final Widget? topRightWidget;
+  final String? thirdLineText;
+
+  const TrackTile({
+    super.key,
+    required this.properties,
+    this.homePageItem,
+    required this.trackOrTwd,
+    required this.tracks,
+    this.onTap,
+    this.onPlaying,
+    required this.index,
+    this.bgColor,
+    this.cardColorOpacity = 0.9,
+    this.fadeOpacity = 0.0,
+    this.onRightAreaTap,
+    this.trailingWidget,
+    this.topRightWidget,
+    this.thirdLineText,
+  });
+
+  static String obtainHeroTag(TrackWithDate? trackWithDate, Track track, int index, bool isFromPlayerQueue) {
+    final additionalHero = trackWithDate?.dateAdded.toString() ?? '';
+    return '$isFromPlayerQueue${index}_sussydialogs_${track.path}$additionalHero';
+  }
+
+  Track get _tr => trackOrTwd.track;
+  TrackWithDate? get _twd => trackOrTwd.trackWithDate;
+  String get _heroTag => obtainHeroTag(_twd, _tr, index, properties.comingFromQueue);
+
+  void _triggerTrackDialog() => NamidaDialogs.inst.showTrackDialog(
+    _tr,
+    playlistName: properties.configs.playlistName,
+    index: index,
+    trackWithDate: trackOrTwd.trackWithDate,
+    source: properties.configs.queueSource,
+    heroTag: _heroTag,
+  );
+
+  void _triggerTrackInfoDialog() => showTrackInfoDialog(
+    _tr,
+    true,
+    heroTag: _heroTag,
+  );
+
+  void _selectTrack({required bool ranged}) =>
+      SelectedTracksController.inst.selectOrUnselect(
+        trackOrTwd,
+        index,
+        properties.configs.queueSource,
+        properties.configs.playlistName,
+        ranged: ranged,
+        tracksOverride: properties.configs.rangeSelectionTracks,
+      );
+
+  bool _trySelectOnTap() {
+    if (properties.configs.queueSource == QueueSource.selectedTracks) return false;
+
+    bool shouldSelect = false;
+    bool shouldSelectRanged = false;
+    if (isDesktop) {
+      if (HardwareKeyboard.instance.isShiftPressed) {
+        shouldSelect = true;
+        shouldSelectRanged = true;
+      } else if (HardwareKeyboard.instance.isControlPressed) {
+        shouldSelect = true;
+      } else if (SelectedTracksController.inst.selectedTracks.value.isNotEmpty) {
+        shouldSelect = true;
+      }
+    } else {
+      if (SelectedTracksController.inst.selectedTracks.value.isNotEmpty) {
+        shouldSelect = true;
+      }
+    }
+
+    if (shouldSelect) _selectTrack(ranged: shouldSelectRanged);
+    return shouldSelect;
+  }
+
+  void _executeThumbnailAction(TrackExecuteActions action) => action.execute(
+    trackOrTwd,
+    info: SwipeQueueAddTileInfo(
+      queueSource: properties.configs.queueSource,
+      heroTag: _heroTag,
+      queue: tracks,
+      index: index,
+    ),
+  );
+
+  void _onThumbnailTap(TrackExecuteActions action) {
+    if (_trySelectOnTap()) return;
+    _executeThumbnailAction(action);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = context.theme;
+    final textTheme = theme.textTheme;
+    final queueSource = properties.configs.queueSource;
+    final track = _tr;
+    final trackWithDate = _twd;
+    final isInSelectedTracksPreview = queueSource == QueueSource.selectedTracks;
+
+    final willSleepAfterThis = properties.sleepingIndex == index;
+
+    final bool isTrackSelected = properties.isTrackSelected(trackOrTwd);
+    final bool isTrackSame = track == properties.currentPlayingTrack?.track;
+    final bool isRightHistoryList = queueSource == QueueSource.history ? trackWithDate == properties.currentPlayingTrack?.trackWithDate : true;
+    final bool isRightIndex = properties.canHaveDuplicates ? index == properties.currentPlayingIndex : true;
+    final bool isTrackCurrentlyPlaying = isRightIndex && isTrackSame && isRightHistoryList;
+
+    final currentHighlightedTrack = properties.currentHighlightedTrack;
+    final bool isTrackHighlighted = currentHighlightedTrack != null && (trackWithDate == currentHighlightedTrack.trackWithDate || track == currentHighlightedTrack.track);
+
+    final textColor = isTrackCurrentlyPlaying && !isTrackSelected ? Colors.white : null;
+
+    Color backgroundColor;
+    Color? backgroundColorAlt;
+    Border? border;
+    if (bgColor != null) {
+      backgroundColor = bgColor!;
+    } else {
+      if (isTrackCurrentlyPlaying) {
+        backgroundColor = properties.backgroundColorPlaying;
+        backgroundColorAlt = properties.backgroundColorPlayingAlt;
+      } else {
+        backgroundColor = properties.backgroundColorNotPlaying.withOpacityExt(cardColorOpacity);
+      }
+      if (isTrackSelected && queueSource != QueueSource.selectedTracks) {
+        backgroundColor = Color.alphaBlend(
+          properties.selectionColorLayer,
+          backgroundColor,
+        );
+      } else if (!isTrackCurrentlyPlaying && isTrackHighlighted && properties.highlightColorLayer != null) {
+        border = Border(
+          right: BorderSide(
+            width: 3.0,
+            color: properties.pageColorScheme,
+          ),
+        );
+        backgroundColor = Color.alphaBlend(
+          properties.highlightColorLayer!,
+          backgroundColor,
+        );
+      }
+    }
+
+    BoxDecoration decoration;
+    if (settings.gradientTiles.value) {
+      // -- has to be always gradient to animate properly
+      decoration = BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [
+            backgroundColor,
+            backgroundColorAlt ?? backgroundColor,
+          ],
+          stops: [0.6, 1.0],
+        ),
+        border: border,
+      );
+    } else {
+      decoration = BoxDecoration(
+        color: backgroundColor,
+        border: border,
+      );
+    }
+
+    Widget threeLinesColumn;
+    if (trackOrTwd.track.toTrackExtOrNull() == null) {
+      threeLinesColumn = Text(
+        trackOrTwd.track.path,
+        style: textTheme.displaySmall?.copyWith(
+          color: textColor?.withAlpha(170),
+        ),
+      );
+    } else {
+      final thirdLineText = this.thirdLineText;
+      final row1Text = TrackTileManager._joinTrackItems(_TrackTileRowOrder.first, track);
+      final row2Text = TrackTileManager._joinTrackItems(_TrackTileRowOrder.second, track);
+      final row3Text = thirdLineText != null && thirdLineText.isNotEmpty
+          ? thirdLineText
+          : properties.displayThirdRow
+          ? TrackTileManager._joinTrackItems(_TrackTileRowOrder.third, track)
+          : '';
+
+      threeLinesColumn = Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (row1Text.isNotEmpty)
+            Text(
+              row1Text,
+              overflow: TextOverflow.ellipsis,
+              maxLines: 1,
+              style: textTheme.displayMedium!.copyWith(
+                color: textColor?.withAlpha(170),
+              ),
+            ),
+
+          // -- add small spacing if there is no third row
+          if (row3Text.isEmpty) const SizedBox(height: 1.0),
+
+          if (row2Text.isNotEmpty)
+            Text(
+              row2Text,
+              style: textTheme.displaySmall?.copyWith(
+                fontWeight: FontWeight.w500,
+                color: textColor?.withAlpha(140),
+              ),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+
+          if (row3Text.isNotEmpty)
+            Text(
+              row3Text,
+              style: textTheme.displaySmall?.copyWith(
+                color: textColor?.withAlpha(130),
+              ),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+        ],
+      );
+    }
+    final rightItem1Text = TrackTileManager._joinTrackItems(_TrackTileRowOrder.right1, track);
+    final rightItem2Text = TrackTileManager._joinTrackItems(_TrackTileRowOrder.right2, track);
+
+    final heroTag = this._heroTag;
+
+    final topRightWidget = this.topRightWidget;
+    final videoIcon = track is Video
+        ? Icon(
+            Broken.video,
+            size: 12.0,
+            color: textColor?.withAlpha(100) ?? textTheme.displaySmall?.color?.withAlpha(100),
+          )
+        : null;
+
+    late final iconColor = !isTrackCurrentlyPlaying
+        ? Color.alphaBlend(
+            properties.pageColorScheme.withOpacityExt(0.4),
+            (textColor ?? textTheme.displayMedium?.color?.withAlpha(140) ?? Colors.transparent).withOpacityExt(0.4),
+          )
+        : textColor?.withAlpha(140) ?? textTheme.displayMedium?.color?.withAlpha(140);
+
+    Widget? draggingTileWidget;
+    if (properties.configs.draggableThumbnail) {
+      final listener = NamidaReordererableListener(
+        durationMs: 80,
+        index: index,
+        child: const ColoredBox(color: Colors.transparent),
+      );
+      final reorderableRx = properties.configs.reorderableRx;
+      draggingTileWidget = Positioned(
+        left: 0.0,
+        top: 0.0,
+        bottom: 0.0,
+        width: _thumbnailLeftPadding + properties.thumbnailSize,
+        child: reorderableRx != null
+            ? ObxO(
+                rx: reorderableRx,
+                builder: (context, reorderable) => reorderable ? listener : const SizedBox(),
+              )
+            : listener,
+      );
+    }
+
+    Widget thumbnail = AnimatedScale(
+      duration: const Duration(milliseconds: 400),
+      scale: isTrackCurrentlyPlaying ? 0.96 : 1.0,
+      curve: Curves.easeInOut,
+      child: SizedBox(
+        width: properties.thumbnailSize,
+        height: properties.thumbnailSize,
+        child: NamidaHero(
+          tag: heroTag,
+          child: ArtworkWidget(
+            key: Key("$willSleepAfterThis${trackOrTwd.hashCode}"),
+            track: track,
+            thumbnailSize: properties.thumbnailSize,
+            path: track.pathToImage,
+            forceSquared: properties.forceSquaredThumbnails,
+            fallbackToAlbumCover: properties.configs.fallbackToAlbumCover,
+            icon: track is Video ? Broken.video : Broken.musicnote,
+            iconSize: (properties.trackTileHeight.withMaximum(properties.thumbnailSize)) * 0.5,
+            onTopWidgets: [
+              if (track.isNetwork)
+                Positioned.fill(
+                  child: ServerCacheTrackIndicator(
+                    track: track,
+                  ),
+                ),
+              if (properties.configs.displayTrackNumber)
+                Positioned(
+                  bottom: 0,
+                  right: 0,
+                  child: NamidaBlurryContainer(
+                    padding: const EdgeInsets.symmetric(horizontal: 4.0, vertical: 1.0),
+                    borderRadius: BorderRadius.only(topLeft: Radius.circular(4.0.multipliedRadius)),
+                    child: Text(
+                      track.trackNo.toString(),
+                      style: textTheme.displaySmall,
+                    ),
+                  ),
+                ),
+              if (willSleepAfterThis)
+                Positioned(
+                  bottom: 0,
+                  right: 0,
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      color: theme.colorScheme.surface.withAlpha(160),
+                      borderRadius: BorderRadius.circular(12.0.multipliedRadius),
+                    ),
+                    child: Padding(
+                      padding: const EdgeInsets.all(3.0),
+                      child: const Icon(
+                        Broken.timer_1,
+                        size: 15.0,
+                      ),
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+    if (onTap == null) {
+      final thumbnailTapAction = properties.thumbnailTapAction;
+      final thumbnailLongPressAction = properties.thumbnailLongPressAction;
+      final hasThumbnailTap = thumbnailTapAction != TrackExecuteActions.none;
+      final hasThumbnailLongPress = thumbnailLongPressAction != TrackExecuteActions.none;
+      if (hasThumbnailTap || hasThumbnailLongPress) {
+        thumbnail = GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: hasThumbnailTap ? () => _onThumbnailTap(thumbnailTapAction) : null,
+          onLongPress: hasThumbnailLongPress ? () => _executeThumbnailAction(thumbnailLongPressAction) : null,
+          child: thumbnail,
+        );
+      }
+    }
+
+    Widget finalChild = Stack(
+      alignment: Alignment.centerRight,
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(bottom: Dimensions.tileBottomMargin),
+          child: Material(
+            type: MaterialType.transparency,
+            child: InkWell(
+              onTap:
+                  onTap ??
+                  () async {
+                    if (_trySelectOnTap()) return;
+
+                    if (onPlaying != null) {
+                      onPlaying!();
+                      return;
+                    }
+                    if (queueSource.s == QueueSourceEnum.search) {
+                      ScrollSearchController.inst.unfocusKeyboard();
+                      final playMode = settings.trackPlayMode.value;
+                      await Player.inst.playOrPause(
+                        playMode.shouldBeIndex0 ? 0 : index,
+                        playMode.generateQueue(track),
+                        queueSource,
+                        homePageItem: homePageItem,
+                        gentlePlay: playMode.gentlePlay,
+                        maximumItems: null,
+                      );
+                    } else {
+                      final queueSourceNormalized = queueSource.s == QueueSourceEnum.allTracks ? QueueSource.allTracksAll : queueSource;
+                      await Player.inst.playOrPause(
+                        index,
+                        tracks,
+                        queueSourceNormalized,
+                        homePageItem: homePageItem,
+                        maximumItems: null,
+                      );
+                    }
+                  },
+              onLongPress: onTap != null
+                  ? null
+                  : () {
+                      var selectable = properties.configs.selectable;
+                      if (selectable != null && selectable() == false) return;
+                      if (isInSelectedTracksPreview) return;
+
+                      ScrollSearchController.inst.unfocusKeyboard();
+                      _selectTrack(ranged: true);
+                    },
+              onSecondaryTap: _triggerTrackDialog,
+              child: AnimatedDecoration(
+                duration: const Duration(milliseconds: 300),
+                decoration: decoration,
+                child: SizedBox(
+                  height: Dimensions.inst.trackTileItemExtent,
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(vertical: Dimensions.tileVerticalPadding),
+                    child: Row(
+                      children: [
+                        const SizedBox(width: _thumbnailLeftPadding),
+                        Stack(
+                          alignment: Alignment.center,
+                          children: [
+                            thumbnail,
+                          ],
+                        ),
+                        const SizedBox(width: 12.0),
+                        Expanded(
+                          child: threeLinesColumn,
+                        ),
+                        const SizedBox(width: 6.0),
+                        if (properties.displayFavouriteIconInListTile || rightItem1Text.isNotEmpty || rightItem2Text.isNotEmpty)
+                          Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              if (rightItem1Text.isNotEmpty)
+                                Text(
+                                  rightItem1Text,
+                                  style: textTheme.displaySmall?.copyWith(
+                                    fontWeight: FontWeight.w500,
+                                    color: textColor?.withAlpha(170),
+                                  ),
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              if (rightItem2Text.isNotEmpty)
+                                Text(
+                                  rightItem2Text,
+                                  style: textTheme.displaySmall?.copyWith(
+                                    fontWeight: FontWeight.w500,
+                                    color: textColor?.withAlpha(170),
+                                  ),
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              if (properties.displayFavouriteIconInListTile)
+                                NamidaLocalLikeButton(
+                                  track: track,
+                                  size: 22.0,
+                                  color: iconColor,
+                                ),
+                            ],
+                          ),
+                        if (properties.configs.displayRightDragHandler) ...[
+                          const SizedBox(width: 8.0),
+                          NamidaReordererableListener(
+                            durationMs: 20,
+                            index: index,
+                            child: FittedBox(
+                              child: Icon(
+                                Broken.menu_1,
+                                color: textColor?.withAlpha(160),
+                              ),
+                            ),
+                          ),
+                        ],
+                        const SizedBox(width: 2.0),
+                        MoreIcon(
+                          padding: 6.0,
+                          iconColor: textColor?.withAlpha(160),
+                          onPressed: _triggerTrackDialog,
+                          onLongPress: _triggerTrackInfoDialog,
+                        ),
+                        if (trailingWidget == null)
+                          const SizedBox(width: 4.0)
+                        else ...[
+                          trailingWidget!,
+                          const SizedBox(width: 10.0),
+                        ],
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+        ?draggingTileWidget,
         if (fadeOpacity > 0)
           Positioned.fill(
             child: IgnorePointer(
               child: ColoredBox(
-                color: context.theme.scaffoldBackgroundColor.withOpacity(fadeOpacity),
+                color: theme.scaffoldBackgroundColor.withOpacityExt(fadeOpacity),
               ),
             ),
           ),
         GestureDetector(
           onTap: onRightAreaTap ?? _triggerTrackDialog,
           onLongPress: _triggerTrackInfoDialog,
+          onSecondaryTap: _triggerTrackInfoDialog,
           child: Container(
             width: 36.0,
             color: Colors.transparent,
           ),
         ),
+        if (videoIcon != null && topRightWidget != null)
+          Positioned(
+            top: 0.0,
+            right: 0.0,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                videoIcon,
+                const SizedBox(width: 2.0),
+                topRightWidget,
+              ],
+            ),
+          )
+        else if (videoIcon != null)
+          Positioned(
+            top: 6.0,
+            right: 6.0,
+            child: videoIcon,
+          )
+        else if (topRightWidget != null)
+          Positioned(
+            top: 0.0,
+            right: 0.0,
+            child: topRightWidget,
+          ),
       ],
     );
+
+    if (properties.configs.horizontalGestures && (properties.allowSwipeLeft || properties.allowSwipeRight)) {
+      finalChild = SwipeQueueAddTile(
+        item: trackOrTwd,
+        infoCallback: () => SwipeQueueAddTileInfo(
+          queueSource: queueSource,
+          heroTag: heroTag,
+          queue: tracks,
+          index: index,
+        ),
+        dismissibleKey: heroTag,
+        allowSwipeLeft: properties.allowSwipeLeft,
+        allowSwipeRight: properties.allowSwipeRight,
+        disabledRx: properties.configs.reorderableRx,
+        child: finalChild,
+      );
+    }
+    return finalChild;
   }
 }
 
+enum _TrackTileRowOrder {
+  first,
+  second,
+  third,
+
+  right1,
+  right2,
+}
+
 class TrackTileManager {
-  static final _infoMap = <Track, Map<TrackTilePosition, String>>{};
+  const TrackTileManager._();
 
-  static void onTrackItemPropChange() => _infoMap.clear();
-
-  static String joinTrackItems(TrackTilePosition? p1, TrackTilePosition? p2, TrackTilePosition? p3, Track track) {
-    final i1 = getChoosenTrackTileItem(p1, track);
-    final i2 = getChoosenTrackTileItem(p2, track);
-    final i3 = settings.displayThirdItemInEachRow.value ? getChoosenTrackTileItem(p3, track) : '';
-    return [
-      if (i1 != '') i1,
-      if (i2 != '') i2,
-      if (i3 != '') i3,
-    ].join(' ${settings.trackTileSeparator} ');
+  static void initialize() {
+    settings.trackItem.addListener(onTrackItemPropChange);
+    settings.displayThirdItemInEachRow.addListener(onTrackItemPropChange);
+    settings.trackTileSeparator.addListener(onTrackItemPropChange);
+    settings.trackArtistsDisplaySeparator.addListener(onTrackItemPropChange);
+    settings.dateTimeFormat.addListener(onTrackItemPropChange);
+    settings.hourFormat12.addListener(onTrackItemPropChange);
   }
 
-  static String getChoosenTrackTileItem(TrackTilePosition? itemPosition, Track trackPre) {
-    if (itemPosition == null) return '';
-    final inf = _infoMap[trackPre]?[itemPosition];
-    if (_infoMap[trackPre]?[itemPosition] != null) return inf!;
+  static const _rowOrderToPosition = <_TrackTileRowOrder, List<TrackTilePosition>>{
+    _TrackTileRowOrder.first: [TrackTilePosition.row1Item1, TrackTilePosition.row1Item2, TrackTilePosition.row1Item3],
+    _TrackTileRowOrder.second: [TrackTilePosition.row2Item1, TrackTilePosition.row2Item2, TrackTilePosition.row2Item3],
+    _TrackTileRowOrder.third: [TrackTilePosition.row3Item1, TrackTilePosition.row3Item2, TrackTilePosition.row3Item3],
+    _TrackTileRowOrder.right1: [TrackTilePosition.rightItem1],
+    _TrackTileRowOrder.right2: [TrackTilePosition.rightItem2],
+  };
+  static const _rowOrderToPositionWithoutThird = <_TrackTileRowOrder, List<TrackTilePosition>>{
+    _TrackTileRowOrder.first: [TrackTilePosition.row1Item1, TrackTilePosition.row1Item2],
+    _TrackTileRowOrder.second: [TrackTilePosition.row2Item1, TrackTilePosition.row2Item2],
+    _TrackTileRowOrder.third: [TrackTilePosition.row3Item1, TrackTilePosition.row3Item2],
+    _TrackTileRowOrder.right1: [TrackTilePosition.rightItem1],
+    _TrackTileRowOrder.right2: [TrackTilePosition.rightItem2],
+  };
 
-    final trackItem = settings.trackItem[itemPosition] ?? TrackTileItem.none;
+  static final _infoFullMap = <Track, Map<_TrackTileRowOrder, String>?>{};
 
-    final val = _getTrackItemValue(trackItem, trackPre);
-
-    _infoMap[trackPre] ??= {};
-    _infoMap[trackPre]![itemPosition] = val;
-
-    return val;
+  static void onTrackItemPropChange() {
+    _infoFullMap.clear();
+    _separator = _buildSeparator();
   }
 
-  static String _getTrackItemValue(TrackTileItem trackItem, Track trackPre) {
-    final track = trackPre.toTrackExt();
-    final finalDate = track.dateModified.dateFormatted;
-    final finalClock = track.dateModified.clockFormatted;
-    switch (trackItem) {
-      case TrackTileItem.title:
-        return track.title.overflow;
-      case TrackTileItem.artists:
-        return track.originalArtist.overflow;
-      case TrackTileItem.album:
-        return track.album.overflow;
-      case TrackTileItem.albumArtist:
-        return track.albumArtist.overflow;
-      case TrackTileItem.genres:
-        return track.genresList.take(4).join(', ').overflow;
-      case TrackTileItem.duration:
-        return track.duration.secondsLabel;
-      case TrackTileItem.year:
-        return track.year.yearFormatted;
-      case TrackTileItem.trackNumber:
-        return track.trackNo.toString();
-      case TrackTileItem.discNumber:
-        return track.discNo.toString();
-      case TrackTileItem.fileNameWOExt:
-        return trackPre.filenameWOExt.overflow;
-      case TrackTileItem.extension:
-        return trackPre.extension;
-      case TrackTileItem.fileName:
-        return trackPre.filename.overflow;
-      case TrackTileItem.folder:
-        return trackPre.folderName.overflow;
-      case TrackTileItem.path:
-        return track.path.formatPath();
-      case TrackTileItem.channels:
-        return track.channels.channelToLabel ?? '';
-      case TrackTileItem.comment:
-        return track.comment.overflow;
-      case TrackTileItem.composer:
-        return track.composer.overflow;
-      case TrackTileItem.dateAdded:
-        return track.dateAdded.dateFormatted;
-      case TrackTileItem.format:
-        return track.format;
-      case TrackTileItem.sampleRate:
-        return '${track.sampleRate}Hz';
-      case TrackTileItem.size:
-        return track.size.fileSizeFormatted;
-      case TrackTileItem.bitrate:
-        return "${(track.bitrate)} kps";
-      case TrackTileItem.dateModified:
-        return '$finalDate, $finalClock';
-      case TrackTileItem.dateModifiedClock:
-        return finalClock;
-      case TrackTileItem.dateModifiedDate:
-        return finalDate;
-      // -- stats
-      case TrackTileItem.rating:
-        return "${track.stats.rating}%";
-      case TrackTileItem.moods:
-        return track.stats.moods.join(', ');
-      case TrackTileItem.tags:
-        return track.stats.tags.join(', ');
-      default:
-        return '';
+  static void rebuildTrackInfo(Track track) {
+    _infoFullMap[track] = null;
+  }
+
+  static String _separator = _buildSeparator();
+  static String _buildSeparator() => ' ${settings.trackTileSeparator.value} ';
+  static final _buffer = StringBuffer(); // clearing and reusing is more performant
+
+  static String _joinTrackItems(
+    _TrackTileRowOrder rowOrder,
+    Track track,
+  ) {
+    final row = _infoFullMap[track]?[rowOrder];
+    if (row != null) return row;
+
+    final positions = settings.displayThirdItemInEachRow.value ? _rowOrderToPosition[rowOrder] : _rowOrderToPositionWithoutThird[rowOrder];
+    final newRowDetails = _joinTrackItemsInternal(positions!, track);
+    final newRow = newRowDetails.text;
+
+    if (newRowDetails.shouldNotCache) return newRow;
+
+    final innerMap = _infoFullMap[track] ??= {};
+    innerMap[rowOrder] = newRow;
+
+    return newRow;
+  }
+
+  static ({String text, bool shouldNotCache}) _joinTrackItemsInternal(List<TrackTilePosition> positions, Track track) {
+    _buffer.clear();
+
+    bool needsSeparator = false;
+    bool shouldNotCache = false;
+    final trExt = track.toTrackExt();
+
+    for (final itemPosition in positions) {
+      final trackItem = settings.trackItem.value[itemPosition];
+      if (trackItem == TrackTileItem.latestListenDate || trackItem == TrackTileItem.listenCount) shouldNotCache = true;
+
+      var info = _buildChoosenTrackTileItem(trackItem, trExt, track);
+
+      if (info.isNotEmpty) {
+        if (needsSeparator) _buffer.write(_separator);
+        _buffer.write(info);
+        needsSeparator = true;
+      }
     }
+
+    return (text: _buffer.toString(), shouldNotCache: shouldNotCache);
   }
+
+  static String _buildChoosenTrackTileItem(TrackTileItem? trackItem, TrackExtended trExt, Track track) {
+    if (trackItem == null || trackItem == TrackTileItem.none) return '';
+
+    final fn = _lookup[trackItem];
+    if (fn != null) return fn(trExt, track);
+
+    return '';
+  }
+
+  static final _lookup = <TrackTileItem, String Function(TrackExtended track, Track rawTrack)>{
+    TrackTileItem.title: (track, _) => track.title,
+    TrackTileItem.artists: (track, _) => track.displayArtist(),
+    TrackTileItem.album: (track, _) => track.originalAlbum,
+    TrackTileItem.albumArtist: (track, _) => track.albumArtist,
+    TrackTileItem.genres: (track, _) => track.originalGenre,
+    TrackTileItem.styles: (track, _) => track.originalStyle,
+    TrackTileItem.languages: (track, _) => track.languagesList.join(', '),
+    TrackTileItem.duration: (track, _) => track.durationMS.milliSecondsLabel,
+    TrackTileItem.year: (track, _) => track.year.yearFormatted,
+    TrackTileItem.trackNumber: (track, _) => track.trackNo.toString(),
+    TrackTileItem.discNumber: (track, _) => track.discNo.toString(),
+    TrackTileItem.fileNameWOExt: (track, _) => track.filenameWOExt,
+    TrackTileItem.extension: (track, _) => track.extension,
+    TrackTileItem.fileName: (track, _) => track.filename,
+    TrackTileItem.folder: (track, _) => track.folderName,
+    TrackTileItem.path: (track, _) => track.path.formatPath(),
+    TrackTileItem.channels: (track, _) => track.channels.channelToLabel,
+    TrackTileItem.comment: (track, _) => track.comment,
+    TrackTileItem.composer: (track, _) => track.composer,
+    TrackTileItem.dateAdded: (track, _) => track.dateAdded.dateFormatted,
+    TrackTileItem.format: (track, _) => track.format.toUpperCase(),
+    TrackTileItem.sampleRate: (track, _) => '${track.sampleRate}Hz',
+    TrackTileItem.bitDepth: (track, _) => '${track.bits} bit',
+    TrackTileItem.lossless: (track, _) => track.audioQualityText(),
+    TrackTileItem.bpm: (track, _) => '${track.bpm ?? 0} BPM',
+    TrackTileItem.size: (track, _) => track.size.fileSizeFormatted,
+    TrackTileItem.bitrate: (track, _) => "${(track.bitrate)} kb/s",
+    TrackTileItem.dateModified: (track, _) {
+      final finalDate = track.dateModified.dateFormatted;
+      final finalClock = track.dateModified.clockFormatted;
+      return '$finalDate, $finalClock';
+    },
+    TrackTileItem.dateModifiedClock: (track, _) {
+      final finalClock = track.dateModified.clockFormatted;
+      return finalClock;
+    },
+    TrackTileItem.dateModifiedDate: (track, _) {
+      final finalDate = track.dateModified.dateFormatted;
+      return finalDate;
+    },
+    // -- stats
+    TrackTileItem.rating: (track, _) => "${track.effectiveRating}%",
+    TrackTileItem.moods: (track, _) => track.effectiveMoods.join(', '),
+    TrackTileItem.tags: (track, _) => track.effectiveTags.join(', '),
+    TrackTileItem.listenCount: (_, rawTrack) => HistoryController.inst.topTracksMapListens.value[rawTrack]?.length.formatDecimal() ?? '0',
+    TrackTileItem.latestListenDate: (_, rawTrack) {
+      final date = HistoryController.inst.topTracksMapListens.value[rawTrack]?.lastOrNull;
+      if (date == null) return '';
+      return TimeAgoController.dateFromNow(date.milliSecondsSinceEpoch);
+    },
+    TrackTileItem.firstListenDate: (track, rawTrack) {
+      final firstListenDateMS = HistoryController.inst.topTracksMapListens.value[rawTrack]?.firstOrNull;
+      if (firstListenDateMS == null) return '';
+      if (isKuru) {
+        final releaseDate = track.yearAsDateTime();
+        if (releaseDate != null) {
+          final firstListenDate = DateTime.fromMillisecondsSinceEpoch(firstListenDateMS);
+          if (firstListenDate.day != releaseDate.day) {
+            final diffDays = firstListenDate.difference(releaseDate).inDays.abs();
+            if (diffDays == 1) {
+              return "${firstListenDateMS.dateFormatted}?";
+            } else if (diffDays > 1 && diffDays <= 8) {
+              return "${firstListenDateMS.dateFormatted}+$diffDays?";
+            }
+          }
+        }
+      }
+      return firstListenDateMS.dateFormatted;
+    },
+  };
 }

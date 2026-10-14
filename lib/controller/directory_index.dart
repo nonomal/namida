@@ -1,0 +1,482 @@
+import 'dart:async';
+import 'dart:io';
+
+import 'package:flutter/material.dart';
+
+import 'package:namida/class/file_parts.dart';
+import 'package:namida/controller/music_web_server/music_web_server_base.dart';
+import 'package:namida/core/extensions.dart';
+import 'package:namida/core/icon_fonts/broken_icons.dart';
+import 'package:namida/core/translations/language.dart';
+
+final class DirectoryIndexLocal extends DirectoryIndex {
+  const DirectoryIndexLocal(
+    String path,
+  ) : super(DirectoryIndexType.local, source: path, username: null);
+
+  @override
+  bool existsSync() {
+    return Directory(source).existsSync();
+  }
+
+  @override
+  Future<bool> exists() {
+    return Directory(source).exists();
+  }
+
+  @override
+  bool hasNoMedia() => FileParts.join(source, ".nomedia").existsSync();
+
+  @override
+  List<FileSystemEntity> listSyncSafe({bool recursive = false, bool followLinks = true}) {
+    return Directory(source).listSyncSafe(recursive: recursive, followLinks: followLinks);
+  }
+
+  @override
+  Stream<FileSystemEntity>? list({bool recursive = false, bool followLinks = true}) {
+    return Directory(source).list(recursive: recursive, followLinks: followLinks);
+  }
+
+  @override
+  String toSourceInfo() {
+    return source;
+  }
+}
+
+final class DirectoryIndexServer extends DirectoryIndex {
+  const DirectoryIndexServer.raw(
+    String url,
+    super.type,
+    String username,
+  ) : super(source: url, username: username);
+
+  factory DirectoryIndexServer.fromHost(
+    String host,
+    String? share,
+    String? subdir,
+    DirectoryIndexType type,
+    String username,
+    String? port,
+  ) {
+    final uri = Uri(
+      scheme: 'http',
+      host: host,
+      queryParameters: {
+        '_share': ?share,
+        '_subdir': ?subdir,
+        if (port != null && port.isNotEmpty) '_p': port,
+      },
+    );
+
+    return DirectoryIndexServer.raw(uri.toString(), type, username);
+  }
+
+  factory DirectoryIndexServer.withLibraryId(
+    String url,
+    String? libraryId,
+    DirectoryIndexType type,
+    String username,
+  ) {
+    final uriPre = Uri.parse(url);
+    final uriNew = uriPre.replace(
+      queryParameters: {
+        ...uriPre.queryParameters,
+        if (libraryId != null && libraryId.isNotEmpty) '_libraryId': libraryId,
+      },
+    );
+
+    String uriCleanText = uriNew.toString();
+    if (uriCleanText.endsWith('?')) uriCleanText = uriCleanText.substring(0, uriCleanText.length - 1);
+    return DirectoryIndexServer.raw(uriCleanText, type, username);
+  }
+
+  /// android document tree, the folder itself is read by the provider app that owns [treeUri].
+  factory DirectoryIndexServer.saf(String treeUri) {
+    final uri = Uri(
+      scheme: 'http',
+      host: 'saf',
+      queryParameters: {'_tree': treeUri},
+    );
+    return DirectoryIndexServer.raw(uri.toString(), DirectoryIndexType.saf, '');
+  }
+
+  String? safTreeUri() => Uri.parse(source).queryParameters['_tree'];
+
+  factory DirectoryIndexServer.parseFromEncodedUrlPath(String path, {Uri? uri, void Function(String? id)? parseIdCallback}) {
+    uri ??= Uri.parse(path);
+    final username = uri.queryParameters['namida_u'];
+    final type = DirectoryIndexType.values.getEnum(uri.queryParameters['namida_t']);
+    // -- only remove specific params. there can be other useful like share and port, etc.
+    final cleanParams = Map<String, String>.from(uri.queryParameters)
+      ..remove('namida_u')
+      ..remove('namida_t')
+      ..remove('d');
+    final uriClean = uri.replace(queryParameters: cleanParams);
+
+    String uriCleanText = uriClean.toString();
+    if (uriCleanText.endsWith('?')) uriCleanText = uriCleanText.substring(0, uriCleanText.length - 1);
+
+    if (parseIdCallback != null) {
+      final id = uri.queryParameters['d'];
+      parseIdCallback(id);
+    }
+
+    return DirectoryIndexServer.raw(uriCleanText, type ?? DirectoryIndexType.unknown, username ?? '');
+  }
+
+  static String? parseWithoutLibraryIdAndCleanTry(String url) {
+    try {
+      return parseWithoutLibraryIdAndClean(url);
+    } catch (_) {}
+    return null;
+  }
+
+  static String parseWithoutLibraryIdAndClean(String url) {
+    final uriPre = Uri.parse(url);
+    final cleanParams = Map<String, String>.from(uriPre.queryParameters)..remove('_libraryId');
+    final uriClean = uriPre.replace(queryParameters: cleanParams);
+
+    String uriCleanText = uriClean.toString();
+    if (uriCleanText.endsWith('?')) uriCleanText = uriCleanText.substring(0, uriCleanText.length - 1);
+
+    return uriCleanText;
+  }
+
+  @override
+  bool existsSync() => true;
+
+  @override
+  Future<bool> exists() async => true;
+
+  @override
+  bool hasNoMedia() => false;
+
+  @override
+  List<FileSystemEntity> listSyncSafe({bool recursive = false, bool followLinks = true}) => []; // the files would be treated as physical, so no
+
+  @override
+  Stream<FileSystemEntity>? list({bool recursive = false, bool followLinks = true}) {
+    return null;
+  }
+
+  @override
+  String toSourceInfo() {
+    if (type == DirectoryIndexType.saf) {
+      final treeUri = safTreeUri();
+      if (treeUri != null) return _safSourceInfo(treeUri);
+    }
+    if (type.check(.isURLHost)) {
+      final uri = Uri.parse(source);
+      final port = uri.queryParameters['_p'];
+
+      final newParams = {
+        ...uri.queryParameters,
+      };
+      newParams.remove('_p');
+
+      final sourceInfo = [
+        [
+          uri.host,
+          if (port != null && port.isNotEmpty) port,
+        ].join(':'),
+        ...uri.pathSegments,
+        ...newParams.values, // share and subdir
+      ].where((s) => s.isNotEmpty).join('/');
+      return sourceInfo;
+    }
+    return source;
+  }
+
+  String toTypeAndUserInfo() {
+    return [
+      type.toText(),
+      username,
+    ].join(' - ');
+  }
+
+  /// `content://com.app.documents/tree/root%3AMusic` => `com.app.documents/root:Music`
+  static String _safSourceInfo(String treeUri) {
+    final uri = Uri.parse(treeUri);
+    final treeDocId = uri.pathSegments.length > 1 ? uri.pathSegments[1] : '';
+    return [uri.host, treeDocId].where((s) => s.isNotEmpty).join('/');
+  }
+}
+
+sealed class DirectoryIndex {
+  String get sourceRaw => source;
+
+  @protected
+  final String source;
+  final DirectoryIndexType type;
+  final String? username;
+
+  const DirectoryIndex(
+    this.type, {
+    required this.source,
+    required this.username,
+  });
+
+  String toSourceInfo();
+
+  bool get isServer => this is DirectoryIndexServer;
+
+  factory DirectoryIndex.guess(String source, DirectoryIndexType? type) {
+    if (source.startsWith('http')) {
+      return DirectoryIndexServer.raw(source, type ?? DirectoryIndexType.unknown, '');
+    }
+    return DirectoryIndexLocal(source);
+  }
+
+  bool existsSync();
+  Future<bool> exists();
+  bool hasNoMedia();
+  List<FileSystemEntity> listSyncSafe({bool recursive = false, bool followLinks = true});
+  Stream<FileSystemEntity>? list({bool recursive = false, bool followLinks = true});
+
+  MusicWebServer? toWebServer() => MusicWebServer.getServerForDir(this);
+
+  String toDbKey() {
+    switch (this) {
+      case DirectoryIndexLocal():
+        return source;
+      case DirectoryIndexServer():
+        final uri = Uri.parse(source);
+        final params = {
+          ...uri.queryParameters,
+          'namida_t': type.name,
+          'namida_u': username,
+        };
+        params.remove('d');
+        final newUri = uri.replace(
+          queryParameters: params,
+        );
+        return newUri.toString();
+    }
+  }
+
+  factory DirectoryIndex.fromMap(dynamic value) {
+    String source;
+    if (value is Map) {
+      final type = DirectoryIndexType.values.getEnum(value['type'] as String?);
+      source = value['source'] as String;
+      final username = value['u'] as String? ?? '';
+      if (type != null && type != DirectoryIndexType.local) return DirectoryIndexServer.raw(source, type, username);
+    } else if (value is String) {
+      // -- backward compatibility
+      source = value;
+    } else {
+      source = '';
+    }
+    return DirectoryIndexLocal(source);
+  }
+
+  @override
+  String toString() => source;
+
+  Map<String, dynamic> toMap() {
+    return {
+      'source': source,
+      if (type != DirectoryIndexType.local) 'type': type.name,
+      if (username?.isNotEmpty == true) 'u': username,
+    };
+  }
+
+  @override
+  bool operator ==(Object other) {
+    if (identical(this, other)) return true;
+    if (other is! DirectoryIndex) return false;
+    return source == other.source && type == other.type && username == other.username;
+  }
+
+  @override
+  int get hashCode => Object.hash(source, type, username);
+}
+
+enum DirectoryIndexTypeTag {
+  server,
+  legacyAuthOnly,
+  legacyAuthEncode,
+  isURLHost,
+  supportsShare,
+  supportsSubdir,
+  supportsPort,
+  supportsLibraryId,
+  isFileBased,
+  downloadsWholeFiles,
+  reportsPlayback,
+  reportsListens,
+}
+
+enum DirectoryIndexType {
+  local({}),
+  subsonic({
+    .server,
+    .legacyAuthEncode,
+    .reportsPlayback,
+    .reportsListens,
+  }),
+  jellyfin({
+    .server,
+    .legacyAuthOnly,
+    .supportsLibraryId,
+    .reportsPlayback,
+  }),
+  webdav({
+    .server,
+    .legacyAuthOnly,
+    .isFileBased,
+  }),
+  smb({
+    .server,
+    .legacyAuthOnly,
+    .isURLHost,
+    .supportsShare,
+    .supportsSubdir,
+    .supportsPort,
+    .isFileBased,
+  }),
+  ftp({
+    .server,
+    .legacyAuthOnly,
+    .isURLHost,
+    .supportsSubdir,
+    .supportsPort,
+    .isFileBased,
+    .downloadsWholeFiles,
+  }),
+  sftp({
+    .server,
+    .legacyAuthOnly,
+    .isURLHost,
+    .supportsSubdir,
+    .supportsPort,
+    .isFileBased,
+  }),
+  saf({
+    .server,
+    .isFileBased,
+  }),
+  unknown({}),
+  ;
+
+  final Set<DirectoryIndexTypeTag> tags;
+  const DirectoryIndexType(this.tags);
+
+  bool check(DirectoryIndexTypeTag tag) {
+    return tags.contains(tag);
+  }
+
+  bool checkAny(List<DirectoryIndexTypeTag> tags) {
+    return tags.any((t) => this.tags.contains(t));
+  }
+
+  String toText() {
+    return switch (this) {
+      DirectoryIndexType.local => lang.local,
+      DirectoryIndexType.subsonic => '(Open) Subsonic',
+      DirectoryIndexType.jellyfin => 'Jellyfin',
+      DirectoryIndexType.webdav => 'WebDAV',
+      DirectoryIndexType.smb => 'Samba (SMB v2/v3)',
+      DirectoryIndexType.ftp => 'FTP',
+      DirectoryIndexType.sftp => 'SFTP',
+      DirectoryIndexType.saf => 'Storage Access Framework',
+      DirectoryIndexType.unknown => lang.none,
+    };
+  }
+
+  String? toSubtitle() {
+    return switch (this) {
+      DirectoryIndexType.local => lang.pickFromStorage,
+      DirectoryIndexType.subsonic => 'Navidrome, Airsonic, Gonic, etc...',
+      DirectoryIndexType.jellyfin => null,
+      DirectoryIndexType.webdav => null,
+      DirectoryIndexType.smb => null,
+      DirectoryIndexType.ftp => null,
+      DirectoryIndexType.sftp => 'SSH File Transfer',
+      DirectoryIndexType.saf => 'RSAF, Google Drive, Nextcloud, file managers, etc...',
+      DirectoryIndexType.unknown => null,
+    };
+  }
+
+  String? toAssetImage() {
+    return switch (this) {
+      DirectoryIndexType.local || DirectoryIndexType.unknown => null,
+      DirectoryIndexType.subsonic => 'assets/icons/subsonic.png',
+      DirectoryIndexType.jellyfin => 'assets/icons/jellyfin.png',
+      DirectoryIndexType.webdav => null,
+      DirectoryIndexType.smb => null,
+      DirectoryIndexType.ftp => null,
+      DirectoryIndexType.sftp => null,
+      DirectoryIndexType.saf => null,
+    };
+  }
+
+  IconData toIcon() {
+    return switch (this) {
+      DirectoryIndexType.local || DirectoryIndexType.unknown => Broken.driver,
+      DirectoryIndexType.subsonic => Broken.cloud,
+      DirectoryIndexType.jellyfin => Broken.cloud,
+      DirectoryIndexType.webdav => Broken.global,
+      DirectoryIndexType.smb => Broken.folder_cloud,
+      DirectoryIndexType.ftp => Broken.folder_connection,
+      DirectoryIndexType.sftp => Broken.security_safe,
+      DirectoryIndexType.saf => Broken.document_cloud,
+    };
+  }
+
+  Color toColor(ThemeData theme) {
+    return switch (this) {
+      DirectoryIndexType.local || DirectoryIndexType.unknown => theme.colorScheme.primary,
+      DirectoryIndexType.subsonic => const Color.fromARGB(255, 235, 211, 0),
+      DirectoryIndexType.jellyfin => const Color.fromARGB(255, 123, 104, 235),
+      DirectoryIndexType.webdav => theme.colorScheme.primary,
+      DirectoryIndexType.smb => theme.colorScheme.primary,
+      DirectoryIndexType.ftp => theme.colorScheme.primary,
+      DirectoryIndexType.sftp => theme.colorScheme.primary,
+      DirectoryIndexType.saf => theme.colorScheme.primary,
+    };
+  }
+
+  MusicWebServerAuthDetailsDemo? toDemoInfo() {
+    return switch (this) {
+      DirectoryIndexType.local || DirectoryIndexType.unknown => null,
+      DirectoryIndexType.subsonic => MusicWebServerAuthDetailsDemo(
+        type: this,
+        url: 'https://demo.navidrome.org',
+        username: 'demo',
+        password: 'demo',
+      ),
+      DirectoryIndexType.jellyfin => MusicWebServerAuthDetailsDemo(
+        type: this,
+        url: 'http://localhost:8096',
+        username: '',
+        password: '',
+      ),
+      DirectoryIndexType.webdav => MusicWebServerAuthDetailsDemo(
+        type: this,
+        url: 'http://localhost:8080',
+        username: '',
+        password: '',
+      ),
+      DirectoryIndexType.smb => MusicWebServerAuthDetailsDemo(
+        type: this,
+        url: '192.168.1.100',
+        username: '',
+        password: '',
+      ),
+      DirectoryIndexType.ftp => MusicWebServerAuthDetailsDemo(
+        type: this,
+        url: '192.168.1.100',
+        username: 'anonymous',
+        password: '',
+      ),
+      DirectoryIndexType.sftp => MusicWebServerAuthDetailsDemo(
+        type: this,
+        url: '192.168.1.100',
+        username: '',
+        password: '',
+      ),
+      DirectoryIndexType.saf => null,
+    };
+  }
+}

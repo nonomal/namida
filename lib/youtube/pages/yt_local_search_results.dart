@@ -1,23 +1,27 @@
 import 'package:flutter/material.dart';
-import 'package:get/get.dart';
-import 'package:newpipeextractor_dart/newpipeextractor_dart.dart';
 
+import 'package:youtipie/class/stream_info_item/stream_info_item.dart';
+
+import 'package:namida/controller/audio_cache_controller.dart';
 import 'package:namida/controller/navigator_controller.dart';
+import 'package:namida/controller/video_controller.dart';
 import 'package:namida/core/dimensions.dart';
+import 'package:namida/core/enums.dart';
 import 'package:namida/core/extensions.dart';
 import 'package:namida/core/icon_fonts/broken_icons.dart';
 import 'package:namida/core/namida_converter_ext.dart';
 import 'package:namida/core/translations/language.dart';
+import 'package:namida/core/utils.dart';
 import 'package:namida/packages/three_arched_circle.dart';
 import 'package:namida/ui/widgets/custom_widgets.dart';
 import 'package:namida/youtube/controller/youtube_local_search_controller.dart';
+import 'package:namida/youtube/widgets/yt_history_video_card.dart';
 import 'package:namida/youtube/widgets/yt_video_card.dart';
 
 class YTLocalSearchResults extends StatefulWidget {
   final String initialSearch;
   final void Function(StreamInfoItem video)? onVideoTap;
-  final void Function(bool didChangeSort) onPopping;
-  const YTLocalSearchResults({super.key, this.initialSearch = '', this.onVideoTap, required this.onPopping});
+  const YTLocalSearchResults({super.key, this.initialSearch = '', this.onVideoTap});
 
   @override
   State<YTLocalSearchResults> createState() => YTLocalSearchResultsState();
@@ -27,24 +31,21 @@ class YTLocalSearchResultsState extends State<YTLocalSearchResults> {
   @override
   void initState() {
     super.initState();
-    YTLocalSearchController.inst.scrollController = ScrollController();
-    YTLocalSearchController.inst.search(
-      widget.initialSearch,
-      maxResults: null,
-      onStart: () => updateIsSearching(true),
-    );
+    NamidaNavigator.inst.isytLocalSearchInFullPage = true;
+
+    YTLocalSearchController.inst.scrollController?.dispose();
+    YTLocalSearchController.inst.scrollController = NamidaScrollController.create();
+
+    Future(() => YTLocalSearchController.inst.search(widget.initialSearch));
   }
 
-  void updateIsSearching(bool searching) {
-    setState(() {
-      _isSearching = searching;
-    });
+  @override
+  void dispose() {
+    NamidaNavigator.inst.isytLocalSearchInFullPage = false;
+    super.dispose();
   }
 
-  List<StreamInfoItem> get _searchResultsLocal => YTLocalSearchController.inst.searchResults;
-
-  bool _didChangeSort = false;
-  bool? _isSearching;
+  static bool _isCached(StreamInfoItem item) => AudioCacheController.inst.isAvailableOffline(item.id) || VideoController.inst.doesVideoExistsInCache(item.id);
 
   Widget getChipButton({
     required BuildContext context,
@@ -53,18 +54,22 @@ class YTLocalSearchResultsState extends State<YTLocalSearchResults> {
     required IconData icon,
     required bool Function(YTLocalSearchSortType sort) enabled,
   }) {
+    final theme = context.theme;
+    final textTheme = theme.textTheme;
+    final isEnabled = enabled(sort);
     return NamidaInkWell(
       animationDurationMS: 100,
       borderRadius: 8.0,
-      bgColor: context.theme.cardTheme.color,
+      bgColor: theme.cardTheme.color,
       padding: const EdgeInsets.all(8.0),
       decoration: BoxDecoration(
-        border: enabled(sort) ? Border.all(color: context.theme.colorScheme.primary) : null,
+        border: isEnabled ? Border.all(color: theme.colorScheme.primary) : null,
         borderRadius: BorderRadius.circular(8.0.multipliedRadius),
       ),
       onTap: () {
         setState(() => YTLocalSearchController.inst.sortType = sort);
-        _didChangeSort = true;
+        final sc = YTLocalSearchController.inst.scrollController;
+        if (sc != null && sc.hasClients) sc.jumpTo(0);
       },
       child: Row(
         children: [
@@ -72,7 +77,7 @@ class YTLocalSearchResultsState extends State<YTLocalSearchResults> {
           const SizedBox(width: 4.0),
           Text(
             title,
-            style: context.textTheme.displayMedium,
+            style: textTheme.displayMedium,
           ),
           const SizedBox(width: 4.0),
           const Icon(Broken.arrow_down_2, size: 14.0),
@@ -87,117 +92,176 @@ class YTLocalSearchResultsState extends State<YTLocalSearchResults> {
     const thumbnailWidth = Dimensions.youtubeThumbnailWidth;
     const thumbnailItemExtent = thumbnailHeight + 8.0 * 2;
     return BackgroundWrapper(
-      child: NamidaScrollbar(
-        controller: YTLocalSearchController.inst.scrollController,
-        child: CustomScrollView(
-          controller: YTLocalSearchController.inst.scrollController,
-          slivers: [
-            SliverToBoxAdapter(
-              child: Padding(
-                padding: const EdgeInsets.all(8.0),
-                child: SizedBox(
-                  height: 34.0,
-                  child: ListView(
-                    scrollDirection: Axis.horizontal,
+      child: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.all(8.0),
+            child: SizedBox(
+              height: 34.0,
+              child: SuperSmoothListView(
+                scrollDirection: Axis.horizontal,
+                children: [
+                  Stack(
+                    alignment: Alignment.center,
                     children: [
-                      Stack(
-                        alignment: Alignment.center,
-                        children: [
-                          SizedBox(
-                            height: 32.0,
-                            width: 32.0,
-                            child: IconButton(
-                              padding: EdgeInsets.zero,
-                              onPressed: () {
-                                NamidaNavigator.inst.popPage();
-                                widget.onPopping(_didChangeSort);
-                              },
-                              icon: Obx(
-                                () => Stack(
-                                  alignment: Alignment.center,
-                                  children: [
-                                    if (YTLocalSearchController.inst.didLoadLookupLists.value == false)
-                                      IgnorePointer(
-                                        child: NamidaOpacity(
-                                          opacity: 0.3,
-                                          child: ThreeArchedCircle(
-                                            color: context.defaultIconColor(),
-                                            size: 36.0,
-                                          ),
-                                        ),
-                                      ),
-                                    const Icon(Broken.arrow_left_2),
-                                  ],
-                                ),
-                              ),
+                      SizedBox(
+                        height: 32.0,
+                        width: 32.0,
+                        child: IconButton(
+                          padding: EdgeInsets.zero,
+                          onPressed: NamidaNavigator.inst.popPage,
+                          icon: Obx(
+                            (context) => Stack(
+                              alignment: Alignment.center,
+                              children: [
+                                if (YTLocalSearchController.inst.didLoadLookupLists.valueR == false)
+                                  IgnorePointer(
+                                    child: ThreeArchedCircle(
+                                      color: context.defaultIconColor().withOpacityExt(0.3),
+                                      size: 36.0,
+                                    ),
+                                  ),
+                                const Icon(Broken.arrow_left_2),
+                              ],
                             ),
                           ),
-                        ],
-                      ),
-                      const SizedBox(width: 8.0),
-                      getChipButton(
-                        context: context,
-                        sort: YTLocalSearchSortType.latestPlayed,
-                        title: lang.RECENT_LISTENS,
-                        icon: Broken.timer,
-                        enabled: (sort) => sort == YTLocalSearchController.inst.sortType,
-                      ),
-                      const SizedBox(width: 8.0),
-                      getChipButton(
-                        context: context,
-                        sort: YTLocalSearchSortType.mostPlayed,
-                        title: lang.MOST_PLAYED,
-                        icon: Broken.medal,
-                        enabled: (sort) => sort == YTLocalSearchController.inst.sortType,
+                        ),
                       ),
                     ],
+                  ),
+                  const SizedBox(width: 8.0),
+                  getChipButton(
+                    context: context,
+                    sort: YTLocalSearchSortType.mostPlayed,
+                    title: lang.mostPlayed,
+                    icon: Broken.medal,
+                    enabled: (sort) => sort == YTLocalSearchController.inst.sortType,
+                  ),
+                  const SizedBox(width: 8.0),
+                  getChipButton(
+                    context: context,
+                    sort: YTLocalSearchSortType.latestPlayed,
+                    title: lang.recentListens,
+                    icon: Broken.timer,
+                    enabled: (sort) => sort == YTLocalSearchController.inst.sortType,
+                  ),
+                  const SizedBox(width: 8.0),
+                  getChipButton(
+                    context: context,
+                    sort: YTLocalSearchSortType.firstListen,
+                    title: lang.firstListen,
+                    icon: Broken.calendar_search,
+                    enabled: (sort) => sort == YTLocalSearchController.inst.sortType,
+                  ),
+                  const SizedBox(width: 8.0),
+                  const _CachedOnlyChip(),
+                ],
+              ),
+            ),
+          ),
+          Expanded(
+            child: VideoTilePropertiesProvider(
+              configs: VideoTilePropertiesConfigs(
+                queueSource: QueueSourceYoutubeID.ytSearch,
+                showMoreIcon: true,
+              ),
+              builder: (properties) => NamidaScrollbar(
+                controller: YTLocalSearchController.inst.scrollController,
+                child: ObxO(
+                  rx: YTLocalSearchController.inst.searchResults,
+                  builder: (context, allSearchResults) => ObxO(
+                    rx: YTLocalSearchController.inst.cachedOnly,
+                    builder: (context, cachedOnly) {
+                      final searchResults = cachedOnly ? allSearchResults?.where(_isCached).toList() : allSearchResults;
+                      return SmoothCustomScrollView(
+                        controller: YTLocalSearchController.inst.scrollController,
+                        slivers: [
+                          searchResults == null
+                              ? SliverToBoxAdapter(
+                                  child: ShimmerWrapper(
+                                    transparent: false,
+                                    shimmerEnabled: true,
+                                    child: SuperSmoothListView.builder(
+                                      padding: EdgeInsets.zero,
+                                      physics: const NeverScrollableScrollPhysics(),
+                                      itemCount: 10,
+                                      shrinkWrap: true,
+                                      itemBuilder: (context, index) {
+                                        return const YoutubeVideoCardDummy(
+                                          shimmerEnabled: true,
+                                          fontMultiplier: 0.9,
+                                          thumbnailHeight: thumbnailHeight,
+                                          thumbnailWidth: thumbnailWidth,
+                                        );
+                                      },
+                                    ),
+                                  ),
+                                )
+                              : searchResults.isEmpty
+                              ? const SliverToBoxAdapter(
+                                  child: Padding(
+                                    padding: EdgeInsets.symmetric(vertical: 24.0),
+                                    child: NoResultsWidget(),
+                                  ),
+                                )
+                              : SliverFixedExtentList.builder(
+                                  itemExtent: thumbnailItemExtent,
+                                  itemCount: searchResults.length,
+                                  itemBuilder: (context, index) {
+                                    final item = searchResults[index];
+                                    return YoutubeVideoCard(
+                                      properties: properties,
+                                      fontMultiplier: 0.9,
+                                      thumbnailHeight: thumbnailHeight,
+                                      thumbnailWidth: thumbnailWidth,
+                                      isImageImportantInCache: false,
+                                      video: item,
+                                      playlistID: null,
+                                      onTap: widget.onVideoTap == null ? null : () => widget.onVideoTap!(item),
+                                    );
+                                  },
+                                ),
+                          kBottomPaddingWidgetSliver,
+                        ],
+                      );
+                    },
                   ),
                 ),
               ),
             ),
-            _isSearching == null
-                ? const SliverToBoxAdapter()
-                : _isSearching == true
-                    ? SliverToBoxAdapter(
-                        child: ShimmerWrapper(
-                          transparent: false,
-                          shimmerEnabled: true,
-                          child: ListView.builder(
-                            padding: EdgeInsets.zero,
-                            physics: const NeverScrollableScrollPhysics(),
-                            itemCount: 10,
-                            shrinkWrap: true,
-                            itemBuilder: (context, index) {
-                              return const YoutubeVideoCard(
-                                fontMultiplier: 0.9,
-                                thumbnailHeight: thumbnailHeight,
-                                thumbnailWidth: thumbnailWidth,
-                                isImageImportantInCache: false,
-                                video: null,
-                                playlistID: null,
-                                onTap: null,
-                              );
-                            },
-                          ),
-                        ),
-                      )
-                    : SliverFixedExtentList.builder(
-                        itemExtent: thumbnailItemExtent,
-                        itemCount: _searchResultsLocal.length,
-                        itemBuilder: (context, index) {
-                          final item = _searchResultsLocal[index];
-                          return YoutubeVideoCard(
-                            fontMultiplier: 0.9,
-                            thumbnailHeight: thumbnailHeight,
-                            thumbnailWidth: thumbnailWidth,
-                            isImageImportantInCache: false,
-                            video: item,
-                            playlistID: null,
-                            onTap: widget.onVideoTap == null ? null : () => widget.onVideoTap!(item),
-                          );
-                        },
-                      ),
-            kBottomPaddingWidgetSliver,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CachedOnlyChip extends StatelessWidget {
+  const _CachedOnlyChip();
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = context.theme;
+    return ObxO(
+      rx: YTLocalSearchController.inst.cachedOnly,
+      builder: (context, enabled) => NamidaInkWell(
+        animationDurationMS: 100,
+        borderRadius: 8.0,
+        bgColor: theme.cardTheme.color,
+        padding: const EdgeInsets.all(8.0),
+        decoration: BoxDecoration(
+          border: enabled ? Border.all(color: theme.colorScheme.primary) : null,
+          borderRadius: BorderRadius.circular(8.0.multipliedRadius),
+        ),
+        onTap: YTLocalSearchController.inst.toggleCachedOnly,
+        child: Row(
+          children: [
+            Icon(enabled ? Broken.tick_circle : Broken.document_download, size: 18.0),
+            const SizedBox(width: 4.0),
+            Text(
+              lang.cache,
+              style: theme.textTheme.displayMedium,
+            ),
           ],
         ),
       ),

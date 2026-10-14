@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+
 import 'package:namida/ui/widgets/custom_widgets.dart';
 
 class SearchBarAnimation extends StatefulWidget {
@@ -81,22 +82,22 @@ class SearchBarAnimation extends StatefulWidget {
   final TextStyle? enteredTextStyle;
 
   /// OnSaved function for the textFormField, In order to use this user must wrap this widget into 'Form' widget.
-  final Function? onSaved;
+  final Function(String? value)? onSaved;
 
   /// OnChanged function for the textFormField.
-  final Function? onChanged;
+  final void Function(String value)? onChanged;
 
   /// onFieldSubmitted function for the textFormField.
-  final Function? onFieldSubmitted;
+  final void Function(String value)? onFieldSubmitted;
 
   /// onFieldSubmitted function for the textFormField.
-  final Function? onEditingComplete;
+  final void Function()? onEditingComplete;
 
   /// onExpansionComplete functions can be used to perform something just after searchbox is opened.
-  final Function? onExpansionComplete;
+  final void Function()? onExpansionComplete;
 
   /// onCollapseComplete functions can be used to perform something just after searchbox is closed.
-  final Function? onCollapseComplete;
+  final void Function()? onCollapseComplete;
 
   /// onPressButton function can be used to handle open/close searchbar button taps.
   /// it may be used for animation start handling
@@ -113,7 +114,10 @@ class SearchBarAnimation extends StatefulWidget {
   final double? cursorHeight;
   final Radius? cursorRadius;
 
+  final bool initiallyAlwaysExpanded;
+
   const SearchBarAnimation({
+    super.key,
     required this.textEditingController,
     required this.isOriginalAnimation,
     required this.trailingWidget,
@@ -151,20 +155,31 @@ class SearchBarAnimation extends StatefulWidget {
     this.inputFormatters,
     this.onTap,
     this.onTapOutside,
-    Key? key,
     this.cursorHeight,
     this.cursorRadius,
-  }) : super(key: key);
+    this.initiallyAlwaysExpanded = false,
+  });
 
   @override
   SearchBarAnimationState createState() => SearchBarAnimationState();
 }
 
 class SearchBarAnimationState extends State<SearchBarAnimation> with SingleTickerProviderStateMixin {
+  bool _alwaysExpanded = false;
+  void setAlwaysExpanded(bool val) {
+    _alwaysExpanded = val;
+  }
+
   late AnimationController _animationController;
   final FocusNode focusNode = FocusNode();
-  bool _isAnimationOn = false;
-  bool switcher = false;
+  bool get showBgColor => _switcher;
+  bool _switcher = false;
+  set switcher(bool val) {
+    if (_alwaysExpanded) return;
+    _switcher = val;
+  }
+
+  bool get isOpen => _switcher;
 
   final DecorationTween decorationTween = DecorationTween(
     begin: BoxDecoration(
@@ -179,24 +194,26 @@ class SearchBarAnimationState extends State<SearchBarAnimation> with SingleTicke
           blurRadius: _SBDimensions.d5,
           spreadRadius: _SBDimensions.d0,
           color: _SBColor.black45,
-        )
+        ),
       ],
     ),
   );
 
   @override
   void initState() {
-    super.initState();
+    _alwaysExpanded = widget.initiallyAlwaysExpanded;
+    _switcher = _alwaysExpanded;
     _animationController = AnimationController(
       vsync: this,
+      value: _switcher ? 1.0 : 0.0,
       duration: Duration(milliseconds: widget.durationInMilliSeconds),
     );
+    super.initState();
   }
 
   @override
   void dispose() {
     _animationController.dispose();
-    // widget.textEditingController.dispose();
     focusNode.dispose();
     super.dispose();
   }
@@ -210,31 +227,32 @@ class SearchBarAnimationState extends State<SearchBarAnimation> with SingleTicke
       alignment: widget.isSearchBoxOnRightSide ? Alignment.centerRight : Alignment.centerLeft,
       child: Container(
         decoration: BoxDecoration(
-          color: _isAnimationOn ? widget.searchBoxColour : _SBColor.transparent,
+          color: showBgColor ? widget.searchBoxColour : _SBColor.transparent,
           border: Border.all(
-              color: !widget.enableBoxBorder
-                  ? _SBColor.transparent
-                  : _isAnimationOn
-                      ? widget.searchBoxBorderColour!
-                      : _SBColor.transparent),
+            color: !widget.enableBoxBorder
+                ? _SBColor.transparent
+                : showBgColor
+                ? widget.searchBoxBorderColour!
+                : _SBColor.transparent,
+          ),
           borderRadius: BorderRadius.circular(_SBDimensions.d30),
-          boxShadow: (!_isAnimationOn)
+          boxShadow: (!showBgColor)
               ? null
               : ((widget.enableBoxShadow)
-                  ? [
-                      const BoxShadow(
-                        color: _SBColor.black26,
-                        spreadRadius: -_SBDimensions.d10,
-                        blurRadius: _SBDimensions.d10,
-                        offset: Offset(_SBDimensions.d0, _SBDimensions.d7),
-                      ),
-                    ]
-                  : null),
+                    ? [
+                        const BoxShadow(
+                          color: _SBColor.black26,
+                          spreadRadius: -_SBDimensions.d10,
+                          blurRadius: _SBDimensions.d10,
+                          offset: Offset(_SBDimensions.d0, _SBDimensions.d7),
+                        ),
+                      ]
+                    : null),
         ),
         child: AnimatedContainer(
           duration: Duration(milliseconds: widget.durationInMilliSeconds),
           height: _SBDimensions.d48,
-          width: (!switcher) ? _SBDimensions.d48 : (widget.searchBoxWidth ?? MediaQuery.sizeOf(context).width),
+          width: (!_switcher) ? _SBDimensions.d48 : (widget.searchBoxWidth ?? MediaQuery.sizeOf(context).width),
           curve: Curves.easeOut,
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(_SBDimensions.d30),
@@ -244,37 +262,37 @@ class SearchBarAnimationState extends State<SearchBarAnimation> with SingleTicke
               AnimatedPositioned(
                 duration: Duration(milliseconds: widget.durationInMilliSeconds),
                 top: _SBDimensions.d5,
-                left: widget.isSearchBoxOnRightSide ? _SBDimensions.d6 : null,
-                right: !widget.isSearchBoxOnRightSide ? _SBDimensions.d6 : null,
+                left: widget.isSearchBoxOnRightSide ? _SBDimensions.d4 : null,
+                right: !widget.isSearchBoxOnRightSide ? _SBDimensions.d4 : null,
                 curve: Curves.easeOut,
                 child: AnimatedOpacity(
-                  opacity: (!switcher) ? _SBDimensions.d0 : _SBDimensions.d1,
+                  opacity: (!_switcher) ? _SBDimensions.d0 : _SBDimensions.d1,
                   duration: const Duration(milliseconds: _SBDimensions.t700),
-                  child: Container(
-                    padding: const EdgeInsets.all(_SBDimensions.d8),
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(_SBDimensions.d30),
-                    ),
-                    child: widget.trailingWidget,
-                  ),
+                  child: widget.trailingWidget,
                 ),
               ),
               AnimatedPositioned(
                 duration: Duration(milliseconds: widget.durationInMilliSeconds),
-                left: (!switcher)
+                left: (!_switcher)
                     ? _SBDimensions.d20
                     : (!widget.textAlignToRight)
-                        ? _SBDimensions.d35
-                        : _SBDimensions.d80,
+                    ? _SBDimensions.d26
+                    : _SBDimensions.d80,
+                right: (!_switcher)
+                    ? _SBDimensions.d20
+                    : (!widget.textAlignToRight)
+                    ? _SBDimensions.d10
+                    : _SBDimensions.d80,
                 curve: Curves.easeOut,
-                top: _SBDimensions.d11,
+                top: 6.0,
+                bottom: 6.0,
                 child: AnimatedOpacity(
-                  opacity: (!switcher) ? _SBDimensions.d0 : _SBDimensions.d1,
+                  opacity: (!_switcher) ? _SBDimensions.d0 : _SBDimensions.d1,
                   duration: const Duration(milliseconds: _SBDimensions.t200),
                   child: Container(
-                    padding: const EdgeInsets.only(left: _SBDimensions.d10),
-                    alignment: Alignment.topCenter,
-                    width: smallButtonTotalPaddingPart + (widget.searchBoxWidth ?? MediaQuery.sizeOf(context).width) / _SBDimensions.d1_7,
+                    padding: const EdgeInsets.only(left: _SBDimensions.d11),
+                    alignment: Alignment.center,
+                    width: smallButtonTotalPaddingPart + (widget.searchBoxWidth ?? MediaQuery.sizeOf(context).width),
                     child: _textFormField(context, smallButtonTotalPaddingPart),
                   ),
                 ),
@@ -285,10 +303,10 @@ class SearchBarAnimationState extends State<SearchBarAnimation> with SingleTicke
                 right: smallButtonTotalPadding,
                 child: Align(
                   alignment: widget.isSearchBoxOnRightSide ? Alignment.centerRight : Alignment.centerLeft,
-                  child: AnimatedSwitcher(
+                  child: CustomAnimatedSwitcher(
                     duration: const Duration(milliseconds: _SBDimensions.t200),
                     child: AnimatedOpacity(
-                      opacity: (!switcher) ? _SBDimensions.d0 : _SBDimensions.d1,
+                      opacity: (!_switcher) ? _SBDimensions.d0 : _SBDimensions.d1,
                       duration: const Duration(milliseconds: _SBDimensions.t200),
                       child: widget.buttonWidgetSmall != null ? widget.buttonWidgetSmall! : const SizedBox(),
                     ),
@@ -303,18 +321,18 @@ class SearchBarAnimationState extends State<SearchBarAnimation> with SingleTicke
                         child: Container(
                           decoration: BoxDecoration(
                             shape: BoxShape.circle,
-                            border: _isAnimationOn ? null : Border.all(color: widget.buttonBorderColour!),
+                            border: showBgColor ? null : Border.all(color: widget.buttonBorderColour!),
                           ),
                           child: DecoratedBoxTransition(
                             decoration: decorationTween.animate(_animationController),
                             child: TapDetector(
                               onTap: () {
-                                widget.onPressButton?.call(!switcher);
+                                widget.onPressButton?.call(!_switcher);
                                 _onTapFunctionOriginalAnim();
                               },
                               child: CircleAvatar(
                                 backgroundColor: widget.buttonColour,
-                                child: switcher ? widget.secondaryButtonWidget : widget.buttonWidget,
+                                child: _switcher ? widget.secondaryButtonWidget : widget.buttonWidget,
                               ),
                             ),
                           ),
@@ -332,18 +350,18 @@ class SearchBarAnimationState extends State<SearchBarAnimation> with SingleTicke
                                       blurRadius: _SBDimensions.d5,
                                       color: widget.buttonShadowColour!,
                                       spreadRadius: widget.buttonElevation,
-                                    )
+                                    ),
                                   ]
                                 : null,
                           ),
                           child: TapDetector(
                             onTap: () {
-                              widget.onPressButton?.call(!switcher);
+                              widget.onPressButton?.call(!_switcher);
                               _onTapFunction();
                             },
                             child: CircleAvatar(
                               backgroundColor: widget.buttonColour,
-                              child: switcher ? widget.secondaryButtonWidget : widget.buttonWidget,
+                              child: _switcher ? widget.secondaryButtonWidget : widget.buttonWidget,
                             ),
                           ),
                         ),
@@ -366,18 +384,15 @@ class SearchBarAnimationState extends State<SearchBarAnimation> with SingleTicke
 
   /// This is the tap function for the animation style not for the original animation style.
   void _onTapFunction({bool forceOpen = false}) {
-    _isAnimationOn = true;
     setState(
       () {
-        if (forceOpen || !switcher) {
+        if (forceOpen || !_switcher) {
           switcher = true;
           if (widget.enableKeyboardFocus) {
             FocusScope.of(context).requestFocus(focusNode);
           }
 
           _animationController.forward().then((value) {
-            _isAnimationOn = true;
-
             widget.onExpansionComplete?.call();
           });
         } else {
@@ -388,9 +403,8 @@ class SearchBarAnimationState extends State<SearchBarAnimation> with SingleTicke
           }
 
           _animationController.reverse().then((value) {
-            _isAnimationOn = false;
+            widget.onCollapseComplete?.call();
           });
-          widget.onCollapseComplete?.call();
         }
       },
     );
@@ -398,10 +412,9 @@ class SearchBarAnimationState extends State<SearchBarAnimation> with SingleTicke
 
   /// This is the tap function for the original animation style.
   void _onTapFunctionOriginalAnim({bool forceOpen = false}) {
-    _isAnimationOn = true;
     setState(
       () {
-        if (forceOpen || !switcher) {
+        if (forceOpen || !_switcher) {
           switcher = true;
           if (widget.enableKeyboardFocus) {
             FocusScope.of(context).requestFocus(focusNode);
@@ -417,7 +430,6 @@ class SearchBarAnimationState extends State<SearchBarAnimation> with SingleTicke
           }
 
           _animationController.reverse().then((value) {
-            _isAnimationOn = false;
             widget.onCollapseComplete?.call();
           });
         }
@@ -428,61 +440,67 @@ class SearchBarAnimationState extends State<SearchBarAnimation> with SingleTicke
 
   /// This function is for the textFormField of searchbar.
   Widget _textFormField(BuildContext context, double rightPadding) {
-    MediaQuery.sizeOf(context).width;
-    return Padding(
-      padding: EdgeInsets.only(right: rightPadding),
-      child: TextFormField(
-        controller: widget.textEditingController,
-        inputFormatters: widget.inputFormatters,
-        focusNode: focusNode,
-        cursorWidth: _SBDimensions.d2,
-        textInputAction: TextInputAction.search,
-        onTap: widget.onTap,
-        onTapOutside: widget.onTapOutside,
-        cursorHeight: widget.cursorHeight,
-        cursorRadius: widget.cursorRadius,
-        onFieldSubmitted: (String value) {
-          setState(() {
-            switcher = true;
-          });
-          (widget.onFieldSubmitted != null) ? widget.onFieldSubmitted!(value) : debugPrint('onFieldSubmitted Not Used');
-        },
-        onEditingComplete: () {
-          unFocusKeyboard();
-          setState(() {
-            switcher = false;
-          });
-          (widget.onEditingComplete != null) ? widget.onEditingComplete?.call() : debugPrint('onEditingComplete Not Used');
-        },
-        keyboardType: widget.textInputType,
-        onChanged: (var value) {
-          (widget.onChanged != null) ? widget.onChanged?.call(value) : debugPrint('onChanged Not Used');
-        },
-        onSaved: (var value) {
-          (widget.onSaved != null) ? widget.onSaved?.call(value) : debugPrint('onSaved Not Used');
-        },
-        style: widget.enteredTextStyle ?? const TextStyle(color: _SBColor.black),
-        cursorColor: widget.cursorColour,
-        textAlign: widget.textAlignToRight ? TextAlign.right : TextAlign.left,
-        decoration: InputDecoration(
-          contentPadding: const EdgeInsets.only(bottom: _SBDimensions.d8),
-          isDense: true,
-          floatingLabelBehavior: FloatingLabelBehavior.never,
-          hintText: widget.hintText,
-          hintStyle: widget.hintTextStyle?.call(kIsWeb ? _SBDimensions.d1_5 : _SBDimensions.d1_2) ??
-              const TextStyle(
-                color: _SBColor.grey,
-                fontSize: _SBDimensions.d15,
-                fontWeight: FontWeight.w400,
-                height: kIsWeb ? _SBDimensions.d1_5 : _SBDimensions.d1_2,
+    return Stack(
+      children: [
+        Positioned.fill(
+          child: Padding(
+            padding: EdgeInsets.only(right: rightPadding),
+            child: TextFormField(
+              textAlignVertical: TextAlignVertical.center,
+              maxLength: null,
+              maxLines: null,
+              expands: true,
+              controller: widget.textEditingController,
+              inputFormatters: widget.inputFormatters,
+              focusNode: focusNode,
+              cursorWidth: _SBDimensions.d2,
+              textInputAction: TextInputAction.search,
+              onTap: widget.onTap,
+              onTapOutside: widget.onTapOutside,
+              cursorHeight: widget.cursorHeight,
+              cursorRadius: widget.cursorRadius,
+              onFieldSubmitted: (String value) {
+                setState(() {
+                  switcher = true;
+                });
+                widget.onFieldSubmitted?.call(value);
+              },
+              onEditingComplete: () {
+                unFocusKeyboard();
+                setState(() {
+                  switcher = false;
+                });
+                widget.onEditingComplete?.call();
+              },
+              keyboardType: widget.textInputType,
+              onChanged: widget.onChanged,
+              onSaved: widget.onSaved,
+              style: widget.enteredTextStyle ?? const TextStyle(color: _SBColor.black),
+              cursorColor: widget.cursorColour,
+              textAlign: widget.textAlignToRight ? TextAlign.right : TextAlign.left,
+              decoration: InputDecoration(
+                contentPadding: EdgeInsets.zero,
+                isDense: true,
+                floatingLabelBehavior: FloatingLabelBehavior.never,
+                hintText: widget.hintText,
+                hintStyle:
+                    widget.hintTextStyle?.call(kIsWeb ? _SBDimensions.d1_5 : _SBDimensions.d1_2) ??
+                    const TextStyle(
+                      color: _SBColor.grey,
+                      fontSize: _SBDimensions.d15,
+                      fontWeight: FontWeight.w400,
+                      height: kIsWeb ? _SBDimensions.d1_5 : _SBDimensions.d1_2,
+                    ),
+                alignLabelWithHint: true,
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(_SBDimensions.d20),
+                  borderSide: BorderSide.none,
+                ),
               ),
-          alignLabelWithHint: true,
-          border: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(_SBDimensions.d20),
-            borderSide: BorderSide.none,
+            ),
           ),
         ),
-      ),
+      ],
     );
   }
 
@@ -513,18 +531,16 @@ class _SBDimensions {
   static const double d1 = 1.0;
   static const double d1_2 = 1.2;
   static const double d1_5 = 1.5;
-  static const double d1_7 = 1.7;
   static const double d2 = 2.0;
+  static const double d4 = 4.0;
   static const double d5 = 5.0;
-  static const double d6 = 6.0;
   static const double d7 = 7.0;
-  static const double d8 = 8.0;
   static const double d10 = 10.0;
   static const double d11 = 11.0;
   static const double d15 = 15.0;
   static const double d20 = 20.0;
+  static const double d26 = 26.0;
   static const double d30 = 30.0;
-  static const double d35 = 35.0;
   static const double d48 = 48.0;
   static const double d60 = 60.0;
   static const double d80 = 80.0;

@@ -1,197 +1,416 @@
 // ignore_for_file: depend_on_referenced_packages
 
 import 'dart:async';
+import 'dart:ffi' as ffi;
 import 'dart:io';
 import 'dart:isolate';
 import 'dart:ui';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
-import 'package:flutter_displaymode/flutter_displaymode.dart';
-import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+
+import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_native_splash/flutter_native_splash.dart';
 import 'package:flutter_sharing_intent/flutter_sharing_intent.dart';
-import 'package:flutter_sharing_intent/model/sharing_file.dart';
-import 'package:flutter_volume_controller/flutter_volume_controller.dart';
-import 'package:get/get.dart';
-import 'package:jiffy/jiffy.dart';
-import 'package:namida/controller/tagger_controller.dart';
-import 'package:path_provider/path_provider.dart';
-import 'package:permission_handler/permission_handler.dart';
+import 'package:flutter_volume_controller/flutter_volume_controller.dart' show FlutterVolumeController;
+import 'package:http_cache_stream/http_cache_stream.dart';
+import 'package:media_kit/media_kit.dart' as mk;
+import 'package:namico_db_wrapper/namico_db_wrapper.dart';
+import 'package:path_provider/path_provider.dart' as pp;
+import 'package:rhttp/rhttp.dart';
+import 'package:super_drag_and_drop/super_drag_and_drop.dart';
+import 'package:window_manager/window_manager.dart';
 
+import 'package:namida/class/file_parts.dart';
+import 'package:namida/class/route.dart';
+import 'package:namida/class/shortcut_data.dart';
+import 'package:namida/class/track.dart';
 import 'package:namida/controller/backup_controller.dart';
+import 'package:namida/controller/chapters_controller.dart';
 import 'package:namida/controller/connectivity.dart';
 import 'package:namida/controller/current_color.dart';
-import 'package:namida/controller/folders_controller.dart';
+import 'package:namida/controller/directory_index.dart';
+import 'package:namida/controller/eggs_controller.dart';
+import 'package:namida/controller/ffmpeg_controller.dart';
 import 'package:namida/controller/history_controller.dart';
+import 'package:namida/controller/home_widget_controller.dart';
 import 'package:namida/controller/indexer_controller.dart';
 import 'package:namida/controller/logs_controller.dart';
-import 'package:namida/controller/namida_channel.dart';
-import 'package:namida/controller/namida_channel_storage.dart';
+import 'package:namida/controller/lyrics_integrations.dart';
+import 'package:namida/controller/music_web_server/music_web_server_base.dart';
 import 'package:namida/controller/navigator_controller.dart';
+import 'package:namida/controller/notification_controller.dart';
+import 'package:namida/controller/party/party_controller.dart';
+import 'package:namida/controller/platform/app_single_instance/app_single_instance.dart';
+import 'package:namida/controller/platform/base.dart';
+import 'package:namida/controller/platform/namida_channel/namida_channel.dart';
+import 'package:namida/controller/platform/namida_storage/namida_storage.dart';
+import 'package:namida/controller/platform/permission_manager/permission_manager.dart';
+import 'package:namida/controller/platform/window_manager/window_manager.dart';
 import 'package:namida/controller/player_controller.dart';
 import 'package:namida/controller/playlist_controller.dart';
 import 'package:namida/controller/queue_controller.dart';
 import 'package:namida/controller/scroll_search_controller.dart';
+import 'package:namida/controller/search_sort_controller.dart';
 import 'package:namida/controller/settings_controller.dart';
+import 'package:namida/controller/shortcuts_controller.dart';
+import 'package:namida/controller/smtc_controller.dart';
 import 'package:namida/controller/storage_cache_manager.dart';
+import 'package:namida/controller/subtitles_controller.dart';
+import 'package:namida/controller/sync_manager/sync_manager.dart';
+import 'package:namida/controller/tagger_controller.dart';
+import 'package:namida/controller/tray_controller.dart';
+import 'package:namida/controller/version_controller.dart';
 import 'package:namida/controller/video_controller.dart';
+import 'package:namida/controller/waveform_controller.dart';
+import 'package:namida/controller/window_controller.dart';
 import 'package:namida/core/constants.dart';
 import 'package:namida/core/enums.dart';
 import 'package:namida/core/extensions.dart';
+import 'package:namida/core/icon_fonts/broken_icons.dart';
 import 'package:namida/core/namida_converter_ext.dart';
 import 'package:namida/core/themes.dart';
+import 'package:namida/core/translations/arb/app_localizations.dart';
+import 'package:namida/core/translations/fallback_delegates.dart';
 import 'package:namida/core/translations/language.dart';
+import 'package:namida/core/ui_scale.dart';
+import 'package:namida/core/utils.dart';
 import 'package:namida/main_page_wrapper.dart';
 import 'package:namida/packages/scroll_physics_modified.dart';
+import 'package:namida/ui/dialogs/common_dialogs.dart';
+import 'package:namida/ui/dialogs/general_popup_dialog.dart';
+import 'package:namida/ui/pages/onboarding.dart';
+import 'package:namida/ui/pages/party_page.dart';
+import 'package:namida/ui/widgets/animated_widgets.dart';
 import 'package:namida/ui/widgets/custom_widgets.dart';
+import 'package:namida/ui/widgets/effects/effects.dart';
+import 'package:namida/ui/widgets/library/track_tile.dart';
+import 'package:namida/ui/widgets/mini_lyrics_window.dart';
 import 'package:namida/ui/widgets/video_widget.dart';
+import 'package:namida/youtube/controller/youtube_account_controller.dart';
 import 'package:namida/youtube/controller/youtube_controller.dart';
 import 'package:namida/youtube/controller/youtube_history_controller.dart';
+import 'package:namida/youtube/controller/youtube_info_controller.dart';
 import 'package:namida/youtube/controller/youtube_playlist_controller.dart';
 import 'package:namida/youtube/controller/youtube_subscriptions_controller.dart';
+import 'package:namida/youtube/controller/yt_miniplayer_ui_controller.dart';
+import 'package:namida/youtube/pages/yt_playlist_subpage.dart';
 
-void main() {
+void main(List<String> args) {
   runZonedGuarded(
-    mainInitialization,
+    () async {
+      final widgetsBinding = _NamidaWidgetsBinding();
+      FlutterNativeSplash.preserve(widgetsBinding: widgetsBinding);
+
+      final singleInstance = AppSingleInstanceBase.instance;
+      if (singleInstance != null) {
+        await singleInstance.acquireSingleInstanceOrExit(args);
+      }
+
+      runApp(const Namida());
+    },
     (error, stack) => logger.error(error.runtimeType, e: error, st: stack),
+    zoneValues: {
+      'args': args,
+    },
   );
 }
 
-void mainInitialization() async {
-  WidgetsFlutterBinding.ensureInitialized();
-  Paint.enableDithering = true; // for smooth gradient effect.
-
-  // -- x this makes some issues with GestureDetector
-  // GestureBinding.instance.resamplingEnabled = true; // for 120hz displays, should make scrolling smoother.
-
-  /// Getting Device info
-  NamidaDeviceInfo.fetchAndroidInfo();
-  NamidaDeviceInfo.fetchPackageInfo().then((value) {
-    // -- in case full path was updated before fetching version
-    logger.updateLoggerPath();
-    FAudioTaggerController.inst.updateLogsPath();
-  });
-  NamidaDeviceInfo.sdkVersion = await NamidaChannel.inst.getPlatformSdk();
+Future<bool> _mainAppInitialization() async {
+  List<String>? args;
 
   /// if `true`:
   /// 1. onboarding screen will show
   /// 2. `indexer` and `latest queue` will be executed after permission is granted.
   bool shouldShowOnBoarding = false;
 
-  if (!await requestStoragePermission(request: false)) {
-    shouldShowOnBoarding = true;
+  try {
+    if (Platform.isAndroid) {
+      // -- its not just obtaining sdk version.. we are making sure method channels are properly initialized on native side
+      // -- cuz it can throw on some devices
+      int tryCount = 0;
+      while (NamidaDeviceInfo.sdkVersion < 0) {
+        tryCount++;
+        try {
+          NamidaDeviceInfo.sdkVersion = await NamidaChannel.inst.getPlatformSdk();
+        } catch (_) {
+          await Future.delayed(const Duration(milliseconds: 200));
+        }
+        if (tryCount > 200) {
+          // 200*200ms = 40s
+          exit(1);
+        }
+      }
+    }
+
+    await [
+      WindowController.instance?.init(),
+      SMTCController.instance?.init(),
+      HomeWidgetController.instance?.init(),
+    ].executeAllAndSilentReportErrors();
+
+    ShortcutsController.instance?.init();
+
+    // -- x this makes some issues with GestureDetector
+    // GestureBinding.instance.resamplingEnabled = true; // for 120hz displays, should make scrolling smoother.
+
+    /// Getting Device info
+    NamidaDeviceInfo.fetchDeviceInfo();
+    NamidaDeviceInfo.fetchPackageInfo().then((value) {
+      // -- in case full path was updated before fetching version
+      logger.updateLoggerPath();
+      NamidaTaggerController.inst.updateLogsPath();
+    });
+
+    Future<void> fetchAppData() async {
+      final appDatas = await NamidaStorage.inst.getStorageDirectoriesAppData();
+      AppDirs.USER_DATA = NamidaStorage.inst.getUserDataDirectory(appDatas);
+      logger.updateLoggerPath();
+      NamidaTaggerController.inst.updateLogsPath();
+    }
+
+    Future<void> fetchRootDir() async {
+      String? path;
+
+      if (!isWindowsPortable) {
+        Directory? dir;
+        for (final fn in [
+          pp.getApplicationSupportDirectory,
+          pp.getApplicationDocumentsDirectory,
+        ]) {
+          try {
+            dir = await fn();
+            break;
+          } catch (_) {}
+        }
+        path = dir?.path;
+      }
+
+      if (path == null) {
+        final appDatas = await NamidaStorage.inst.getStorageDirectoriesAppData();
+        path = appDatas.firstOrNull;
+      }
+      AppDirs.ROOT_DIR = path ?? '';
+    }
+
+    var paths = <String>[];
+
+    await [
+      fetchAppData(),
+      fetchRootDir(),
+      NamidaStorage.inst.getStorageDirectories().then((value) => paths = value),
+      NamidaStorage.inst.getStorageDirectoriesAppCache().then((value) => AppDirs.APP_CACHE = value.firstOrNull ?? ''),
+    ].executeAllAndSilentReportErrors();
+
+    // -- android sdk must be initialized first
+    if (!await PermissionManager.platform.requestStoragePermission(request: false)) {
+      shouldShowOnBoarding = true;
+    }
+
+    if (paths.isEmpty) {
+      final fallback = NamidaStorage.inst.defaultFallbackStoragePath;
+      if (fallback != null) paths.add(fallback);
+    }
+    kStoragePaths.addAll(paths);
+    AppDirs.INTERNAL_STORAGE = FileParts.joinPath(
+      isWindowsPortable ? AppDirs.ROOT_DIR : paths[0],
+      'Namida',
+    );
+
+    _initErrorInterpreters();
+    _cleanOldLogsSync.thready((dirPath: AppDirs.LOGS_DIRECTORY, currentSuffix: AppPaths.getLogsSuffix()));
+
+    // -- creating directories
+    await AppDirs.values.map((p) => Directory(p).create(recursive: true)).executeAllAndSilentReportErrors();
+
+    if (NamidaFeaturesVisibility.isStoragePermissionNotRequired) {
+      if (!shouldShowOnBoarding) {
+        final settingsExist = await File(AppPaths.SETTINGS).exists().ignoreError() ?? false;
+        shouldShowOnBoarding = !settingsExist;
+      }
+    }
+
+    await settings.prepareAllSettings();
+    Language.initialize(); // should be done as early as possible
+    TrackTileManager.initialize();
+    ShortcutsController.instance?.initUserShortcutsFromSettings();
+    NamidaEffects.refreshSeason();
+    EggsController.inst.refreshDateEgg();
+
+    if (settings.directoriesToScan.value.isEmpty) {
+      final defaultDirs = await _getDefaultDirectoriesToScan(paths);
+      settings.directoriesToScan.update((list) => list.addAllNoDuplicates(defaultDirs.toList()));
+    } else {
+      final servers = settings.directoriesToScan.value.allServers();
+      if (servers.isNotEmpty) {
+        await MusicWebServerAuthDetails.manager.initialize(servers);
+        ServerCacheController.inst.initialize().ignoreError();
+      }
+    }
+  } catch (e, st) {
+    logger.error('_mainAppInitialization', e: e, st: st);
   }
 
-  late final List<String> paths;
-  Future<void> fetchAppData() async {
-    final appDatas = await NamidaStorage.inst.getStorageDirectoriesAppData();
-    AppDirs.USER_DATA = appDatas.firstOrNull ?? '';
-    logger.updateLoggerPath();
-    FAudioTaggerController.inst.updateLogsPath();
+  try {
+    final windowRestoration = WindowController.instance?.restorePosition(); // -- requires settings
+    TrayController.instance?.init(); // -- requires paths
+
+    args = Zone.current['args'] as List<String>? ?? [];
+
+    final ytInfoInitSyncItemsCompleter = Completer<void>();
+
+    /// even tho we don't really need to wait for queue, it's better as to
+    /// minimize startup lag as this changes some app-level vars like color scheme
+    FutureOr<void> prepareLatestQueue() {
+      if (args != null && args.isNotEmpty) {
+        // -- will play from args instead of latest queue
+      } else if (!shouldShowOnBoarding) {
+        return ytInfoInitSyncItemsCompleter.future.whenComplete(QueueController.inst.prepareLatestQueueAndLatestPlayedForSourceAsync);
+      }
+      QueueController.inst.markLatestQueueRestored();
+    }
+
+    YoutubeInfoController.initialize(ytInfoInitSyncItemsCompleter).catchError(logger.report);
+
+    if (settings.player.internalPlayer.value.shouldInitializeMPV) {
+      mk.MediaKit.ensureInitialized.ignoreError();
+    }
+
+    await [
+      windowRestoration,
+      if (!shouldShowOnBoarding) Indexer.inst.prepareTracksFile(startupBoost: true).whenComplete(Player.inst.refreshNotification),
+      PlaylistController.inst.prepareDefaultPlaylistsFileAsync(),
+      YoutubePlaylistController.inst.prepareDefaultPlaylistsFileAsync(),
+      YoutubeSubscriptionsController.inst.loadSubscriptionsFileAsync(),
+      ConnectivityController.inst.initialize(),
+      NamidaNavigator.setSystemUIImmersiveMode(false),
+      Rhttp.init().then(
+        (_) async {
+          final client = await RhttpCompatibleClient.create();
+          final config = _HttpCacheCustomCacheConfig._(client);
+          await HttpCacheManager.init(config: config).ignoreError();
+        },
+      ),
+      NamidaFFMPEG.configure(),
+      ytInfoInitSyncItemsCompleter.future,
+      NamidaDeviceInfo.packageInfoCompleter.future,
+    ].executeAllAndSilentReportErrors();
+
+    LyricsIntegrations.init();
+
+    // -- best to initialize last, so that tracks are prepared (for info/colors) and rhttp is initialized (for network), etc.
+    try {
+      await Player.inst.initializePlayer().whenComplete(prepareLatestQueue);
+    } catch (e, st) {
+      logger.error('', e: e, st: st);
+    }
+
+    if (SMTCController.instance != null) {
+      Player.inst.refreshNotification();
+    }
+
+    NamidaNavigator.setDefaultSystemUIOverlayStyle.ignoreError();
+    ScrollSearchController.inst.initialize();
+    Subtitles.inst.initialize();
+    ChaptersController.inst.initialize();
+  } catch (e, st) {
+    logger.error('_mainAppInitialization 2', e: e, st: st);
   }
 
-  await Future.wait([
-    fetchAppData(),
-    NamidaStorage.inst.getStorageDirectories().then((value) => paths = value),
-    NamidaStorage.inst.getStorageDirectoriesAppCache().then((value) => AppDirs.APP_CACHE = value.firstOrNull ?? ''),
-  ]);
-  _initErrorInterpreters();
-  _cleanOldLogs.thready({'dirPath': AppDirs.LOGS_DIRECTORY, 'fileSuffix': AppPaths.getLogsSuffix()});
-
-  if (paths.isEmpty) paths.add('/storage/emulated/0');
-
-  // -- creating directories
-  AppDirs.values.loop((p, _) => Directory(p).createSync(recursive: true));
-
-  kStoragePaths.addAll(paths);
-
-  AppDirs.INTERNAL_STORAGE = "${paths[0]}/Namida";
-  final downloadsFolder = "${paths[0]}/Download/";
-
-  kInitialDirectoriesToScan.addAll([
-    ...paths.mappedUniqued((path) => "$path/Music"),
-    downloadsFolder,
-    AppDirs.INTERNAL_STORAGE,
-  ]);
-
-  await Future.wait([
-    settings.equalizer.prepareSettingsFile(),
-    settings.player.prepareSettingsFile(),
-    settings.prepareSettingsFile(),
-  ]);
-
-  await Future.wait([
-    if (!shouldShowOnBoarding) Indexer.inst.prepareTracksFile(),
-    Language.initialize(),
-  ]);
-  ConnectivityController.inst.initialize();
-  NamidaChannel.inst.setCanEnterPip(settings.enablePip.value);
-
-  /// updates values on startup
-  Indexer.inst.updateImageSizeInStorage();
-  Indexer.inst.updateColorPalettesSizeInStorage();
-  Indexer.inst.updateVideosSizeInStorage();
-  if (!shouldShowOnBoarding && settings.refreshOnStartup.value) {
-    Indexer.inst.refreshLibraryAndCheckForDiff(allowDeletion: false, showFinishedSnackbar: false);
+  if (args != null && args.isNotEmpty) {
+    NamidaReceiveIntentManager.executeReceivedItems(args, (p) => p, (p) => p);
+    Player.inst.play();
   }
-  if (!shouldShowOnBoarding) {
-    BackupController.inst.checkForAutoBackup();
-  }
-
-  const StorageCacheManager().trimExtraFiles();
-
-  QueueController.inst.prepareAllQueuesFile();
-
-  await Player.inst.initializePlayer();
-  PlaylistController.inst.prepareAllPlaylists();
-  VideoController.inst.initialize();
-
-  FlutterNativeSplash.remove();
-
-  HistoryController.inst.prepareHistoryFile();
-  YoutubeHistoryController.inst.prepareHistoryFile();
-  await Future.wait([
-    PlaylistController.inst.prepareDefaultPlaylistsFile(),
-    if (!shouldShowOnBoarding) QueueController.inst.prepareLatestQueue(),
-    YoutubePlaylistController.inst.prepareDefaultPlaylistsFile(),
-    YoutubeController.inst.loadDownloadTasksInfoFile(),
-    YoutubeSubscriptionsController.inst.loadSubscriptionsFile()
-  ]);
-
-  YoutubePlaylistController.inst.prepareAllPlaylists();
-
-  YoutubeController.inst.loadInfoToMemory();
-  YoutubeController.inst.fillBackupInfoMap(); // for history videos info.
-
-  await _initializeIntenties();
-
-  await Future.wait([
-    SystemChrome.setPreferredOrientations(kDefaultOrientations),
-    NamidaNavigator.inst.setDefaultSystemUI(),
-    FlutterDisplayMode.setHighRefreshRate(),
-  ]);
-
-  NamidaNavigator.inst.setDefaultSystemUIOverlayStyle();
-
-  ScrollSearchController.inst.initialize();
-  FlutterLocalNotificationsPlugin().cancelAll();
-  FlutterVolumeController.updateShowSystemUI(false);
-  CurrentColor.inst.initialize();
-
-  runApp(Namida(shouldShowOnBoarding: shouldShowOnBoarding));
-
-  // CurrentColor.inst.generateAllColorPalettes();
-  Folders.inst.onFirstLoad();
-
-  _initLifeCycle();
+  return shouldShowOnBoarding;
 }
 
-void _cleanOldLogs(Map params) {
-  final dirPath = params['dirPath'] as String;
-  final fileSuffix = params['fileSuffix'] as String?;
-  Directory(dirPath).listSync().loop((e, _) {
+Future<void> _secondaryAppInitialization(bool shouldShowOnBoarding) async {
+  try {
+    _initializeIntenties();
+    _initLifeCycle();
+    NamidaChannel.inst.logPreviousAbnormalExits().catchError(logger.report);
+
+    YoutubeAccountController.initialize();
+
+    await [
+      YoutubeInfoController.utils.fillBackupInfoMap(), // for history videos info.
+
+      HistoryController.inst.prepareHistoryFile().then((_) => Indexer.inst.sortMediaTracksAndSubListsAfterHistoryPrepared()), //
+      YoutubeHistoryController.inst.prepareHistoryFile(),
+
+      PlaylistController.inst.prepareAllPlaylists(),
+      YoutubePlaylistController.inst.prepareAllPlaylists(),
+
+      VideoController.inst.initialize(),
+      YoutubeController.inst.loadDownloadTasksInfoFileAsync(),
+
+      NotificationManager.init(),
+      FlutterVolumeController.updateShowSystemUI(false),
+      NamidaChannel.inst.setCanEnterPip(settings.enablePip.value),
+    ].executeAllAndSilentReportErrors();
+
+    QueueController.inst.prepareAllQueuesFile().catchError(logger.report);
+
+    CurrentColor.inst.initialize(); // --> !can block?
+
+    if (!shouldShowOnBoarding) await BackupController.inst.checkForAutoBackup(); // --> !can block
+    const StorageCacheManager().trimExtraFiles();
+    VersionController.inst.ensureInitialized();
+    SyncDiscovery.autoRestoreOnStartup();
+    SyncSender.inst.setupAutoSync();
+    _clearIntentCachedFiles(); // clearing files cached by intents
+    // CurrentColor.inst.generateAllColorPalettes();
+  } catch (e, st) {
+    logger.error('_secondaryAppInitialization', e: e, st: st);
+  }
+}
+
+void _recheckTimeAwareEssentials() async {
+  YoutubeAccountController.fetchAccSupportDetails();
+  await BackupController.inst.checkForAutoBackup();
+  const StorageCacheManager().trimExtraFiles();
+  VersionController.inst.ensureRefreshed();
+  _clearIntentCachedFiles();
+}
+
+Future<Set<DirectoryIndex>> _getDefaultDirectoriesToScan(List<String> paths) async {
+  final dirsToScanDefault = <DirectoryIndex>{};
+  void addDirToScan(String path, {bool ignoreExists = false}) {
+    try {
+      if (ignoreExists || DirectoryIndexLocal(path).existsSync()) {
+        dirsToScanDefault.add(DirectoryIndexLocal(path));
+      }
+    } catch (_) {}
+  }
+
+  for (final sp in kStoragePaths) {
+    addDirToScan(FileParts.joinPath(sp, 'Music'), ignoreExists: !isDesktop);
+  }
+  if (Platform.isLinux) {
+    try {
+      final p = Process.runSync('xdg-user-dir', ['MUSIC']);
+      if (p.exitCode == 0) {
+        final outputPath = (p.stdout as String).split('\n').first.trim();
+        if (outputPath.isNotEmpty && outputPath != NamidaPlatformBuilder.linuxUserHome) {
+          addDirToScan(outputPath);
+        }
+      }
+    } catch (_) {}
+  }
+  if (!isDesktop) {
+    // -- its more common to find music in downloads for phones, unlike desktop.
+    final downloadsFolder = FileParts.joinPath(paths[0], 'Download'); // pp.getDownloadsDirectory() returns app specific downloads, not what we want here
+    addDirToScan(downloadsFolder, ignoreExists: true);
+  }
+  addDirToScan(AppDirs.INTERNAL_STORAGE, ignoreExists: true);
+
+  return dirsToScanDefault;
+}
+
+void _cleanOldLogsSync(({String dirPath, String? currentSuffix}) params) {
+  final dirPath = params.dirPath;
+  final fileSuffix = params.currentSuffix;
+  for (final e in Directory(dirPath).listSyncSafe()) {
     if (e is File) {
       final filename = e.path.getFilename;
       if (filename.startsWith('logs_') && fileSuffix != null && !filename.endsWith("$fileSuffix.txt")) {
@@ -200,7 +419,7 @@ void _cleanOldLogs(Map params) {
         } catch (_) {}
       }
     }
-  });
+  }
 }
 
 void _initErrorInterpreters() {
@@ -220,313 +439,462 @@ void _initErrorInterpreters() {
     return true;
   };
 
-  FlutterError.onError = (details) {
-    final msg = details.toDiagnosticsNode().toDescription();
-    logger.error(msg, e: details.exception, st: details.stack);
-  };
+  FlutterError.onError = kDebugMode
+      ? (details) {
+          final msg = details.toString();
+          logger.error(msg, e: details.exception, st: details.stack);
+        }
+      : (details) {
+          final msg = details.toDiagnosticsNode().toDescription();
+          logger.error(msg, e: details.exception, st: details.stack);
+        };
 }
 
 void _initLifeCycle() {
-  NamidaChannel.inst.addOnDestroy('main', () async {
-    final mode = settings.player.killAfterDismissingApp.value;
-    if (mode == KillAppMode.always || (mode == KillAppMode.ifNotPlaying && !Player.inst.isPlaying)) {
+  NamidaChannel.inst.addOnDestroy(() async {
+    if (settings.player.killAfterDismissingApp.value.resolveShouldKill()) {
       await Player.inst.pause();
       await Player.inst.dispose();
     }
   });
 
-  NamidaChannel.inst.addOnResume('main', () async {
-    CurrentColor.inst.refreshColorsAfterResumeApp();
+  NamidaChannel.inst.addOnResume(CurrentColor.inst.refreshColorsAfterResumeApp);
+  NamidaChannel.inst.addOnResume(() {
+    final context = namida.context;
+    if (context != null) {
+      try {
+        _NamidaState.refreshSystemBarsColors(context, forceRefresh: true);
+      } catch (_) {}
+    }
   });
+  NamidaChannel.inst.addOnResume(WaveformController.inst.calculateUIWaveform);
+  NamidaChannel.inst.addOnResume(NamidaEffects.refreshSeasonIfDue);
+  NamidaChannel.inst.addOnResume(EggsController.inst.refreshDateEggIfDue);
 }
 
-Future<void> _initializeIntenties() async {
-  Future<void> clearIntentCachedFiles() async {
-    final cacheDir = await getTemporaryDirectory();
-    await for (final cf in cacheDir.list()) {
-      if (cf is File) {
-        cf.tryDeleting();
-      }
-    }
-  }
-
-  /// Clearing files cached by intents
-  clearIntentCachedFiles();
-
-  void showErrorPlayingFileSnackbar({String? error}) {
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      final errorMessage = error != null ? '($error)' : '';
-      snackyy(title: lang.ERROR, message: '${lang.COULDNT_PLAY_FILE} $errorMessage');
-    });
-  }
-
-  Future<void> playFiles(List<SharedFile> files) async {
-    WidgetsBinding.instance.addPostFrameCallback((timeStamp) async {
-      if (files.isNotEmpty) {
-        final paths = <String>[];
-        final m3uPaths = <String>{};
-        files.loop((f, _) {
-          final realPath = f.realPath;
-          if (realPath != null) {
-            final path = realPath.replaceAll('\\', '');
-            if (kM3UPlaylistsExtensions.any((ext) => path.endsWith(ext))) {
-              m3uPaths.add(path);
-            } else {
-              paths.add(path);
-            }
-          } else {
-            f.value?.split('\n').loop((e, index) {
-              e.split('https://').loop((line, index) {
-                if (line.isNotEmpty) paths.add("https://$line");
-              });
-            });
-          }
-        });
-
-        if (m3uPaths.isNotEmpty) {
-          final allTracks = await PlaylistController.inst.readM3UFiles(m3uPaths);
-          final err = await playExternalFiles(allTracks.map((e) => e.path));
-          if (err != null) showErrorPlayingFileSnackbar(error: err);
-        } else if (paths.isNotEmpty) {
-          final youtubeIds = paths.map((e) {
-            final id = e.getYoutubeID;
-            return id == '' ? null : id;
-          }).whereType<String>();
-          final ytPlaylists = paths.map((e) {
-            final match = e.isEmpty ? null : NamidaLinkRegex.youtubePlaylistsLinkRegex.firstMatch(e)?[0];
-            return match;
-          }).whereType<String>();
-          if (youtubeIds.isNotEmpty) {
-            await _waitForFirstBuildContext.future;
-            settings.onYoutubeLinkOpen.value.execute(youtubeIds);
-          } else if (ytPlaylists.isNotEmpty) {
-            for (final pl in ytPlaylists) {
-              await OnYoutubeLinkOpenAction.alwaysAsk.executePlaylist(pl, context: rootContext);
-            }
-          } else {
-            final existing = paths.where((element) => File(element).existsSync()); // this for sussy links
-            final err = await playExternalFiles(existing);
-            if (err != null) showErrorPlayingFileSnackbar(error: err);
-          }
+Future<void> _clearIntentCachedFiles() async {
+  if (!(Platform.isAndroid || Platform.isIOS)) return;
+  final cacheDir = await pp.getTemporaryDirectory();
+  return Isolate.run(
+    () {
+      for (final e in cacheDir.listSyncSafe()) {
+        if (e is File) {
+          try {
+            e.deleteSync();
+          } catch (_) {}
         }
       }
-    });
-  }
-
-  // -- Recieving Initial Android Shared Intent.
-  await playFiles(await FlutterSharingIntent.instance.getInitialSharing());
-
-  // -- Listening to Android Shared Intents.
-  FlutterSharingIntent.instance.getMediaStream().listen(
-        playFiles,
-        onError: (err) => showErrorPlayingFileSnackbar(error: err.toString()),
-      );
-}
-
-/// returns [true] if played successfully.
-Future<String?> playExternalFiles(Iterable<String> paths) async {
-  try {
-    final trs = await Indexer.inst.convertPathToTrack(paths);
-    if (trs.isNotEmpty) {
-      await Player.inst.playOrPause(0, trs, QueueSource.externalFile);
-      return null;
-    } else {
-      return 'Empty List';
-    }
-  } catch (e) {
-    return e.toString();
-  }
-}
-
-/// Granting Storage Permission.
-/// Requesting Granular media permissions for Android 13 (API 33) doesnt work for some reason.
-/// Currently the target API is set to 32.
-/// [request] will prompt dialog if not granted.
-Future<bool> requestStoragePermission({bool request = true}) async {
-  bool granted = false;
-  if (await Permission.storage.isPermanentlyDenied) {
-    if (request) {
-      // -- user denied, should open settings.
-      await openAppSettings();
-    }
-  } else if (await Permission.storage.isDenied) {
-    if (request) {
-      final st = await Permission.storage.request();
-      if (st.isPermanentlyDenied) {
-        await openAppSettings();
-      }
-      granted = st.isGranted;
-    }
-  } else {
-    granted = true;
-  }
-  return granted;
-}
-
-Future<bool> requestIgnoreBatteryOptimizations() async {
-  final granted = await Permission.ignoreBatteryOptimizations.isGranted;
-  if (granted) return true;
-  settings.save(canAskForBatteryOptimizations: true);
-  if (!settings.canAskForBatteryOptimizations) return false;
-
-  snackyy(
-    message: lang.IGNORE_BATTERY_OPTIMIZATIONS_SUBTITLE,
-    displaySeconds: 5,
-    top: false,
-    isError: true,
-    button: NamidaButton(
-      text: lang.DONT_ASK_AGAIN,
-      onPressed: () {
-        Get.closeCurrentSnackbar();
-        settings.save(canAskForBatteryOptimizations: false);
-      },
-    ),
+    },
   );
-  await Future.delayed(const Duration(seconds: 1));
-  final p = await Permission.ignoreBatteryOptimizations.request();
-  return p.isGranted;
 }
 
-Future<bool> requestManageStoragePermission() async {
-  Future<void> createDir() async => await Directory(settings.defaultBackupLocation.value).create(recursive: true);
-  if (NamidaDeviceInfo.sdkVersion < 30) {
-    await createDir();
-    return true;
-  }
+void _initializeIntenties() {
+  if (NamidaFeaturesVisibility.recieveSharingIntents) {
+    // -- Recieving Initial Android Shared Intent.
+    FlutterSharingIntent.instance.getInitialSharing().then(
+      (items) => NamidaReceiveIntentManager.executeReceivedItems(items, (f) => f.value, (f) => f.realPath),
+    );
 
-  if (!await Permission.manageExternalStorage.isGranted) {
-    await Permission.manageExternalStorage.request();
-  }
-
-  if (!await Permission.manageExternalStorage.isGranted || await Permission.manageExternalStorage.isDenied) {
-    snackyy(title: lang.STORAGE_PERMISSION_DENIED, message: lang.STORAGE_PERMISSION_DENIED_SUBTITLE, isError: true);
-    return false;
-  }
-  await createDir();
-  return true;
-}
-
-Future<void> setJiffyLocale(String code) async {
-  try {
-    await Jiffy.setLocale(code);
-  } catch (e) {
-    try {
-      await Jiffy.setLocale(code.split('_').first);
-    } catch (_) {}
-  }
-}
-
-BuildContext get rootContext => _initialContext;
-late BuildContext _initialContext;
-final _waitForFirstBuildContext = Completer<bool>();
-
-class Namida extends StatelessWidget {
-  final bool shouldShowOnBoarding;
-  const Namida({super.key, required this.shouldShowOnBoarding});
-
-  @override
-  Widget build(BuildContext context) {
-    // -- no need to listen, widget is rebuilt on applifecycle
-    final showPipOnly = NamidaChannel.inst.isInPip.value && Player.inst.videoPlayerInfo != null;
-    return Stack(
-      alignment: Alignment.bottomLeft,
-      children: [
-        Visibility(
-          maintainState: true,
-          visible: !showPipOnly,
-          child: Obx(
-            () {
-              final codes = settings.selectedLanguage.value.code.split('_');
-              return Localizations(
-                locale: Locale(codes.first, codes.last),
-                delegates: const [
-                  DefaultWidgetsLocalizations.delegate,
-                  DefaultMaterialLocalizations.delegate,
-                ],
-                child: GetMaterialApp(
-                  key: const Key('namida_app'),
-                  debugShowCheckedModeBanner: false,
-                  title: 'Namida',
-                  // restorationScopeId: 'Namida',
-                  builder: (context, widget) {
-                    return ScrollConfiguration(
-                      behavior: const ScrollBehaviorModified(),
-                      child: Obx(
-                        () {
-                          final mode = settings.themeMode.value;
-                          final useDarkTheme = mode == ThemeMode.dark || (mode == ThemeMode.system && MediaQuery.platformBrightnessOf(context) == Brightness.dark);
-                          final isLight = !useDarkTheme;
-                          final theme = AppThemes.inst.getAppTheme(CurrentColor.inst.currentColorScheme, isLight);
-                          SystemChrome.setSystemUIOverlayStyle(
-                            SystemUiOverlayStyle(
-                              systemNavigationBarContrastEnforced: false,
-                              systemNavigationBarColor: const Color(0x00000000),
-                              systemNavigationBarDividerColor: const Color(0x00000000),
-                              systemNavigationBarIconBrightness: isLight ? Brightness.dark : Brightness.light,
-                            ),
-                          );
-                          return AnimatedTheme(
-                            duration: const Duration(milliseconds: kThemeAnimationDurationMS),
-                            data: theme,
-                            child: widget!,
-                          );
-                        },
-                      ),
-                    );
-                  },
-                  home: MainPageWrapper(
-                    shouldShowOnBoarding: shouldShowOnBoarding,
-                    onContextAvailable: (ctx) {
-                      _initialContext = ctx;
-                      _waitForFirstBuildContext.isCompleted ? null : _waitForFirstBuildContext.complete(true);
-                    },
-                  ),
-                ),
-              );
-            },
-          ),
-        ),
-
-        // prevent accidental opening for drawer when performing back gesture
-        SizedBox(
-          width: 18.0,
-          height: context.height * 0.8,
-          child: GestureDetector(
-            onHorizontalDragUpdate: (details) {},
-          ),
-        ),
-
-        // prevent accidental miniplayer swipe when performing back gesture
-        Positioned(
-          right: 0,
-          child: SizedBox(
-            width: 8.0,
-            height: context.height,
-            child: GestureDetector(
-              onHorizontalDragUpdate: (details) {},
-            ),
-          ),
-        ),
-
-        if (showPipOnly)
-          Container(
-            color: Colors.black,
-            alignment: Alignment.topLeft,
-            child: const NamidaVideoControls(
-              key: Key('pip_widget_child'),
-              isFullScreen: true,
-              showControls: false,
-              onMinimizeTap: null,
-              isLocal: true,
-            ),
-          )
-      ],
+    // -- Listening to Android Shared Intents.
+    FlutterSharingIntent.instance.getMediaStream().listen(
+      (items) => NamidaReceiveIntentManager.executeReceivedItems(items, (f) => f.value, (f) => f.realPath),
+      onError: (err) => NamidaReceiveIntentManager.showErrorPlayingFileSnackbar(error: err.toString()),
     );
   }
 }
 
+Future<bool> requestManageStoragePermission({bool request = true, bool showError = true, String? directoryToCreate}) async {
+  return PermissionManager.platform.requestManageStoragePermission(
+    request: request,
+    showError: showError,
+    directoryToCreate: directoryToCreate,
+  );
+}
+
+BuildContext get rootContext => namida.rootNavigatorKey.currentContext!;
+
+class Namida extends StatefulWidget {
+  const Namida({super.key});
+
+  @override
+  State<Namida> createState() => _NamidaState();
+
+  static Future<Never> disposeAllResourcesAndExit() async {
+    await [
+      windowManager.hide(),
+      TrayController.instance?.dispose(),
+    ].executeAllAndSilentReportErrors();
+    await Future.any(
+      [
+        // -- usually it takes few milliseconds, but limit to 2 seconds just in case.
+        Future.delayed(const Duration(seconds: 2)),
+        Namida._disposeAllResources().ignoreError(),
+      ],
+    );
+    if (Platform.isWindows) terminateProcessWindows();
+    await windowManager.destroy().ignoreError();
+    return exit(0); // -- destroy alone can take seconds to actually close the process
+  }
+
+  /// `exit` (ExitProcess) runs dll detach routines while the engine & gpu threads are still alive, some gpu drivers hang or crash there.
+  static void terminateProcessWindows() {
+    final kernel32 = ffi.DynamicLibrary.open('kernel32.dll');
+    final getCurrentProcess = kernel32.lookupFunction<ffi.IntPtr Function(), int Function()>('GetCurrentProcess');
+    final terminateProcess = kernel32.lookupFunction<ffi.Int32 Function(ffi.IntPtr process, ffi.Uint32 exitCode), int Function(int process, int exitCode)>('TerminateProcess');
+    final currentProcess = getCurrentProcess();
+    terminateProcess(currentProcess, 0);
+  }
+
+  static Future<void> _disposeAllResources() async {
+    // -- before the dbs, it saves the last position into them
+    await Player.inst.disposeForExit().catchError(logger.report);
+    YoutubeInfoController.dispose();
+    await [
+      PortsProvider.disposeAll(),
+      ShortcutKeyData.disposeAllHotkeys(),
+      SearchSortController.inst.disposeResources(),
+      NamicoDBWrapper.dispose(),
+      SMTCController.instance?.dispose(),
+      AppSingleInstanceBase.instance?.dispose(),
+    ].executeAllAndSilentReportErrors();
+    await logger.dispose();
+  }
+
+  static final shouldAddEdgeAbsorbers = Platform.isAndroid || Platform.isIOS;
+
+  /// `en` is prepended to be used as the resolution fallback instead of the first supported locale.
+  static const _supportedLocales = <Locale>[Locale('en'), ...AppLocalizations.supportedLocales];
+
+  static const _localizationsDelegates = <LocalizationsDelegate<dynamic>>[
+    GlobalMaterialLocalizations.delegate,
+    GlobalCupertinoLocalizations.delegate,
+    GlobalWidgetsLocalizations.delegate,
+    FallbackMaterialLocalizationsDelegate(),
+    FallbackCupertinoLocalizationsDelegate(),
+    FallbackWidgetsLocalizationsDelegate(),
+  ];
+}
+
+class _NamidaState extends State<Namida> {
+  Widget buildMainApp(Widget widget, Brightness? platformBrightness) => ScrollConfiguration(
+    behavior: const ScrollBehaviorModified(),
+    child: ObxO(
+      rx: Language.inst.currentLanguageRx,
+      builder: (_, l) => Obx(
+        key: ValueKey(l),
+        (context) {
+          final mode = settings.themeMode.valueR;
+          final isLight = mode.checkIsLight(platformBrightness);
+          final theme = AppThemes.inst.getAppTheme(CurrentColor.inst.currentColorScheme, isLight);
+          final mainChild = WindowController.instance?.usingCustomWindowTitleBar == true
+              ? WrapWithWindowGoodies(
+                  child: widget,
+                )
+              : widget;
+
+          const effectsOverlay = Positioned.fill(
+            child: NamidaEffectsLayer.overlay(),
+          );
+
+          return Theme(
+            data: theme,
+            child: WindowController.instance == null
+                ? Stack(
+                    fit: StackFit.passthrough,
+                    children: [
+                      mainChild,
+                      effectsOverlay,
+                    ],
+                  )
+                : ObxO(
+                    rx: NamidaWindowManager.isMiniLyricsMode,
+                    builder: (context, isMiniLyricsMode) => Stack(
+                      fit: StackFit.expand,
+                      children: [
+                        Visibility(
+                          maintainState: true,
+                          visible: !isMiniLyricsMode,
+                          child: mainChild,
+                        ),
+                        isMiniLyricsMode ? const MiniLyricsWindow() : effectsOverlay,
+                        if (NamidaFeaturesVisibility.recieveDragAndDrop) const _NamidaDropZonesOverlay(),
+                      ],
+                    ),
+                  ),
+          );
+        },
+      ),
+    ),
+  );
+
+  bool? _shouldShowOnBoarding;
+
+  static const _timeAwareRecheckInterval = Duration(hours: 24);
+  late DateTime _lastTimeAwareRecheck;
+  Timer? _timeAwareRecheckTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    _initStuff();
+  }
+
+  Future<void> _initStuff() async {
+    final shouldShowOnBoarding = await _mainAppInitialization();
+    setState(() => _shouldShowOnBoarding = shouldShowOnBoarding);
+
+    FlutterNativeSplash.remove();
+
+    final windowController = WindowController.instance;
+    if (windowController != null) {
+      // -- a window shown before its first frame is transparent then flashes white
+      WidgetsBinding.instance.waitUntilFirstFrameRasterized.then((_) => windowController.ensurePositionRestored(restoreBounds: false)).catchError(logger.report);
+    }
+
+    if (Platform.isLinux) {
+      WidgetsBinding.instance.endOfFrame.then((_) => _secondaryAppInitialization(shouldShowOnBoarding));
+    } else {
+      Timer(
+        Duration.zero,
+        () => _secondaryAppInitialization(shouldShowOnBoarding),
+      );
+    }
+
+    if (MusicWebServerAuthDetails.manager.hasMissingAuthRx.value) {
+      Timer(
+        const Duration(seconds: 3),
+        MusicWebServerAuthDetails.manager.promptFillMissingAuthDialog,
+      );
+    }
+
+    WidgetsBinding.instance.addPostFrameCallback((_) => _refreshSystemBarsColors());
+    settings.themeMode.addListener(_refreshSystemBarsColors);
+
+    _lastTimeAwareRecheck = DateTime.now();
+    _timeAwareRecheckTimer = Timer.periodic(
+      const Duration(minutes: 30),
+      (_) => _recheckTimeAwareEssentialsIfDue(),
+    );
+    NamidaChannel.inst.addOnResume(_recheckTimeAwareEssentialsIfDue);
+  }
+
+  @override
+  void dispose() {
+    _timeAwareRecheckTimer?.cancel();
+    NamidaChannel.inst.removeOnResume(_recheckTimeAwareEssentialsIfDue);
+    super.dispose();
+  }
+
+  void _recheckTimeAwareEssentialsIfDue() {
+    final now = DateTime.now();
+    if (now.difference(_lastTimeAwareRecheck) < _timeAwareRecheckInterval) return;
+    _lastTimeAwareRecheck = now;
+    _recheckTimeAwareEssentials();
+  }
+
+  static void refreshSystemBarsColors(BuildContext context, {bool forceRefresh = false}) {
+    final mode = settings.themeMode.value;
+    final platformBrightness = MediaQuery.platformBrightnessOf(context);
+    final isLight = mode.checkIsLight(platformBrightness);
+    NamidaNavigator.inst.setSystemUIOverlayStyleCustom(isLight, forceRefresh: forceRefresh);
+  }
+
+  void _refreshSystemBarsColors() {
+    return refreshSystemBarsColors(context);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final shouldShowOnBoarding = _shouldShowOnBoarding;
+    if (shouldShowOnBoarding == null) return const SizedBox();
+
+    final shouldAddEdgeAbsorbers = Namida.shouldAddEdgeAbsorbers;
+    final mainPageWrapper = shouldShowOnBoarding ? const FirstRunConfigureScreen() : const MainPageWrapper();
+    Widget finalApp = Directionality(
+      textDirection: TextDirection.ltr,
+      child: ObxO(
+        rx: NamidaChannel.inst.isInPip,
+        builder: (context, showPipOnly) => ObxO(
+          rx: NamidaWindowManager.isMiniLyricsMode,
+          builder: (context, isMiniLyricsMode) => Container(
+            color: isMiniLyricsMode ? Colors.transparent : Colors.black,
+            alignment: Alignment.topLeft,
+            child: Stack(
+              alignment: Alignment.bottomLeft,
+              children: [
+                Visibility(
+                  maintainState: true,
+                  visible: !showPipOnly,
+                  child: ObxO(
+                    rx: Language.inst.currentLanguageRx,
+                    builder: (context, language) => MaterialApp(
+                      color: kDefaultIconLightColor,
+                      key: const Key('namida_app'),
+                      debugShowCheckedModeBanner: false,
+                      navigatorKey: namida.rootNavigatorKey,
+                      title: 'Namida',
+                      shortcuts: ShortcutsController.instance?.appShortcuts,
+                      // restorationScopeId: 'Namida',
+                      // -- we use custom logic for translations, but the locale is still required for
+                      // -- region-specific glyphs, ex: CJK ideographs are rendered differently per locale.
+                      locale: language?.locale,
+                      supportedLocales: Namida._supportedLocales,
+                      localizationsDelegates: Namida._localizationsDelegates,
+                      builder: (context, widget) {
+                        Brightness platformBrightness = MediaQuery.platformBrightnessOf(context);
+                        // overlay entries get rebuilt on any insertion/removal, so we create app here.
+
+                        Widget mainApp = buildMainApp(widget!, platformBrightness);
+
+                        // -- text scaling is applied here rather than above [MaterialApp], so keyboard insets
+                        // -- & other media query changes dont recreate the app widget itself.
+                        return Directionality(
+                          textDirection: TextDirection.ltr,
+                          child: _ScaledTextMediaQuery(
+                            child: Overlay(
+                              initialEntries: [
+                                OverlayEntry(
+                                  builder: (context) {
+                                    final newPlatformBrightness = MediaQuery.platformBrightnessOf(context);
+                                    if (newPlatformBrightness != platformBrightness) {
+                                      platformBrightness = newPlatformBrightness;
+                                      mainApp = buildMainApp(widget, platformBrightness);
+                                      YoutubeMiniplayerUiController.inst.startDimTimer(brightness: platformBrightness);
+                                    }
+                                    return mainApp;
+                                  },
+                                ),
+                              ],
+                            ),
+                          ),
+                        );
+                      },
+                      home: mainPageWrapper,
+                    ),
+                  ),
+                ),
+
+                // prevent accidental opening for drawer when performing back gesture
+                if (shouldAddEdgeAbsorbers)
+                  Positioned(
+                    left: 0,
+                    top: 0,
+                    bottom: 0,
+                    width: 18.0,
+                    child: Align(
+                      alignment: Alignment.bottomLeft,
+                      child: FractionallySizedBox(
+                        heightFactor: 0.8,
+                        child: HorizontalDragDetector(
+                          behavior: HitTestBehavior.translucent,
+                          onUpdate: (_) {},
+                        ),
+                      ),
+                    ),
+                  ),
+
+                // prevent accidental miniplayer/queue swipe up when performing home scween gesture
+                if (shouldAddEdgeAbsorbers)
+                  Positioned(
+                    left: 0,
+                    right: 0,
+                    bottom: 0,
+                    height: 18.0,
+                    child: VerticalDragDetector(
+                      behavior: HitTestBehavior.translucent,
+                      onUpdate: (_) {},
+                    ),
+                  ),
+
+                // prevent accidental miniplayer/queue swipe horizontal when performing home scween horizontal gesture
+                if (shouldAddEdgeAbsorbers)
+                  Positioned(
+                    left: 0,
+                    right: 0,
+                    bottom: 0,
+                    height: 18.0,
+                    child: HorizontalDragDetector(
+                      behavior: HitTestBehavior.translucent,
+                      onUpdate: (_) {},
+                    ),
+                  ),
+
+                // prevent accidental miniplayer swipe when performing back gesture
+                if (shouldAddEdgeAbsorbers)
+                  Positioned(
+                    right: 0,
+                    top: 0,
+                    bottom: 0,
+                    width: 12.0,
+                    child: HorizontalDragDetector(
+                      behavior: HitTestBehavior.translucent,
+                      onUpdate: (_) {},
+                    ),
+                  ),
+
+                if (showPipOnly)
+                  const NamidaVideoControls(
+                    key: Key('pip_widget_child'),
+                    isFullScreen: true,
+                    showControls: false,
+                    forceEnableSponsorBlock: false,
+                    onMinimizeTap: null,
+                    isLocal: true,
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+    if (!NamidaFeaturesVisibility.accessibilitySemantics) finalApp = ExcludeSemantics(child: finalApp);
+    if (NamidaFeaturesVisibility.recieveDragAndDrop) finalApp = _NamidaDropRegion(child: finalApp);
+
+    return NamidaUIScaleWrapper(child: finalApp);
+  }
+}
+
+class _ScaledTextMediaQuery extends StatelessWidget {
+  final Widget child;
+  const _ScaledTextMediaQuery({required this.child});
+
+  @override
+  Widget build(BuildContext context) {
+    return ObxO(
+      rx: settings.fontScaleFactor,
+      builder: (context, fontScaleFactor) => MediaQuery(
+        data: MediaQuery.of(context).copyWith(textScaler: TextScaler.linear(fontScaleFactor)),
+        child: child,
+      ),
+    );
+  }
+}
+
+class _HttpCacheCustomCacheConfig extends GlobalCacheConfig {
+  _HttpCacheCustomCacheConfig._(RhttpCompatibleClient client)
+    : super(
+        cacheDirectory: Directory(''),
+        maxBufferSize: 25 * 1024 * 1024, // 25MB
+        rangeRequestSplitThreshold: 512 * 1024, // 512KB
+        customHttpClient: client,
+      );
+}
+
+/// [AnimationController]s cut their durations while [disableAnimations] is on, same as with the platform setting.
+class _NamidaWidgetsBinding extends WidgetsFlutterBinding {
+  @override
+  bool get disableAnimations => settings.extra.reduceAnimations.value == true || super.disableAnimations;
+}
+
 class ScrollBehaviorModified extends ScrollBehavior {
   const ScrollBehaviorModified();
+
+  @override
+  Set<PointerDeviceKind> get dragDevices => PointerDeviceKind.values.toSet();
+
+  @override
+  Widget buildScrollbar(BuildContext context, Widget child, ScrollableDetails details) => child;
+
   @override
   ScrollPhysics getScrollPhysics(BuildContext context) {
     switch (getPlatform(context)) {
@@ -537,7 +905,393 @@ class ScrollBehaviorModified extends ScrollBehavior {
       case TargetPlatform.fuchsia:
       case TargetPlatform.linux:
       case TargetPlatform.windows:
-        return const ClampingScrollPhysicsModified();
+        return const BouncingScrollPhysicsModified();
     }
   }
+}
+
+class NamidaReceiveIntentManager {
+  static void executeReceivedItems<T>(List<T> files, String? Function(T f) valueCallback, String? Function(T f) realPathCallback) {
+    _executeReceivedItems(files, valueCallback, realPathCallback, null);
+  }
+
+  static void _executeReceivedItems<T>(List<T> files, String? Function(T f) valueCallback, String? Function(T f) realPathCallback, _DropZone? dropZone) {
+    // -- deep links
+    if (files.length == 1) {
+      final linkRaw = valueCallback(files.first);
+      if (linkRaw != null) {
+        final link = Platform.isAndroid ? linkRaw.replaceAll(r'\', '') : linkRaw;
+        if (link.startsWith('app://patreonauth.msob7y.namida')) {
+          final link = Platform.isAndroid ? linkRaw.replaceAll(r'\', '') : linkRaw;
+          YoutubeAccountController.membership.redirectUrlCompleter?.completeIfWasnt(link);
+          return;
+        }
+        if (PartyController.parseInvite(link) != null) {
+          PartyController.inst.pendingInvite.value = link;
+          WidgetsBinding.instance.addPostFrameCallback((_) => const NamidaPartyPage().navigate());
+          return;
+        }
+      }
+    }
+    WidgetsBinding.instance.addPostFrameCallback((timeStamp) async {
+      if (files.isNotEmpty) {
+        final paths = <String>[];
+        final m3uPaths = <String>{};
+        final unresolved = <String>[];
+        for (var f in files) {
+          final realPath = realPathCallback(f);
+          if (realPath != null) {
+            final path = Platform.isAndroid ? realPath.replaceAll(r'\', '') : realPath;
+            if (NamidaFileExtensionsWrapper.m3u.isPathValid(path)) {
+              m3uPaths.add(path);
+            } else {
+              paths.add(path);
+            }
+          } else {
+            final value = valueCallback(f);
+            if (value != null) {
+              if (value.startsWith('content://') || value.startsWith('file://')) {
+                unresolved.add(value);
+              } else {
+                for (final e in value.split('\n')) {
+                  final parts = e.split('https://');
+                  for (int i = 1; i < parts.length; i++) {
+                    final line = parts[i];
+                    if (line.isNotEmpty) paths.add("https://$line");
+                  }
+                }
+              }
+            }
+          }
+        }
+
+        if (m3uPaths.isNotEmpty) {
+          final allTracks = await PlaylistController.inst.readM3UFiles(m3uPaths);
+          final err = await _extractAndPlayExternalFiles(allTracks.map((e) => e.path), dropZone);
+          if (err != null) showErrorPlayingFileSnackbar(error: err);
+        } else if (paths.isNotEmpty) {
+          final youtubeIds = paths.map((e) {
+            final id = e.getYoutubeID;
+            return id == '' ? null : id;
+          }).whereType<String>();
+          final ytPlaylistsIds = paths.map((e) {
+            final matchPlId = e.isEmpty ? null : NamidaLinkUtils.extractPlaylistId(e);
+            return matchPlId;
+          }).whereType<String>();
+          if (youtubeIds.isNotEmpty) {
+            final youtubeAction = dropZone?.toYoutubeAction() ?? settings.youtube.onYoutubeLinkOpen.value;
+            youtubeAction.execute(youtubeIds);
+          } else if (ytPlaylistsIds.isNotEmpty) {
+            for (final plid in ytPlaylistsIds) {
+              YTHostedPlaylistSubpage.fromId(playlistId: plid, userPlaylist: null).navigate();
+            }
+          } else {
+            // -- this for sussy links
+            final existing = <String>[];
+            for (final path in paths) {
+              final type = FileSystemEntity.typeSync(path);
+              if (type == FileSystemEntityType.file || type == FileSystemEntityType.directory) {
+                existing.add(path);
+              } else {
+                unresolved.add(path);
+              }
+            }
+            if (existing.isEmpty) {
+              showErrorPlayingFileSnackbar(error: _fileNotFoundError(unresolved));
+            } else {
+              final err = await _extractAndPlayExternalFiles(existing, dropZone);
+              if (err != null) showErrorPlayingFileSnackbar(error: err);
+            }
+          }
+        } else if (unresolved.isNotEmpty) {
+          showErrorPlayingFileSnackbar(error: _fileNotFoundError(unresolved));
+        }
+      }
+    });
+  }
+
+  static String _fileNotFoundError(List<String> paths) {
+    final buffer = StringBuffer('File not found or not accessible');
+    if (paths.isNotEmpty) {
+      buffer.write(': ');
+      buffer.writeAll(paths, ', ');
+    }
+    return buffer.toString();
+  }
+
+  static Future<String?> _extractAndPlayExternalFiles(Iterable<String> paths, _DropZone? dropZone) async {
+    try {
+      final trs = await Indexer.inst.convertPathsToExternalTracks(paths);
+      if (trs.isNotEmpty) {
+        switch (dropZone) {
+          case null || _DropZone.play:
+            await Player.inst.playOrPause(0, trs, QueueSource.externalFile);
+          case _DropZone.playLast:
+            await Player.inst.addToQueue(trs);
+          case _DropZone.more:
+            _showExternalTracksDialog(trs);
+        }
+        return null;
+      } else {
+        return 'Empty List (original ${paths.length} | extracted: ${trs.length})';
+      }
+    } catch (e, st) {
+      logger.error('Error playing file', e: e, st: st);
+      return e.toString();
+    }
+  }
+
+  static void _showExternalTracksDialog(List<Track> tracks) {
+    if (tracks.length == 1) {
+      NamidaDialogs.inst.showTrackDialog(tracks.first, source: QueueSource.externalFile);
+      return;
+    }
+    final subtitle = [tracks.displayTrackKeyword, tracks.totalDurationFormatted].join(' - ');
+    showGeneralPopupDialog(
+      tracks,
+      lang.externalFiles,
+      subtitle,
+      QueueSource.externalFile,
+      extractColor: false,
+      forceSquared: true,
+    );
+  }
+
+  static void showErrorPlayingFileSnackbar({String? error}) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final errorMessage = error != null ? '($error)' : '';
+      snackyy(title: lang.error, message: '${lang.couldntPlayFile} $errorMessage');
+    });
+  }
+}
+
+class _NamidaDropRegion extends StatelessWidget {
+  final Widget child;
+  const _NamidaDropRegion({required this.child});
+
+  static final _hoveredZone = RxnO<_DropZone>();
+
+  static DropOperation _getDropOperation(DropSession session) {
+    final item = session.items.first;
+    if (item.canProvide(Formats.plainText)) {
+      return DropOperation.link;
+    }
+    if (item.canProvide(Formats.fileUri) || session.allowedOperations.contains(DropOperation.copy)) {
+      return DropOperation.copy;
+    }
+
+    return DropOperation.none;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return DropRegion(
+      formats: Formats.standardFormats,
+      hitTestBehavior: HitTestBehavior.opaque,
+      onDropOver: (event) {
+        final operation = _getDropOperation(event.session);
+        final regionSize = context.size;
+        if (operation == DropOperation.none || regionSize == null) {
+          _hoveredZone.value = null;
+        } else {
+          _hoveredZone.value = _DropZone.fromOffset(event.position.local.dy, regionSize.height);
+        }
+        return operation;
+      },
+      onDropLeave: (_) => _hoveredZone.value = null,
+      onDropEnded: (_) => _hoveredZone.value = null,
+      onPerformDrop: (event) async {
+        final dropZone = _hoveredZone.value;
+        _hoveredZone.value = null;
+        final finalData = <String>[];
+        for (final item in event.session.items) {
+          final reader = item.dataReader;
+          if (reader == null) continue;
+          if (reader.canProvide(Formats.plainText)) {
+            final completer = Completer<String?>();
+            reader.getValue<String>(Formats.plainText, completer.complete, onError: (_) => completer.complete(null));
+            final value = await completer.future.ignoreError();
+            if (value != null) finalData.add(value);
+          }
+          if (reader.canProvide(Formats.fileUri)) {
+            final completer = Completer<Uri?>();
+            reader.getValue<Uri>(Formats.fileUri, completer.complete, onError: (_) => completer.complete(null));
+            final value = await completer.future.ignoreError();
+            if (value != null) finalData.add(value.toFilePath());
+          }
+        }
+        NamidaReceiveIntentManager._executeReceivedItems(finalData, (f) => f, (f) => f, dropZone);
+      },
+      child: child,
+    );
+  }
+}
+
+class _NamidaDropZonesOverlay extends StatelessWidget {
+  const _NamidaDropZonesOverlay();
+
+  @override
+  Widget build(BuildContext context) {
+    return IgnorePointer(
+      child: ObxO(
+        rx: _NamidaDropRegion._hoveredZone,
+        builder: (context, hoveredZone) {
+          final content = hoveredZone == null ? const SizedBox() : _DropZonesContent(hoveredZone: hoveredZone);
+          return AnimatedSwitcher(
+            duration: const Duration(milliseconds: 200),
+            switchInCurve: Curves.easeOut,
+            switchOutCurve: Curves.easeIn,
+            child: content,
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _DropZonesContent extends StatelessWidget {
+  final _DropZone hoveredZone;
+  const _DropZonesContent({required this.hoveredZone});
+
+  @override
+  Widget build(BuildContext context) {
+    return RepaintBoundary(
+      child: ColoredBox(
+        color: Colors.black38,
+        child: Padding(
+          padding: _DropZone.getOverlayMargin(),
+          child: TweenAnimationBuilder<double>(
+            tween: Tween(begin: 0.96, end: 1.0),
+            duration: const Duration(milliseconds: 250),
+            curve: Curves.easeOutCubic,
+            builder: (context, scale, child) => Transform.scale(
+              scale: scale,
+              child: child,
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: _DropZone.values
+                  .map(
+                    (e) => Expanded(
+                      flex: e.flex,
+                      child: _DropZoneBox(
+                        zone: e,
+                        isHovered: e == hoveredZone,
+                      ),
+                    ),
+                  )
+                  .toFixedList(),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _DropZoneBox extends StatelessWidget {
+  final _DropZone zone;
+  final bool isHovered;
+  const _DropZoneBox({required this.zone, required this.isHovered});
+
+  static const _animationDuration = Duration(milliseconds: 200);
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = context.theme;
+    final textTheme = theme.textTheme;
+    final backgroundColor = theme.cardColor.withOpacityExt(isHovered ? 0.95 : 0.85);
+    final borderColor = theme.colorScheme.onSurface.withOpacityExt(isHovered ? 0.2 : 0.06);
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 3.0),
+      child: AnimatedDecoration(
+        duration: _animationDuration,
+        curve: Curves.easeOut,
+        decoration: BoxDecoration(
+          color: backgroundColor,
+          border: Border.all(color: borderColor),
+          borderRadius: BorderRadius.circular(16.0.multipliedRadius),
+        ),
+        child: AnimatedOpacity(
+          opacity: isHovered ? 1.0 : 0.5,
+          duration: _animationDuration,
+          curve: Curves.easeOut,
+          child: AnimatedScale(
+            scale: isHovered ? 1.0 : 0.94,
+            duration: _animationDuration,
+            curve: Curves.easeOutBack,
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(
+                  zone.toIcon(),
+                  size: 28.0,
+                ),
+                const SizedBox(width: 12.0),
+                Text(
+                  zone.toText(),
+                  style: textTheme.displayLarge?.copyWith(fontSize: 20.0),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+enum _DropZone {
+  play(flex: 5),
+  playLast(flex: 2),
+  more(flex: 1),
+  ;
+
+  final int flex;
+  const _DropZone({required this.flex});
+
+  static const _overlayHorizontalMargin = 12.0;
+  static const _overlayVerticalMargin = 8.0;
+  static final _totalFlex = values.fold<int>(0, (total, e) => total + e.flex);
+
+  static EdgeInsets getOverlayMargin() {
+    final titleBarHeight = WindowController.instance?.windowTitleBarHeightIfActive ?? 0.0;
+    return EdgeInsets.fromLTRB(
+      _overlayHorizontalMargin,
+      _overlayVerticalMargin + titleBarHeight,
+      _overlayHorizontalMargin,
+      _overlayVerticalMargin,
+    );
+  }
+
+  static _DropZone fromOffset(double dy, double height) {
+    final margin = getOverlayMargin();
+    final zonesY = dy - margin.top;
+    final zonesHeight = height - margin.vertical;
+    final position = zonesY / zonesHeight * _totalFlex;
+    var zoneEnd = 0;
+    for (final zone in values) {
+      zoneEnd += zone.flex;
+      if (position < zoneEnd) return zone;
+    }
+    return values.last;
+  }
+
+  String toText() => switch (this) {
+    _DropZone.play => lang.play,
+    _DropZone.playLast => lang.playLast,
+    _DropZone.more => lang.more,
+  };
+
+  IconData toIcon() => switch (this) {
+    _DropZone.play => Broken.play,
+    _DropZone.playLast => Broken.play_cricle,
+    _DropZone.more => Broken.more,
+  };
+
+  OnYoutubeLinkOpenAction toYoutubeAction() => switch (this) {
+    _DropZone.play => OnYoutubeLinkOpenAction.play,
+    _DropZone.playLast => OnYoutubeLinkOpenAction.playLast,
+    _DropZone.more => OnYoutubeLinkOpenAction.alwaysAsk,
+  };
 }

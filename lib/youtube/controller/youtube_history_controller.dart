@@ -1,14 +1,15 @@
 // ignore_for_file: non_constant_identifier_names
-
 import 'dart:collection';
 import 'dart:io';
 
 import 'package:history_manager/history_manager.dart';
 
+import 'package:namida/class/video.dart';
 import 'package:namida/controller/settings_controller.dart';
 import 'package:namida/core/constants.dart';
 import 'package:namida/core/dimensions.dart';
 import 'package:namida/core/extensions.dart';
+import 'package:namida/core/utils.dart';
 import 'package:namida/youtube/class/youtube_id.dart';
 
 class YoutubeHistoryController with HistoryManager<YoutubeID, String> {
@@ -16,19 +17,28 @@ class YoutubeHistoryController with HistoryManager<YoutubeID, String> {
   static final YoutubeHistoryController _instance = YoutubeHistoryController._internal();
   YoutubeHistoryController._internal();
 
+  @override
+  double daysToSectionExtent(List<int> days) {
+    const trackTileExtent = Dimensions.youtubeCardItemExtent;
+    const dayHeaderExtent = kHistoryDayHeaderHeightWithPadding;
+    double total = 0;
+    for (var day in days) {
+      total += dayToSectionExtent(day, trackTileExtent, dayHeaderExtent);
+    }
+    return total;
+  }
+
   Future<void> replaceAllVideosInsideHistory(YoutubeID oldVideo, YoutubeID newVideo) async {
     await replaceTheseTracksInHistory(
       (e) => e.id == oldVideo.id,
       (old) => YoutubeID(
         id: old.id,
+        source: old.source,
         watchNull: old.watch,
         playlistID: old.playlistID,
       ),
     );
   }
-
-  @override
-  double get DAY_HEADER_HEIGHT_WITH_PADDING => kHistoryDayHeaderHeightWithPadding;
 
   @override
   String get HISTORY_DIRECTORY => AppDirs.YT_HISTORY_PLAYLIST;
@@ -40,59 +50,82 @@ class YoutubeHistoryController with HistoryManager<YoutubeID, String> {
   String mainItemToSubItem(YoutubeID item) => item.id;
 
   @override
-  Future<({SplayTreeMap<int, List<YoutubeID>> historyMap, Map<String, List<int>> topItems})> prepareAllHistoryFilesFunction(String directoryPath) async {
+  Future<HistoryPrepareInfo<YoutubeID, String>> prepareAllHistoryFilesFunction(String directoryPath) async {
     return await _readHistoryFilesCompute.thready(directoryPath);
   }
 
-  static Future<({SplayTreeMap<int, List<YoutubeID>> historyMap, Map<String, List<int>> topItems})> _readHistoryFilesCompute(String path) async {
+  static HistoryPrepareInfo<YoutubeID, String> _readHistoryFilesCompute(String path) {
     final map = SplayTreeMap<int, List<YoutubeID>>((date1, date2) => date2.compareTo(date1));
     final tempMapTopItems = <String, List<int>>{};
-    for (final f in Directory(path).listSyncSafe()) {
+    int totalCount = 0;
+    final files = Directory(path).listSyncSafe();
+    for (final f in files) {
       if (f is File) {
         try {
-          final response = f.readAsJsonSync();
+          final response = f.readAsJsonSync(ensureExists: false) as List?;
           final dayOfVideo = int.parse(f.path.getFilenameWOExt);
-          final listVideos = (response as List?)?.mapped((e) => YoutubeID.fromJson(e)) ?? <YoutubeID>[];
-          map[dayOfVideo] = listVideos;
+          final canRepairDates = dayOfVideo > 0;
 
-          listVideos.loop((e, index) {
-            tempMapTopItems.addForce(e.id, e.dateTimeAdded.millisecondsSinceEpoch);
-          });
-        } catch (e) {
-          continue;
-        }
+          final listVideos = <YoutubeID>[];
+          bool didRepairDates = false;
+          YoutubeID? previous;
+          bool isNewestFirst = true;
+          if (response != null) {
+            for (final item in response) {
+              var vid = YoutubeID.fromJson(item);
+              if (canRepairDates && vid.dateAddedMS < _kUnknownDateMaxMS) {
+                vid = _withDayDate(vid, dayOfVideo);
+                didRepairDates = true;
+              }
+              final dateMS = vid.dateAddedMS;
+              if (previous != null && dateMS > previous.dateAddedMS) isNewestFirst = false;
+              previous = vid;
+              listVideos.add(vid);
+              tempMapTopItems.addForce(vid.id, dateMS);
+            }
+          }
+          if (!isNewestFirst) listVideos.sortByReverse((e) => e.dateAddedMS);
+          if (didRepairDates) {
+            final listVideosJson = listVideos.map((e) => e.toJson()).toFixedList();
+            f.writeAsJsonSync(listVideosJson);
+          }
+
+          map[dayOfVideo] = listVideos;
+          totalCount += listVideos.length;
+        } catch (_) {}
       }
     }
 
-    // -- Sorting dates
-    for (final entry in tempMapTopItems.values) {
-      entry.sort();
-    }
+    final topItems = ListensSortedMap<String>();
+    topItems.assignAll(tempMapTopItems);
 
-    final sortedEntries = tempMapTopItems.entries.toList()
-      ..sort((a, b) {
-        final compare = b.value.length.compareTo(a.value.length);
-        if (compare == 0) {
-          final lastListenB = b.value.lastOrNull ?? 0;
-          final lastListenA = a.value.lastOrNull ?? 0;
-          return lastListenB.compareTo(lastListenA);
-        }
-        return compare;
-      });
-    final topItems = Map.fromEntries(sortedEntries);
+    return HistoryPrepareInfo(
+      historyMap: map,
+      topItems: topItems,
+      totalItemsCount: totalCount,
+    );
+  }
 
-    return (historyMap: map, topItems: topItems);
+  /// watches saved without a date load as 0 or local 1970.
+  static const _kUnknownDateMaxMS = Duration.millisecondsPerDay;
+
+  static YoutubeID _withDayDate(YoutubeID vid, int day) {
+    final dayStartMS = HistoryManager.daysSince1970ToMilliseconds(day);
+    return YoutubeID(
+      id: vid.id,
+      source: vid.sourceNull,
+      watchNull: YTWatch(dateMSNull: dayStartMS, isYTMusic: vid.watch.isYTMusic),
+      queueSource: vid.queueSource,
+      playlistID: vid.playlistID,
+    );
   }
 
   @override
-  MostPlayedTimeRange get currentMostPlayedTimeRange => settings.ytMostPlayedTimeRange.value;
+  Rx<MostPlayedTimeRange> get currentMostPlayedTimeRange => settings.ytMostPlayedTimeRange;
 
   @override
-  DateRange get mostPlayedCustomDateRange => settings.ytMostPlayedCustomDateRange.value;
+  Rx<DateRange> get mostPlayedCustomDateRange => settings.ytMostPlayedCustomDateRange;
 
   @override
-  bool get mostPlayedCustomIsStartOfDay => settings.ytMostPlayedCustomisStartOfDay.value;
-
-  @override
-  double get trackTileItemExtent => Dimensions.youtubeCardItemExtent;
+  Rx<bool> get mostPlayedCustomIsStartOfDay => settings.ytMostPlayedCustomisStartOfDay;
 }

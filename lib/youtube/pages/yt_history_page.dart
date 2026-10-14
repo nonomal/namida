@@ -1,98 +1,122 @@
 import 'package:flutter/material.dart';
-import 'package:get/get.dart';
-import 'package:known_extents_list_view_builder/sliver_known_extents_list.dart';
+
+import 'package:history_manager/history_manager.dart';
 import 'package:playlist_manager/module/playlist_id.dart';
 import 'package:sticky_headers/sticky_headers.dart';
+import 'package:youtipie/class/youtipie_feed/playlist_basic_info.dart';
 
+import 'package:namida/base/history_days_rebuilder.dart';
+import 'package:namida/class/route.dart';
 import 'package:namida/controller/current_color.dart';
+import 'package:namida/controller/navigator_controller.dart';
 import 'package:namida/core/constants.dart';
 import 'package:namida/core/dimensions.dart';
+import 'package:namida/core/enums.dart';
 import 'package:namida/core/extensions.dart';
 import 'package:namida/core/icon_fonts/broken_icons.dart';
+import 'package:namida/core/translations/language.dart';
+import 'package:namida/core/utils.dart';
 import 'package:namida/ui/widgets/custom_widgets.dart';
+import 'package:namida/youtube/class/youtube_id.dart';
 import 'package:namida/youtube/controller/youtube_history_controller.dart';
 import 'package:namida/youtube/widgets/yt_history_video_card.dart';
 import 'package:namida/youtube/yt_utils.dart';
 
-class YoutubeHistoryPage extends StatefulWidget {
+class YoutubeHistoryPage extends StatefulWidget with NamidaRouteWidget {
+  @override
+  RouteType get route => RouteType.YOUTUBE_HISTORY_SUBPAGE;
+
   const YoutubeHistoryPage({super.key});
 
   @override
   State<YoutubeHistoryPage> createState() => _YoutubeHistoryPageState();
 }
 
-class _YoutubeHistoryPageState extends State<YoutubeHistoryPage> {
+class _YoutubeHistoryPageState extends State<YoutubeHistoryPage> with HistoryDaysRebuilderMixin<YoutubeHistoryPage, YoutubeID, String> {
   @override
-  void initState() {
-    super.initState();
-    YoutubeHistoryController.inst.canUpdateAllItemsExtentsInHistory = true;
-    YoutubeHistoryController.inst.calculateAllItemsExtentsInHistory();
-  }
+  HistoryManager<YoutubeID, String> get historyManager => YoutubeHistoryController.inst;
+
+  void _onYearTap(int year) => onYearTap(year, Dimensions.youtubeCardItemExtent, kYoutubeHistoryDayHeaderHeightWithPadding, addJumpPadding: false);
 
   @override
   void dispose() {
-    YoutubeHistoryController.inst.canUpdateAllItemsExtentsInHistory = false;
+    final isReplacedByHistoryPage = NamidaNavigator.inst.currentRoute?.route == RouteType.YOUTUBE_HISTORY_SUBPAGE;
+    if (!isReplacedByHistoryPage) YTUtils.historyListensNavigation.value = null;
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    return BackgroundWrapper(
-      child: CustomScrollView(
-        controller: YoutubeHistoryController.inst.scrollController,
-        slivers: [
-          Obx(
-            () {
-              final days = YoutubeHistoryController.inst.historyDays.toList();
-              return SliverKnownExtentsList(
-                key: UniqueKey(),
-                itemExtents: YoutubeHistoryController.inst.allItemsExtentsHistory,
-                delegate: SliverChildBuilderDelegate(
-                  childCount: YoutubeHistoryController.inst.historyDays.length,
-                  (context, index) {
-                    final day = days[index];
-                    final dayInMs = Duration(days: day).inMilliseconds;
-                    final videos = YoutubeHistoryController.inst.historyMap.value[day] ?? [];
+    final theme = context.theme;
+    final textTheme = theme.textTheme;
+    const cardExtent = Dimensions.youtubeCardItemExtent;
+    const dayHeaderExtent = kYoutubeHistoryDayHeaderHeightWithPadding;
 
-                    return StickyHeaderBuilder(
-                      key: ValueKey(index),
-                      builder: (context, stuckAmount) {
-                        return Container(
-                          clipBehavior: Clip.antiAlias,
-                          width: context.width,
-                          height: kYoutubeHistoryDayHeaderHeight,
-                          decoration: BoxDecoration(
-                            color: Color.alphaBlend(context.theme.cardColor.withAlpha(100), context.theme.scaffoldBackgroundColor),
-                            border: Border(
-                              left: BorderSide(
-                                color: CurrentColor.inst.color,
-                                width: (4.0).withMinimum(3.0),
-                              ),
-                            ),
-                            boxShadow: [
-                              BoxShadow(
-                                offset: const Offset(0, 8.0),
-                                blurRadius: 12.0,
-                                spreadRadius: 2.0,
-                                color: Color.alphaBlend(context.theme.shadowColor.withAlpha(180), context.theme.scaffoldBackgroundColor).withOpacity(0.4),
-                              ),
-                            ],
-                          ),
-                          child: Row(
-                            children: [
-                              const SizedBox(width: 12.0),
-                              Expanded(
-                                child: Text(
-                                  [
-                                    dayInMs.dateFormattedOriginal,
-                                    videos.length.displayVideoKeyword,
-                                  ].join('  •  '),
-                                  style: context.textTheme.displayMedium,
-                                ),
-                              ),
-                              NamidaPopupWrapper(
+    const dayHeaderHeight = kYoutubeHistoryDayHeaderHeight;
+    final dayHeaderBgColor = Color.alphaBlend(theme.cardColor.withAlpha(100), theme.scaffoldBackgroundColor);
+    final dayHeaderSideColor = CurrentColor.inst.color;
+    final dayHeaderShadowColor = Color.alphaBlend(theme.shadowColor.withAlpha(160), theme.scaffoldBackgroundColor).withOpacityExt(0.4);
+
+    final daysLength = historyDays.length;
+
+    final highlightColor = theme.colorScheme.onSurface.withAlpha(40);
+    final smallTextStyle = textTheme.displaySmall?.copyWith(fontSize: 12.0);
+
+    final yearsRow = getYearsRowWidget(context, _onYearTap);
+
+    return BackgroundWrapper(
+      child: Column(
+        children: [
+          yearsRow,
+          Expanded(
+            child: VideoTilePropertiesProvider(
+              configs: VideoTilePropertiesConfigs(
+                queueSource: QueueSourceYoutubeID.ytHistory,
+                playlistName: k_PLAYLIST_NAME_HISTORY,
+                playlistID: PlaylistID(id: k_PLAYLIST_NAME_HISTORY),
+                playlistInfo: () => PlaylistBasicInfo(
+                  id: '',
+                  title: lang.history,
+                  videosCountText: YoutubeHistoryController.inst.totalHistoryItemsCount.value.displayVideoKeyword,
+                  videosCount: YoutubeHistoryController.inst.totalHistoryItemsCount.value,
+                  thumbnails: [],
+                ),
+              ),
+              builder: (properties) => SmoothCustomScrollView(
+                controller: YoutubeHistoryController.inst.scrollController,
+                slivers: [
+                  ObxO(
+                    rx: YoutubeHistoryController.inst.historyMap,
+                    builder: (context, history) => ObxO(
+                      rx: YoutubeHistoryController.inst.highlightedItem,
+                      builder: (context, highlightedItem) => SliverVariedExtentList.builder(
+                        key: ValueKey(daysLength), // rebuild after adding/removing day
+                        itemExtentBuilder: (index, dimensions) {
+                          final day = historyDays[index];
+                          return YoutubeHistoryController.inst.dayToSectionExtent(day, cardExtent, dayHeaderExtent);
+                        },
+                        itemCount: daysLength,
+                        itemBuilder: (context, index) {
+                          final day = historyDays[index];
+                          final dayInMs = super.dayToMillis(day);
+                          final videos = history[day] ?? [];
+
+                          return StickyHeader(
+                            key: ValueKey(index),
+                            header: NamidaHistoryDayHeaderBox(
+                              height: dayHeaderHeight,
+                              title: [
+                                dayInMs.dateFormattedOriginal,
+                                videos.length.displayVideoKeyword,
+                              ].join('  •  '),
+                              sideColor: dayHeaderSideColor,
+                              bgColor: dayHeaderBgColor,
+                              shadowColor: dayHeaderShadowColor,
+                              menu: NamidaPopupWrapper(
                                 openOnLongPress: false,
                                 childrenDefault: () => YTUtils.getVideosMenuItems(
+                                  queueSource: QueueSourceYoutubeID.ytHistory,
+                                  context: context,
                                   playlistName: k_PLAYLIST_NAME_HISTORY,
                                   videos: videos,
                                 ),
@@ -104,40 +128,39 @@ class _YoutubeHistoryPageState extends State<YoutubeHistoryPage> {
                                   ),
                                 ),
                               ),
-                              const SizedBox(width: 2.0),
-                            ],
-                          ),
-                        );
-                      },
-                      content: Obx(
-                        () => SizedBox(
-                          height: YoutubeHistoryController.inst.allItemsExtentsHistory[index],
-                          width: context.width,
-                          child: ListView.builder(
-                            padding: const EdgeInsets.only(bottom: kYoutubeHistoryDayListBottomPadding, top: kYoutubeHistoryDayListTopPadding),
-                            primary: false,
-                            itemExtent: Dimensions.youtubeCardItemExtent,
-                            itemCount: videos.length,
-                            itemBuilder: (context, i) {
-                              return YTHistoryVideoCard(
-                                videos: videos,
-                                index: i,
-                                day: day,
-                                playlistID: const PlaylistID(id: k_PLAYLIST_NAME_HISTORY),
-                                playlistName: k_PLAYLIST_NAME_HISTORY,
-                                isImportantInCache: false, // long old history is lowkey useless
-                              );
-                            },
-                          ),
-                        ),
+                            ),
+                            content: SuperSmoothListView.builder(
+                              padding: const EdgeInsets.only(bottom: kYoutubeHistoryDayListBottomPadding, top: kYoutubeHistoryDayListTopPadding),
+                              primary: false,
+                              shrinkWrap: false,
+                              physics: const NeverScrollableScrollPhysics(),
+                              itemExtent: Dimensions.youtubeCardItemExtent,
+                              itemCount: videos.length,
+                              itemBuilder: (context, i) {
+                                final watch = videos[i];
+                                final topRightWidget = listenOrderWidget(watch, watch.id, smallTextStyle, topRightRadius: YTHistoryVideoCardBase.kDefaultBorderRadius);
+                                return YTHistoryVideoCard(
+                                  properties: properties,
+                                  videos: videos,
+                                  index: i,
+                                  day: day,
+                                  bgColor: highlightedItem != null && day == highlightedItem.dayToHighLight && i == highlightedItem.indexOfSmallList ? highlightColor : null,
+
+                                  isImportantInCache: false, // long old history is lowkey useless
+                                  topRightWidget: topRightWidget,
+                                );
+                              },
+                            ),
+                          );
+                        },
                       ),
-                    );
-                  },
-                ),
-              );
-            },
+                    ),
+                  ),
+                  kBottomPaddingWidgetSliver,
+                ],
+              ),
+            ),
           ),
-          kBottomPaddingWidgetSliver,
         ],
       ),
     );

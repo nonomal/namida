@@ -1,0 +1,25 @@
+display_name: Namida
+package_name: namida
+
+maintainer:
+  name: MSOB7YY
+  email: namida.coo@gmail.com
+
+priority: optional
+
+section: x11
+
+dependencies:
+  - mpv
+  - libepoxy0
+
+recommended_dependencies:
+  - libwebkit2gtk-4.1-0
+
+essential: false
+
+icon: linux/icons/namida_512.png
+desktop_file: linux/com.msob7y.namida.desktop
+
+postuninstall_scripts:
+  - echo "Sorry to see you go."

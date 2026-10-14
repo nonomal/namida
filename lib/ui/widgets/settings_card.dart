@@ -1,8 +1,7 @@
 import 'package:flutter/material.dart';
 
-import 'package:get/get.dart';
-
 import 'package:namida/core/extensions.dart';
+import 'package:namida/core/utils.dart';
 
 class SettingsCard extends StatelessWidget {
   final Widget child;
@@ -24,15 +23,17 @@ class SettingsCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final theme = context.theme;
+    final textTheme = theme.textTheme;
     return Container(
       clipBehavior: Clip.antiAlias,
       margin: const EdgeInsets.all(12.0),
       decoration: BoxDecoration(
-        color: context.theme.cardColor.withOpacity(0.6),
+        color: theme.cardColor.withOpacityExt(0.6),
         borderRadius: BorderRadius.circular(20.0.multipliedRadius),
         boxShadow: [
           BoxShadow(
-            color: context.theme.shadowColor.withAlpha(60),
+            color: theme.shadowColor.withAlpha(60),
             spreadRadius: 1,
             blurRadius: 10,
             offset: const Offset(0, 2),
@@ -49,7 +50,7 @@ class SettingsCard extends StatelessWidget {
             // margin: const EdgeInsets.all(12.0),
             padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12.0),
             decoration: BoxDecoration(
-              color: context.theme.cardColor.withOpacity(0.6),
+              color: theme.cardColor.withOpacityExt(0.6),
               // borderRadius: BorderRadius.circular(20.0.multipliedRadius),
             ),
             child: Row(
@@ -62,13 +63,17 @@ class SettingsCard extends StatelessWidget {
                     children: [
                       Text(
                         title,
-                        style: context.textTheme.displayLarge?.copyWith(fontSize: 18.0.multipliedFontScale),
+                        style: textTheme.displayLarge?.copyWith(fontSize: 18.0),
                       ),
-                      if (subtitle != null) Text(subtitle!, style: context.textTheme.displaySmall),
+                      if (subtitle != null)
+                        Text(
+                          '⤷ ${subtitle!}',
+                          style: textTheme.displaySmall,
+                        ),
                     ],
                   ),
                 ),
-                if (trailing != null) trailing!,
+                ?trailing,
               ],
             ),
           ),

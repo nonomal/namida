@@ -1,0 +1,214 @@
+part of 'namida_channel.dart';
+
+/// The new flutter update, calls AppLifecycleState.inactive whenever the app
+/// loses focus, like swiping notification center, not ideal for what we need.
+/// so we use a method channel whenever `onUserLeaveHint`, etc is called from FlutterActivity
+class _NamidaChannelAndroid extends NamidaChannel {
+  late final MethodChannel _channel;
+  late final EventChannel _channelEvent;
+
+  StreamSubscription? _streamSub;
+
+  @override
+  bool get canOpenFileInExplorer => false;
+  @override
+  Future<void>? openFileInExplorer(String filePath, {bool isDirectory = false}) => null;
+
+  _NamidaChannelAndroid._init() {
+    _channel = const MethodChannel('namida');
+    _channelEvent = const EventChannel('namida_events');
+
+    _initLiseners();
+  }
+
+  @override
+  bool get supportsAppIcons => true;
+  @override
+  Future<bool?> isAppIconEnabled(NamidaAppIcons type) async {
+    final res = await _channel.invokeMethod('isAppIconEnabled', {'key': type.name});
+    if (res is bool) {
+      return res;
+    }
+    return null;
+  }
+
+  @override
+  Future<void> changeAppIcon(NamidaAppIcons type) async {
+    await _channel.invokeMethod('changeAppIcon', {'key': type.name});
+  }
+
+  @override
+  Future<void> updatePipRatio({int? width, int? height}) async {
+    await _channel.invokeMethod('updatePipRatio', {'width': width, 'height': height});
+  }
+
+  @override
+  Future<void> setCanEnterPip(bool canEnter) async {
+    await _channel.invokeMethod('setCanEnterPip', {"canEnter": canEnter});
+  }
+
+  @override
+  Future<void> showToast({
+    required String message,
+    required SnackDisplayDuration duration,
+  }) async {
+    final seconds = (duration.milliseconds / 1000).ceil();
+    _channel.invokeMethod(
+      'showToast',
+      {
+        "text": message,
+        "seconds": seconds,
+      },
+    );
+  }
+
+  @override
+  Future<void> setMulticastLock(bool enabled) async {
+    await _channel.invokeMethod('setMulticastLock', {'enabled': enabled});
+  }
+
+  @override
+  Future<void> sendBroadcast(String action, Map<String, Object?> extras) async {
+    await _channel.invokeMethod('sendBroadcast', {'action': action, 'extras': extras});
+  }
+
+  @override
+  Future<bool> sendSuperLyric({required String? title, required String? artist, required String? album, required String? text, required int startMS, required int endMS}) async {
+    final sent = await _channel.invokeMethod<bool>('sendSuperLyric', {
+      'title': title,
+      'artist': artist,
+      'album': album,
+      'text': text,
+      'startMS': startMS,
+      'endMS': endMS,
+    });
+    return sent ?? false;
+  }
+
+  @override
+  Future<void> releaseSuperLyric() async {
+    await _channel.invokeMethod('releaseSuperLyric');
+  }
+
+  @override
+  Future<void> setUsbDacHandlerEnabled(bool enabled) async {
+    await _channel.invokeMethod('setUsbDacHandlerEnabled', {'enabled': enabled});
+  }
+
+  @override
+  Future<void> logPreviousAbnormalExits() async {
+    final reports = await _channel.invokeListMethod<Map>('consumeExitReports');
+    if (reports == null) return;
+    for (final report in reports) {
+      final time = DateTime.fromMillisecondsSinceEpoch(report['timestamp'] as int);
+      logger.error('previous session ended abnormally at $time', e: report['details']);
+    }
+  }
+
+  @override
+  Future<int> getPlatformSdk() async {
+    final version = await _channel.invokeMethod<int>('sdk');
+    return version!; // if null, the thrown exception is catched and retried eitherways.
+  }
+
+  @override
+  Future<bool> consumeSelfSentMediaCommand() async {
+    try {
+      final res = await _channel.invokeMethod<bool?>('consumeSelfSentMediaCommand');
+      return res ?? false;
+    } catch (_) {
+      // -- no activity (ex: service started by external command)
+      return false;
+    }
+  }
+
+  @override
+  Future<bool> setMonoAudio(bool? enabled) async {
+    final res = await _channel.invokeMethod<bool?>('setMonoAudio', {'enabled': enabled});
+    return res ?? false;
+  }
+
+  @override
+  Future<bool> setMusicAs({required String path, required List<SetMusicAsAction> types}) async {
+    final t = <int>[];
+    for (var e in types) {
+      final n = _setMusicAsActionConverter[e];
+      if (n != null) t.add(n);
+    }
+    final res = await _channel.invokeMethod<bool?>('setMusicAs', {'path': path, 'types': t});
+    return res ?? false;
+  }
+
+  @override
+  Future<bool> openSystemEqualizer(int? sessionId, {String? package}) async {
+    final res = await _channel.invokeMethod<bool?>('openEqualizer', {
+      'sessionId': sessionId,
+      'package': package,
+    });
+    return res ?? false;
+  }
+
+  @override
+  Future<bool> shareFiles(List<String> paths) async {
+    final res = await _channel.invokeMethod<bool?>('shareFiles', {'paths': paths});
+    return res ?? false;
+  }
+
+  @override
+  Future<bool> openHomeWidgetSettings() async {
+    final res = await _channel.invokeMethod<bool?>('openHomeWidgetSettings');
+    return res ?? false;
+  }
+
+  @override
+  Future<bool> openNamidaSync(String backupFolder, String musicFoldersJoined) async {
+    try {
+      final res = await _channel.invokeMethod(
+        'openNamidaSync',
+        {
+          'backupPath': backupFolder,
+          'musicFolders': musicFoldersJoined,
+        },
+      );
+      return res ?? false;
+    } on PlatformException catch (_) {
+      // -- package doesn't exist
+      return false;
+    }
+  }
+
+  void _initLiseners() {
+    _streamSub?.cancel();
+    try {
+      _streamSub = _channelEvent.receiveBroadcastStream().map((event) => event as bool).listen((message) {
+        isInPip.value = message;
+      });
+    } catch (_) {
+      // -- not initialized properly, can happen sometimes on newer android versions
+    }
+
+    _channel.setMethodCallHandler((call) async {
+      switch (call.method) {
+        case 'onResume':
+          for (final fn in _onResume) {
+            fn();
+          }
+
+        case 'onUserLeaveHint':
+          for (final fn in _onSuspending) {
+            fn();
+          }
+        case 'onDestroy':
+          for (final fn in _onDestroy) {
+            fn();
+          }
+      }
+    });
+  }
+
+  late final _setMusicAsActionConverter = {
+    SetMusicAsAction.alarm: 4,
+    SetMusicAsAction.notification: 2,
+    SetMusicAsAction.ringtone: 1,
+  };
+}

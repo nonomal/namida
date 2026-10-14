@@ -1,55 +1,75 @@
-# Miscellaneous
-*.class
-*.log
-*.pyc
-*.swp
+# OS / editors
 .DS_Store
-.atom/
-.buildlog/
+*.swp
+*.log
 .history
-.svn/
-migrate_working_dir/
-/android/app/keystore.jks
-
-# IntelliJ related
-*.iml
-*.ipr
-*.iws
 .idea/
+*.iml
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
 
-# The .vscode folder contains launch configuration and tasks you configure in
-# VS Code which you may wish to be included in version control, so this line
-# is commented out by default.
-#.vscode/
+# Secrets
+/android/app/keystore.jks
+/android/app/keystore.base64
+/android/key.properties
+/android/key.properties.base64
+.certificates
+*.jks
 
-# Flutter/Dart/Pub related
-**/doc/api/
-**/ios/Flutter/.last_build_id
+# Flutter / Dart
 .dart_tool/
 .flutter-plugins
 .flutter-plugins-dependencies
 .packages
 .pub-cache/
 .pub/
-/build/
-
-# Symbolication related
+build/
+coverage/
+pubspec.lock
+pubspec_overrides.yaml
+*.freezed.dart
+*.g.dart
+**/generated_plugin_registrant.dart
 app.*.symbols
-
-# Obfuscation related
 app.*.map.json
 
-# Android Studio will place build artifacts here
-/android/app/debug
-/android/app/profile
-/android/app/release
-/android/app/build
+# Android
+.gradle/
+.cxx/
+**/android/local.properties
+**/android/**/GeneratedPluginRegistrant.java
+android/app/repo/com/local/ffmpeg-kit/min_binary
 
-# Specific Files
+# iOS / macOS
+**/ios/Flutter/.last_build_id
+**/ios/Flutter/Generated.xcconfig
+**/ios/Flutter/flutter_export_environment.sh
+**/ios/Runner/GeneratedPluginRegistrant.*
+**/Flutter/ephemeral/
+**/Pods/
+**/macos/Flutter/GeneratedPluginRegistrant.swift
+**/xcuserdata/
+
+# Windows / Linux
+windows/flutter/generated_**
+linux/flutter/ephemeral/
+linux/flutter/generated_plugin_registrant.cc
+linux/flutter/generated_plugin_registrant.h
+linux/flutter/generated_plugins.cmake
+linux/packaging/flatpak/namida-linux.tar.gz
+linux/packaging/flatpak/.flatpak-builder/
+linux/packaging/flatpak/build-dir/
+linux/packaging/flatpak/repo/
+
+# Project
 .removed_code.dart
-pubspec.lock
-chlog_hash.dart
-temp_changelog.md
-temp_changelog_hash.md
 test.dart
-CHANGELOG_pretty.txt
+beta_changelog.md
+scripts/.obsolete/CHANGELOG_pretty.txt
+scripts/__pycache__/
+dist/
+scripts/bundle_output*
+assets/docs.tar.xz
+lib/core/translations/arb/*
+docs_internal/*

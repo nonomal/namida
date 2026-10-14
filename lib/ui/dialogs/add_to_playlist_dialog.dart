@@ -1,20 +1,21 @@
 import 'package:flutter/material.dart';
 
-import 'package:get/get.dart';
-
+import 'package:namida/class/count_per_row.dart';
 import 'package:namida/class/track.dart';
 import 'package:namida/controller/navigator_controller.dart';
 import 'package:namida/controller/playlist_controller.dart';
-import 'package:namida/core/extensions.dart';
+import 'package:namida/controller/settings_controller.dart';
 import 'package:namida/core/icon_fonts/broken_icons.dart';
 import 'package:namida/core/translations/language.dart';
+import 'package:namida/core/utils.dart';
 import 'package:namida/ui/pages/playlists_page.dart';
 import 'package:namida/ui/widgets/custom_widgets.dart';
 
 void showAddToPlaylistDialog(List<Track> tracks) {
   NamidaNavigator.inst.navigateDialog(
     dialog: CustomBlurryDialog(
-      insetPadding: const EdgeInsets.all(30.0),
+      horizontalInset: 30.0,
+      verticalInset: 30.0,
       contentPadding: EdgeInsets.zero,
       titleWidget: Container(
         padding: const EdgeInsets.all(12.0),
@@ -29,8 +30,8 @@ void showAddToPlaylistDialog(List<Track> tracks) {
               width: 12.0,
             ),
             Text(
-              lang.ADD_TO_PLAYLIST,
-              style: Get.theme.textTheme.displayMedium,
+              lang.addToPlaylist,
+              style: namida.theme.textTheme.displayMedium,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
             ),
@@ -38,9 +39,9 @@ void showAddToPlaylistDialog(List<Track> tracks) {
         ),
       ),
       leftAction: Obx(
-        () => Text(
-          "${PlaylistController.inst.playlistsMap.length.formatDecimal()} ${lang.PLAYLISTS}",
-          style: Get.theme.textTheme.displayMedium,
+        (context) => Text(
+          lang.countPlaylists(count: PlaylistController.inst.playlistsMap.length),
+          style: namida.theme.textTheme.displayMedium,
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
         ),
@@ -52,12 +53,32 @@ void showAddToPlaylistDialog(List<Track> tracks) {
         ),
       ],
       child: SizedBox(
-        height: Get.height * 0.7,
-        width: Get.width,
-        child: PlaylistsPage(
-          enableHero: true,
-          tracksToAdd: tracks,
-          countPerRow: 1,
+        height: namida.height * 0.7,
+        width: namida.width,
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8.0),
+              child: ObxO(
+                rx: settings.playlistAddTracksAtBeginning,
+                builder: (context, atBeginning) => CustomSwitchListTile(
+                  visualDensity: VisualDensity.compact,
+                  icon: Broken.arrow_square_up,
+                  title: lang.addTracksAtTheBeginning,
+                  value: atBeginning,
+                  onChanged: (val) => settings.playlistAddTracksAtBeginning.save(!val),
+                ),
+              ),
+            ),
+            SizedBox(height: 2.0),
+            Expanded(
+              child: PlaylistsPage(
+                enableHero: true,
+                tracksToAdd: tracks,
+                countPerRow: CountPerRow(1),
+              ),
+            ),
+          ],
         ),
       ),
     ),

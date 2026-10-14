@@ -1,1141 +1,818 @@
+import 'dart:async';
+import 'dart:collection';
+import 'dart:io';
+import 'dart:math' show Random;
+
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
-import 'package:get/get.dart';
+import 'package:basic_audio_handler/basic_audio_handler.dart';
 import 'package:history_manager/history_manager.dart';
+import 'package:youtipie/core/http.dart';
 
 import 'package:namida/base/settings_file_writer.dart';
+import 'package:namida/class/count_per_row.dart';
+import 'package:namida/class/eggs_data.dart';
 import 'package:namida/class/lang.dart';
+import 'package:namida/class/player_config_preset.dart';
 import 'package:namida/class/queue_insertion.dart';
-import 'package:namida/controller/settings.equalizer.dart';
-import 'package:namida/controller/settings.player.dart';
+import 'package:namida/class/shortcut_data.dart';
+import 'package:namida/class/sort_chain.dart';
+import 'package:namida/class/track_sort_presets.dart';
+import 'package:namida/controller/directory_index.dart';
+import 'package:namida/controller/file_browser.dart';
+import 'package:namida/controller/platform/shortcuts_manager/shortcuts_manager.dart';
+import 'package:namida/controller/sync_manager/sync_manager.dart';
 import 'package:namida/core/constants.dart';
 import 'package:namida/core/enums.dart';
 import 'package:namida/core/extensions.dart';
+import 'package:namida/core/utils.dart';
+import 'package:namida/youtube/class/return_youtube_dislike.dart';
+import 'package:namida/youtube/class/sponsorblock.dart';
+import 'package:namida/youtube/controller/youtube_account_controller.dart';
 
-SettingsController get settings => SettingsController.inst;
+part 'settings.debug_keys.dart';
+part 'settings.equalizer.dart';
+part 'settings.extra.dart';
+part 'settings.keys.dart';
+part 'settings.player.dart';
+part 'settings.shortcuts.dart';
+part 'settings.party.dart';
+part 'settings.sync.dart';
+part 'settings.tutorial.dart';
+part 'settings.youtube.dart';
 
-class SettingsController with SettingsFileWriter {
-  static SettingsController get inst => _instance;
-  static final SettingsController _instance = SettingsController._internal();
-  SettingsController._internal();
+final settings = _SettingsController._internal();
 
-  EqualizerSettings get equalizer => EqualizerSettings.inst;
-  PlayerSettings get player => PlayerSettings.inst;
+class _SettingsController extends _SettingsKeysWriter {
+  _SettingsController._internal();
 
-  final Rx<NamidaLanguage> selectedLanguage = kDefaultLang.obs;
-  final Rx<ThemeMode> themeMode = ThemeMode.system.obs;
-  final RxBool pitchBlack = false.obs;
-  final RxBool autoColor = true.obs;
-  final RxInt staticColor = kMainColorLight.value.obs;
-  final RxInt staticColorDark = kMainColorDark.value.obs;
-  final Rx<LibraryTab> selectedLibraryTab = LibraryTab.tracks.obs;
-  final Rx<LibraryTab> staticLibraryTab = LibraryTab.tracks.obs;
-  final RxBool autoLibraryTab = true.obs;
-  final RxList<LibraryTab> libraryTabs = [
-    LibraryTab.home,
-    LibraryTab.tracks,
-    LibraryTab.artists,
-    LibraryTab.playlists,
-    LibraryTab.folders,
-    LibraryTab.youtube,
-  ].obs;
-  final RxInt searchResultsPlayMode = 1.obs;
-  final RxDouble borderRadiusMultiplier = 1.0.obs;
-  final RxDouble fontScaleFactor = 0.9.obs;
-  final RxDouble artworkCacheHeightMultiplier = 0.8.obs;
-  final RxDouble trackThumbnailSizeinList = 70.0.obs;
-  final RxDouble trackListTileHeight = 70.0.obs;
-  final RxDouble albumThumbnailSizeinList = 90.0.obs;
-  final RxDouble albumListTileHeight = 90.0.obs;
+  Future<void> prepareAllSettings() async {
+    await Future.wait([
+      this.prepareSettingsFile(),
+      this.equalizer.prepareSettingsFile(),
+      this.player.prepareSettingsFile(),
+      this.youtube.prepareSettingsFile(),
+      this.extra.prepareSettingsFile(),
+      this.sync.prepareSettingsFile(),
+      this.party.prepareSettingsFile(),
+      this.tutorial.prepareSettingsFile(),
+      if (isDesktop) this.shortcuts.prepareSettingsFile(),
+    ]);
+    final legacyWindowBounds = _legacyWindowBounds;
+    if (legacyWindowBounds != null) {
+      _legacyWindowBounds = null;
+      if (extra.windowBounds.userValue == null) extra.windowBounds.save(legacyWindowBounds);
+    }
+  }
 
-  final RxBool useMediaStore = false.obs;
-  final RxBool displayTrackNumberinAlbumPage = true.obs;
-  final RxBool albumCardTopRightDate = true.obs;
-  final RxBool forceSquaredTrackThumbnail = false.obs;
-  final RxBool forceSquaredAlbumThumbnail = false.obs;
-  final RxBool useAlbumStaggeredGridView = false.obs;
-  final RxBool useSettingCollapsedTiles = true.obs;
-  final RxInt albumGridCount = 2.obs;
-  final RxInt artistGridCount = 3.obs;
-  final RxInt genreGridCount = 2.obs;
-  final RxInt playlistGridCount = 1.obs;
-  final RxBool enableBlurEffect = false.obs;
-  final RxBool enableGlowEffect = false.obs;
-  final RxBool hourFormat12 = true.obs;
-  final RxString dateTimeFormat = 'MMM yyyy'.obs;
-  final RxList<String> trackArtistsSeparators = <String>['&', ',', ';', '//', ' ft. ', ' x '].obs;
-  final RxList<String> trackGenresSeparators = <String>['&', ',', ';', '//', ' x '].obs;
-  final RxList<String> trackArtistsSeparatorsBlacklist = <String>[].obs;
-  final RxList<String> trackGenresSeparatorsBlacklist = <String>[].obs;
-  final Rx<SortType> tracksSort = SortType.title.obs;
-  final RxBool tracksSortReversed = false.obs;
-  final Rx<SortType> tracksSortSearch = SortType.title.obs;
-  final RxBool tracksSortSearchReversed = false.obs;
-  final RxBool tracksSortSearchIsAuto = true.obs;
-  final Rx<GroupSortType> albumSort = GroupSortType.album.obs;
-  final RxBool albumSortReversed = false.obs;
-  final Rx<GroupSortType> artistSort = GroupSortType.artistsList.obs;
-  final RxBool artistSortReversed = false.obs;
-  final Rx<GroupSortType> genreSort = GroupSortType.genresList.obs;
-  final RxBool genreSortReversed = false.obs;
-  final Rx<GroupSortType> playlistSort = GroupSortType.dateModified.obs;
-  final RxBool playlistSortReversed = false.obs;
-  final Rx<GroupSortType> ytPlaylistSort = GroupSortType.dateModified.obs;
-  final RxBool ytPlaylistSortReversed = true.obs;
-  final RxInt indexMinDurationInSec = 5.obs;
-  final RxInt indexMinFileSizeInB = (100 * 1024).obs;
-  final RxList<TrackSearchFilter> trackSearchFilter = [
-    TrackSearchFilter.filename,
-    TrackSearchFilter.title,
-    TrackSearchFilter.artist,
-    TrackSearchFilter.album,
-  ].obs;
-  final RxList<String> playlistSearchFilter = ['name', 'creationDate', 'modifiedDate', 'moods', 'comment'].obs;
-  final RxList<String> directoriesToScan = kInitialDirectoriesToScan.toList().obs;
-  final RxList<String> directoriesToExclude = <String>[].obs;
-  final RxBool preventDuplicatedTracks = false.obs;
-  final RxBool respectNoMedia = false.obs;
-  final RxString defaultBackupLocation = AppDirs.BACKUPS.obs;
-  final RxInt autoBackupIntervalDays = 2.obs;
-  final RxString defaultFolderStartupLocation = kStoragePaths.first.obs;
-  final RxString ytDownloadLocation = AppDirs.YOUTUBE_DOWNLOADS_DEFAULT.obs;
-  final RxBool enableFoldersHierarchy = true.obs;
-  final RxBool displayArtistBeforeTitle = true.obs;
-  final RxBool heatmapListensView = false.obs;
-  final RxList<String> backupItemslist = [
-    AppPaths.TRACKS,
-    AppPaths.TRACKS_STATS,
-    AppPaths.TOTAL_LISTEN_TIME,
-    AppPaths.VIDEOS_CACHE,
-    AppPaths.VIDEOS_LOCAL,
-    AppPaths.SETTINGS,
-    AppPaths.SETTINGS_EQUALIZER,
-    AppDirs.PALETTES,
-    AppDirs.LYRICS,
-    AppDirs.PLAYLISTS,
-    AppDirs.HISTORY_PLAYLIST,
-    AppPaths.FAVOURITES_PLAYLIST,
-    AppDirs.QUEUES,
-    AppPaths.LATEST_QUEUE,
-    AppDirs.YT_PLAYLISTS,
-    AppDirs.YT_HISTORY_PLAYLIST,
-    AppPaths.YT_LIKES_PLAYLIST,
-  ].obs;
-  final RxBool enableVideoPlayback = true.obs;
-  final RxBool enableLyrics = false.obs;
-  final Rx<LyricsSource> lyricsSource = LyricsSource.auto.obs;
-  final Rx<VideoPlaybackSource> videoPlaybackSource = VideoPlaybackSource.auto.obs;
-  final RxList<String> youtubeVideoQualities = ['480p', '360p', '240p', '144p'].obs;
-  final RxDouble animatingThumbnailScaleMultiplier = 1.0.obs;
-  final RxInt animatingThumbnailIntensity = 25.obs;
-  final RxBool animatingThumbnailInversed = false.obs;
-  final RxBool enablePartyModeInMiniplayer = false.obs;
-  final RxBool enablePartyModeColorSwap = true.obs;
-  final RxBool enableMiniplayerParticles = true.obs;
-  final RxBool enableMiniplayerParallaxEffect = true.obs;
-  final RxBool forceMiniplayerTrackColor = false.obs;
-  final RxInt isTrackPlayedSecondsCount = 40.obs;
-  final RxInt isTrackPlayedPercentageCount = 40.obs;
-  final RxInt waveformTotalBars = 140.obs;
-  final RxInt videosMaxCacheInMB = (2 * 1024).obs; // 2GB
-  final RxInt audiosMaxCacheInMB = (2 * 1024).obs; // 2GB
-  final RxInt imagesMaxCacheInMB = (8 * 32).obs; // 256 MB
-  final RxInt ytMiniplayerDimAfterSeconds = 15.obs;
-  final RxDouble ytMiniplayerDimOpacity = 0.5.obs;
-  final RxBool youtubeStyleMiniplayer = true.obs;
-  final RxBool hideStatusBarInExpandedMiniplayer = false.obs;
-  final RxBool displayFavouriteButtonInNotification = false.obs;
-  final RxBool enableSearchCleanup = true.obs;
-  final RxBool enableBottomNavBar = true.obs;
-  final RxBool ytPreferNewComments = false.obs;
-  final RxBool ytAutoExtractVideoTagsFromInfo = true.obs;
-  final RxBool displayAudioInfoMiniplayer = false.obs;
-  final RxBool showUnknownFieldsInTrackInfoDialog = true.obs;
-  final RxBool extractFeatArtistFromTitle = true.obs;
-  final RxBool groupArtworksByAlbum = false.obs;
-  final RxBool enableM3USync = false.obs;
-  final RxBool prioritizeEmbeddedLyrics = true.obs;
-  final RxBool swipeableDrawer = true.obs;
-  final RxBool dismissibleMiniplayer = false.obs;
-  final RxBool enableClipboardMonitoring = false.obs;
-  final RxBool ytIsAudioOnlyMode = false.obs;
-  final RxBool ytRememberAudioOnly = false.obs;
-  final RxBool ytTopComments = true.obs;
-  final RxBool artworkGestureScale = false.obs;
-  final RxBool artworkGestureDoubleTapLRC = true.obs;
-  final RxBool previousButtonReplays = false.obs;
-  final RxBool refreshOnStartup = false.obs;
-  final RxList<TagField> tagFieldsToEdit = <TagField>[
-    TagField.trackNumber,
-    TagField.year,
-    TagField.title,
-    TagField.artist,
-    TagField.album,
-    TagField.genre,
-    TagField.albumArtist,
-    TagField.composer,
-    TagField.comment,
-    TagField.lyrics,
-  ].obs;
+  /// the main file stored the window bounds before `extra` existed, applied once both files loaded.
+  Rect? _legacyWindowBounds;
 
-  final Rx<WakelockMode> wakelockMode = WakelockMode.expandedAndVideo.obs;
+  /// applies each settings file of an extracted backup, see [_SettingsKeysWriter.applyBackupJson].
+  Future<void> applyBackupFiles(String Function(String filePath) backupPathOf) async {
+    final writers = <_SettingsKeysWriter>[this, equalizer, player, youtube, extra, sync, party, tutorial, if (isDesktop) shortcuts];
+    for (final writer in writers) {
+      final backupFile = File(backupPathOf(writer.filePath));
+      final json = await backupFile.readAsJson();
+      if (json is Map<String, dynamic>) writer.applyBackupJson(json);
+    }
+  }
 
-  final Rx<LocalVideoMatchingType> localVideoMatchingType = LocalVideoMatchingType.auto.obs;
-  final RxBool localVideoMatchingCheckSameDir = false.obs;
+  SettingsFileWriter syncWriterOf(SyncDataItem item) => switch (item) {
+    SyncDataItem.settingsGeneral => this,
+    SyncDataItem.settingsPlayer => player,
+    SyncDataItem.settingsYoutube => youtube,
+    _ => throw ArgumentError.value(item, 'item', 'not a settings item'),
+  };
 
-  final Rx<TrackPlayMode> trackPlayMode = TrackPlayMode.searchResults.obs;
+  @override
+  bool get syncable => true;
 
-  final mostPlayedTimeRange = MostPlayedTimeRange.allTime.obs;
-  final mostPlayedCustomDateRange = DateRange.dummy().obs;
-  final mostPlayedCustomisStartOfDay = true.obs;
+  final equalizer = _EqualizerSettings._internal();
+  final player = _PlayerSettings._internal();
+  final youtube = _YoutubeSettings._internal();
+  final extra = _ExtraSettings._internal();
+  final tutorial = _TutorialSettings._internal();
+  final sync = _SyncSettings._internal();
+  final party = _PartySettings._internal();
+  final shortcuts = _ShortcutsSettings._internal();
 
-  final ytMostPlayedTimeRange = MostPlayedTimeRange.allTime.obs;
-  final ytMostPlayedCustomDateRange = DateRange.dummy().obs;
-  final ytMostPlayedCustomisStartOfDay = true.obs;
+  late final language = _keyObject<NamidaLanguage?>('language', null, NamidaLanguage.fromJson, (v) => v?.toJson(), sync: false);
+  late final themeMode = _keyEnum('themeMode', ThemeMode.system, ThemeMode.values);
+  late final pitchBlack = _key('pitchBlack', false);
+  late final autoColor = _key('autoColor', true, sync: false);
+  late final animatedTheme = _key('animatedTheme', true, sync: false);
+  late final staticColor = _key<int?>('staticColor_v2', null);
+  late final staticColorDark = _key<int?>('staticColorDark_v2', null);
+  late final libraryTabs = _keyEnumList(
+    'libraryTabs',
+    const [LibraryTab.home, LibraryTab.tracks, LibraryTab.artists, LibraryTab.playlists, LibraryTab.folders, LibraryTab.youtube],
+    LibraryTab.values,
+    item: const _LibraryTabGroupCodec(),
+  );
+
+  late final borderRadiusMultiplier = _key('borderRadiusMultiplier', isKuru ? 0.9 : 1.0);
+  late final fontScaleFactor = _key('fontScaleFactor', 0.85);
+  late final artworkCacheHeightMultiplier = _key('artworkCacheHeightMultiplier', isDesktop || isKuru ? 1.0 : 0.9, sync: false);
+  late final trackThumbnailSizeinList = _key('trackThumbnailSizeinList', isKuru ? 90.0 : 70.0);
+  late final trackListTileHeight = _key('trackListTileHeight', isKuru ? 60.0 : 70.0);
+  late final albumThumbnailSizeinList = _key('albumThumbnailSizeinList', 90.0);
+  late final albumListTileHeight = _key('albumListTileHeight', 90.0);
+
+  late final useMediaStore = _key('useMediaStore_v2', false, sync: false);
+  late final includeVideos = _key('includeVideos', true, sync: false);
+  late final cacheArtworks = _key('cacheArtworks', true, sync: false);
+  late final displayTrackNumberinAlbumPage = _key('displayTrackNumberinAlbumPage', true);
+  late final albumCardTopRightDate = _key('albumCardTopRightDate', true);
+  late final forceSquaredTrackThumbnail = _key('forceSquaredTrackThumbnail', false);
+  late final forceSquaredAlbumThumbnail = _key('forceSquaredAlbumThumbnail', false);
+  late final useAlbumStaggeredGridView = _key('useAlbumStaggeredGridView', false);
+  late final useSettingCollapsedTiles = _key('useSettingCollapsedTiles', true);
+  late final mediaGridCounts = _keyMap<LibraryTab, CountPerRow?>(
+    'mediaGridCounts',
+    const {LibraryTab.albums: null, LibraryTab.artists: null, LibraryTab.genres: null, LibraryTab.playlists: CountPerRow(1)},
+    key: LibraryTab.values.asCodec(),
+    value: const _CountPerRowCodec(),
+  );
+  late final subpageInfoStyles = _keyMap<MediaType, SubpageInfoStyle>(
+    'subpageInfoStyles',
+    const {
+      MediaType.album: SubpageInfoStyle.heroBanner,
+      MediaType.genre: SubpageInfoStyle.blurBackdrop,
+      MediaType.playlist: SubpageInfoStyle.banner,
+    },
+    key: MediaType.values.asCodec(),
+    value: SubpageInfoStyle.values.asCodec(),
+  );
+  late final artworkCollageStyle = _keyEnum('artworkCollageStyle', ArtworkCollageStyle.grid, ArtworkCollageStyle.values);
+  late final activeAlbumTypes = _keyMap<AlbumType, bool>(
+    'activeAlbumTypes',
+    const {AlbumType.single: true, AlbumType.normal: true},
+    key: AlbumType.values.asCodec(),
+  );
+  late final activeTrSearch = _keyMap<TrackTypeSearch, bool>(
+    'activeTrSearch',
+    const {TrackTypeSearch.tr: true, TrackTypeSearch.v: true},
+    key: TrackTypeSearch.values.asCodec(),
+  );
+  late final enableBlurEffect = _key('enableBlurEffect', isDesktop, sync: false);
+  late final enableGlowEffect = _key('enableGlowEffect', isDesktop, sync: false);
+  late final enableGlowBehindVideo = _key('enableGlowBehindVideo', false, sync: false);
+  late final hourFormat12 = _key('hourFormat12', true);
+  late final dateTimeFormat = _key('dateTimeFormat', isKuru ? '[dd.MM.yyyy] EEE' : 'MMM yyyy');
+  late final trackArtistsSeparators = _keyList<String>('trackArtistsSeparators', const ['&', ',', ';', '//', ' ft. ', ' x ']);
+  late final trackGenresSeparators = _keyList<String>('trackGenresSeparators', const ['&', ',', ';', '//', ' x ']);
+  late final trackAlbumsSeparators = _keyList<String>('trackAlbumsSeparators', const ['\u00A0']);
+  late final trackArtistsSeparatorsBlacklist = _keyList<String>('trackArtistsSeparatorsBlacklist', isKuru ? const ['T & Sugah', 'Miles & Miles'] : const []);
+  late final trackGenresSeparatorsBlacklist = _keyList<String>('trackGenresSeparatorsBlacklist', const []);
+  late final trackAlbumsSeparatorsBlacklist = _keyList<String>('trackAlbumsSeparatorsBlacklist', const []);
+  late final extensionsBlacklist = _keyList<String>('extensionsBlacklist', const [], sync: false);
+  late final fileBrowserSort = _keyEnum('fileBrowserSort', FileBrowserSortType.name, FileBrowserSortType.values);
+  late final fileBrowserSortReversed = _key('fileBrowserSortReversed', false);
+  late final tracksSortSearch = _keyEnum('tracksSortSearch', isKuru ? SortType.mostPlayed : SortType.title, SortType.values);
+  late final tracksSortSearchReversed = _key('tracksSortSearchReversed', false);
+  late final tracksSortSearchIsAuto = _key('tracksSortSearchIsAuto_v2', true);
+  late final tracksSearchShowLessRelevant = _key('tracksSearchShowLessRelevant', false);
+  static final _kDefaultGroupSorting = <MediaType, SortChain<GroupSortType>>{
+    MediaType.album: SortChain.of(isKuru ? const [GroupSortType.numberOfTracks] : const [GroupSortType.album], reverse: isKuru),
+    MediaType.artist: SortChain.of(isKuru ? const [GroupSortType.numberOfTracks] : const [GroupSortType.artistsList], reverse: isKuru),
+    MediaType.genre: SortChain.of(const [GroupSortType.genresList]),
+    MediaType.language: SortChain.of(const [GroupSortType.title]),
+    MediaType.mood: SortChain.of(const [GroupSortType.title]),
+    MediaType.tag: SortChain.of(const [GroupSortType.title]),
+    MediaType.playlist: SortChain.of(const [GroupSortType.dateModified]),
+  };
+
+  /// artist and genre variants share one entry, read through [groupSortingOf].
+  late final mediaGroupSorting = _keyMap<MediaType, SortChain<GroupSortType>>(
+    'mediaGroupSorting',
+    _kDefaultGroupSorting,
+    key: MediaType.values.asCodec(),
+    value: const _ObjectCodec(_groupSortingFromJson, _sortingToJson),
+  );
+  late final artistAlbumsSort = _key<GroupSortType?>('artistAlbumsSort', null, codec: GroupSortType.values.asCodec());
+  late final artistAlbumsSortReversed = _key('artistAlbumsSortReversed', false);
+  late final playlistsGroupByTags = _key('playlistsGroupByTags', false);
+  late final ytPlaylistSort = _keyEnum('ytPlaylistSort', GroupSortType.dateModified, GroupSortType.values);
+  late final ytPlaylistSortReversed = _key('ytPlaylistSortReversed', true);
+  late final indexMinDurationInSec = _key('indexMinDurationInSec', 5, sync: false);
+  late final indexMinFileSizeInB = _key('indexMinFileSizeInB', 100 * 1024, sync: false);
+  late final trackSearchFilter = _keyList(
+    'trackSearchFilter',
+    isKuru
+        ? const [TrackSearchFilter.filename, TrackSearchFilter.title, TrackSearchFilter.artist, TrackSearchFilter.album, TrackSearchFilter.comment, TrackSearchFilter.year]
+        : const [TrackSearchFilter.filename, TrackSearchFilter.title, TrackSearchFilter.artist, TrackSearchFilter.album],
+    item: TrackSearchFilter.values.asCodec(),
+  );
+  late final playlistSearchFilter = _keyEnumList('playlistSearchFilter_v2', PlaylistSearchFilter.values, PlaylistSearchFilter.values);
+  late final directoriesToScan = _keyList<DirectoryIndex>('directoriesToScan', const [], item: const _DirectoryIndexCodec(), sync: false);
+  late final directoriesToExclude = _keyList<DirectoryIndex>('directoriesToExclude', const [], item: const _DirectoryIndexCodec(), sync: false);
+  late final preventDuplicatedTracks = _key('preventDuplicatedTracks', false, sync: false);
+  late final respectNoMedia = _key('respectNoMedia', false, sync: false);
+  late final defaultBackupLocation = _key<String?>('defaultBackupLocation_v2', null, sync: false);
+  late final autoBackupIntervalDays = _key('autoBackupIntervalDays', isKuru ? 1 : 2);
+  late final defaultFolderStartupLocation = _key<String?>('defaultFolderStartupLocation', kStoragePaths.firstOrNull, sync: false);
+  late final defaultFolderStartupLocationVideos = _key<String?>('defaultFolderStartupLocationVideos', kStoragePaths.firstOrNull, sync: false);
+  late final enableFoldersHierarchy = _key('enableFoldersHierarchy', true);
+  late final enableFoldersHierarchyTracks = _key('enableFoldersHierarchyTracks', true);
+  late final enableFoldersHierarchyVideos = _key('enableFoldersHierarchyVideos', true);
+  late final foldersSkipSingleSubfolder = _key('foldersSkipSingleSubfolder', true);
+  late final displayArtistBeforeTitle = _key('displayArtistBeforeTitle', true);
+  late final heatmapListensView = _key('heatmapListensView', false);
+  late final reverseListensView = _key('reverseListensView', true);
+  late final backupItemslist = _keyEnumList('backupItemslist_v2', AppPathsBackupEnumCategories.everything, AppPathsBackupEnum.values);
+  late final enableVideoPlayback = _key('enableVideoPlayback', true);
+  late final enableLyrics = _key('enableLyrics', false);
+  late final enableSimpleLyricsLine = _key('enableSimpleLyricsLine', false);
+  late final enableSubtitles = _key('enableSubtitles', false);
+  late final subtitlesLanguages = _keyList<String>('subtitlesLanguages', const []);
+  late final lyricsSource = _keyEnum('lyricsSource', LyricsSource.auto, LyricsSource.values);
+  late final lyricsSaveLocation = _keyEnum('lyricsSaveLocation', LyricsSaveLocation.cache, LyricsSaveLocation.values, sync: false);
+  late final lyricsFolders = _keyList<String>('lyricsFolders', const [], sync: false);
+  late final lyricsDeleteWithTrackIn = _keySet<LyricsSaveLocation>('lyricsDeleteWithTrackIn', const {}, item: LyricsSaveLocation.values.asCodec(), sync: false);
+  late final videoPlaybackSource = _keyEnum('videoPlaybackSource', VideoPlaybackSource.auto, VideoPlaybackSource.values);
+  late final youtubeVideoQualities = _keyList<String>('youtubeVideoQualities', const ['480p', '360p', '240p', '144p']);
+  late final animatingThumbnailScaleMultiplier = _key('animatingThumbnailScaleMultiplier', 1.0);
+  late final animatingThumbnailIntensity = _key('animatingThumbnailIntensity', 25);
+  late final animatingThumbnailIntensityLyrics = _key('animatingThumbnailIntensityLyrics', 10);
+  late final animatingThumbnailIntensityMinimized = _key('animatingThumbnailIntensityMinimized', 10);
+  late final animatingThumbnailInversed = _key('animatingThumbnailInversed', false);
+  late final enablePartyModeInMiniplayer = _key('enablePartyModeInMiniplayer', false);
+  late final enablePartyModeColorSwap = _key('enablePartyModeColorSwap', true);
+  late final enableMiniplayerParticles = _key('enableMiniplayerParticles', true);
+  late final miniplayerVisualizers = _keySet<MiniplayerVisualizer>(
+    'miniplayerVisualizers',
+    const {
+      MiniplayerVisualizer.beatRings,
+      MiniplayerVisualizer.reactiveParticles,
+    },
+    item: MiniplayerVisualizer.values.asCodec(),
+  );
+  late final visualizerArtworkColors = _key('visualizerArtworkColors', false);
+  late final effectsBackground = _keyEnum('effectsBackground', EffectTheme.auto, EffectTheme.values, sync: false);
+  late final effectsOverlay = _keyEnum('effectsOverlay', EffectTheme.none, EffectTheme.values, sync: false);
+  late final playerBackground = _keyEnum('playerBackground', PlayerBackground.none, PlayerBackground.values, sync: false);
+  late final playerBackgroundImage = _key<String?>('playerBackgroundImage', null, sync: false);
+  late final playerBackgroundBlur = _key('playerBackgroundBlur_v2', 4, sync: false);
+  late final playerBackgroundDim = _key('playerBackgroundDim_v2', 5, sync: false);
+  late final playerBackgroundVignette = _key('playerBackgroundVignette', true, sync: false);
+  late final playerBackgroundAnimated = _key('playerBackgroundAnimated', true, sync: false);
+  late final playerColorWhenExpanded = _key('playerColorWhenExpanded', true, sync: false);
+  late final appWallpaper = _key<String?>('appWallpaper', null, sync: false);
+  late final appWallpaperBlur = _key('appWallpaperBlur_v2', 4, sync: false);
+  late final appWallpaperDim = _key('appWallpaperDim_v2', 5, sync: false);
+  late final enableMiniplayerParallaxEffect = _key('enableMiniplayerParallaxEffect', true, sync: false);
+  late final forceMiniplayerTrackColor = _key('forceMiniplayerTrackColor', false);
+  late final isTrackPlayedSecondsCount = _key('isTrackPlayedSecondsCount', isKuru ? 25 : 40);
+  late final isTrackPlayedPercentageCount = _key('isTrackPlayedPercentageCount', isKuru ? 25 : 40);
+  late final waveformTotalBars = _key('waveformTotalBars', isDesktop ? 100 : (isKuru ? 111 : 80), sync: false);
+  late final videosMaxCacheInMB = _key('videosMaxCacheInMB', isDesktop ? 24 * 1024 : (isKuru ? -1 : 8 * 1024), sync: false);
+  late final audiosMaxCacheInMB = _key('audiosMaxCacheInMB', isDesktop ? 12 * 1024 : (isKuru ? -1 : 4 * 1024), sync: false);
+  late final serversMaxCacheInMB = _key('serversMaxCacheInMB', isDesktop ? 12 * 1024 : (isKuru ? -1 : 4 * 1024), sync: false);
+  late final imagesMaxCacheInMB = _key('imagesMaxCacheInMB', isDesktop || isKuru ? 2 * 1024 : 8 * 32, sync: false);
+  late final hideStatusBarInExpandedMiniplayer = _key('hideStatusBarInExpandedMiniplayer', false);
+  static const _kDefaultNotificationButtons = [NotificationButton.previous, NotificationButton.playPause, NotificationButton.next, NotificationButton.stop];
+  late final notificationButtons = _keyList('notificationButtons', _kDefaultNotificationButtons, item: NotificationButton.values.asCodec(), isUnique: true, isNonEmpty: true);
+  late final notificationButtonsPlaylist = _key<String?>('notificationButtonsPlaylist', null);
+  late final notificationButtonsYTPlaylist = _key<String?>('notificationButtonsYTPlaylist', null);
+  late final enableSearchCleanup = _key('enableSearchCleanup', true);
+  late final enableBottomNavBar = _key('enableBottomNavBar', true);
+  late final displayAudioInfoMiniplayer = _key('displayAudioInfoMiniplayer', false);
+  late final showUnknownFieldsInTrackInfoDialog = _key('showUnknownFieldsInTrackInfoDialog_v2', false);
+  late final extractFeatArtistFromTitle = _key('extractFeatArtistFromTitle', true);
+  late final groupArtworksByAlbum = _key('groupArtworksByAlbum', false, sync: false);
+  late final uniqueArtworkHash = _key('uniqueArtworkHash', false, sync: false);
+  late final enableM3USync = _key('enableM3USync', false, sync: false);
+  late final enableM3USyncStartup = _key('enableM3USyncStartup', true, sync: false);
+  late final importServerPlaylists = _key('importServerPlaylists', true, sync: false);
+  late final reportPlaybackToServers = _key('reportPlaybackToServers', true, sync: false);
+  late final embeddedLyricsPriority = _keyEnum('embeddedLyricsPriority', EmbeddedLyricsPriority.onlyWhenSynced, EmbeddedLyricsPriority.values);
+  late final romanizeLyrics = _key('romanizeLyrics', false);
+  late final romanizeSorting = _key('romanizeSorting', false);
+  late final swipeableDrawer = _key('swipeableDrawer', true);
+  late final dismissibleMiniplayer = _key('dismissibleMiniplayer', true);
+  late final enableClipboardMonitoring = _key('enableClipboardMonitoring', false, sync: false);
+  late final artworkGestureDoubleTapLRC = _key('artworkGestureDoubleTapLRC', true);
+  late final previousButtonReplays = _key('previousButtonReplays', false);
+  late final skipButtonsJumpChapters = _key('skipButtonsJumpChapters', false);
+  late final refreshOnStartup = _key('refreshOnStartup', false, sync: false);
+  late final alwaysExpandedSearchbar = _key('alwaysExpandedSearchbar', isKuru ? true : false);
+  late final mixedQueue = _key('mixedQueue', false);
+  late final askBeforeReplacingQueue = _key('askBeforeReplacingQueue', false);
+  late final bypassRefreshPrompt = _key('bypassRefreshPrompt_v2', false);
+  late final desktopTitlebar = _key('desktopTitlebar', true, sync: false);
+  late final desktopTitlebarType = _keyEnum('desktopTitlebarType', DesktopTitlebarIconsType.auto, DesktopTitlebarIconsType.values, sync: false);
+  late final tagFieldsToEdit = _keyEnumList(
+    'tagFieldsToEdit',
+    isKuru
+        ? const [TagField.trackNumber, TagField.year, TagField.title, TagField.artist, TagField.album, TagField.genre, TagField.comment, TagField.description, TagField.lyrics]
+        : const [
+            TagField.trackNumber, TagField.year, TagField.title, TagField.artist, TagField.album, TagField.genre, //
+            TagField.albumArtist, TagField.composer, TagField.comment, TagField.description, TagField.lyrics, //
+          ],
+    TagField.values,
+  );
+
+  late final customEQPackage = _key<String?>('customEQPackage', null, sync: false);
+  late final stretchLyricsDuration = _key('stretchLyricsDuration', true);
+  late final visualDelayMS = _key('visualDelayMS', 0);
+  late final lyricsEditorLatencyMS = _key('lyricsEditorLatencyMS', 0, sync: false);
+  late final timeCapsuleYears = _key<int?>('timeCapsuleYears', null);
+
+  late final playlistAddTracksAtBeginning = _key('playlistAddTracksAtBeginning', false);
+  late final playlistAddTracksAtBeginningYT = _key('playlistAddTracksAtBeginningYT', false);
+
+  late final wakelockMode = _keyEnum('wakelockMode', WakelockMode.expandedAndVideo, WakelockMode.values);
+
+  late final localVideoMatchingType = _keyEnum('localVideoMatchingType', LocalVideoMatchingType.auto, LocalVideoMatchingType.values);
+  late final localVideoMatchingCheckSameDir = _key('localVideoMatchingCheckSameDir', false);
+
+  late final trackPlayMode = _keyEnum('trackPlayMode', isKuru ? TrackPlayMode.selectedTrack : TrackPlayMode.searchResults, TrackPlayMode.values);
+
+  late final shuffleExcludeCount = _key('shuffleExcludeCount', 0);
+  late final shuffleExcludeSort = _keyEnum('shuffleExcludeSort', SortType.latestPlayed, SortType.values);
+  late final shuffleExcludeSortReverse = _key('shuffleExcludeSortReverse', false);
+
+  late final mostPlayedTimeRange = _keyEnum('mostPlayedTimeRange', MostPlayedTimeRange.allTime, MostPlayedTimeRange.values);
+  late final mostPlayedCustomDateRange = _keyObject('mostPlayedCustomDateRange_v2', DateRange.dummy(), DateRange.fromJson, (v) => v.toJson());
+  late final mostPlayedCustomisStartOfDay = _key('mostPlayedCustomisStartOfDay', true);
+
+  late final ytMostPlayedTimeRange = _keyEnum('ytMostPlayedTimeRange', MostPlayedTimeRange.allTime, MostPlayedTimeRange.values);
+  late final ytMostPlayedCustomDateRange = _keyObject('ytMostPlayedCustomDateRange_v2', DateRange.dummy(), DateRange.fromJson, (v) => v.toJson());
+  late final ytMostPlayedCustomisStartOfDay = _key('ytMostPlayedCustomisStartOfDay', true);
+
+  late final onTrackSwipeLeft = _keyEnum('onTrackSwipeLeft', TrackExecuteActions.playafter, TrackExecuteActions.values);
+  late final onTrackSwipeRight = _keyEnum('onTrackSwipeRight', TrackExecuteActions.openinfo, TrackExecuteActions.values);
+  late final artworkTapAction = _keyEnum('artworkTapAction', TrackExecuteActions.none, TrackExecuteActions.values);
+  late final artworkLongPressAction = _keyEnum('artworkLongPressAction', TrackExecuteActions.none, TrackExecuteActions.values);
+  late final thumbnailTapAction = _keyEnum('thumbnailTapAction', TrackExecuteActions.none, TrackExecuteActions.values);
+  late final thumbnailLongPressAction = _keyEnum('thumbnailLongPressAction', TrackExecuteActions.none, TrackExecuteActions.values);
 
   /// Track Items
-  final RxBool displayThirdRow = true.obs;
-  final RxBool displayThirdItemInEachRow = false.obs;
-  final RxString trackTileSeparator = '•'.obs;
-  final RxBool displayFavouriteIconInListTile = true.obs;
-  final RxBool editTagsKeepFileDates = true.obs;
-  final RxBool downloadFilesWriteUploadDate = true.obs;
-  final RxBool downloadFilesKeepCachedVersions = true.obs;
-  final RxBool enablePip = true.obs;
-  final RxBool pickColorsFromDeviceWallpaper = false.obs;
-  final onNotificationTapAction = NotificationTapAction.openApp.obs;
-  final onYoutubeLinkOpen = OnYoutubeLinkOpenAction.alwaysAsk.obs;
-  final performanceMode = PerformanceMode.balanced.obs;
-  final floatingActionButton = FABType.none.obs;
-  final ytInitialHomePage = YTHomePages.playlists.obs;
-  final ytTapToSeek = YTSeekActionMode.expandedMiniplayer.obs;
-  final ytDragToSeek = YTSeekActionMode.all.obs;
+  late final displayThirdRow = _key('displayThirdRow', true);
+  late final displayThirdItemInEachRow = _key('displayThirdItemInEachRow', false);
+  late final trackTileSeparator = _key('trackTileSeparator', '•');
+  late final trackArtistsDisplaySeparator = _key('trackArtistsDisplaySeparator', '');
+  late final displayFavouriteIconInListTile = _key('displayFavouriteIconInListTile', true);
+  late final gradientTiles = _key('gradientTiles', true);
+  late final preferredSearchType = _keyEnum('preferredSearchType', SearchType.auto, SearchType.values);
+  late final resumeUIEnabled = _key('resumeUIEnabled', true);
+  late final ytStyleButtonSwitcher = _key<bool?>('ytStyleButtonSwitcher', null);
+  late final keepVideoFrameOnSwitch = _key<bool?>('keepVideoFrameOnSwitch', null, sync: false);
+  late final scrollbarThumbLabel = _key<bool?>('scrollbarThumbLabel', null, sync: false);
+  late final tapToScroll = _key<bool?>('tapToScroll', null, sync: false);
+  late final enhancedDragToScroll = _key<bool?>('enhancedDragToScroll', null, sync: false);
+  late final smoothScrolling = _key<bool?>('smoothScrolling', null, sync: false);
+  late final mediaWaveHaptic = _key<bool?>('mediaWaveHaptic', null, sync: false);
+  late final backgroundImages = _key<bool?>('backgroundImages', null, sync: false);
 
-  final RxMap<TrackTilePosition, TrackTileItem> trackItem = {
-    TrackTilePosition.row1Item1: TrackTileItem.title,
-    TrackTilePosition.row1Item2: TrackTileItem.none,
-    TrackTilePosition.row1Item3: TrackTileItem.none,
-    TrackTilePosition.row2Item1: TrackTileItem.artists,
-    TrackTilePosition.row2Item2: TrackTileItem.none,
-    TrackTilePosition.row2Item3: TrackTileItem.none,
-    TrackTilePosition.row3Item1: TrackTileItem.album,
-    TrackTilePosition.row3Item2: TrackTileItem.year,
-    TrackTilePosition.row3Item3: TrackTileItem.none,
-    TrackTilePosition.rightItem1: TrackTileItem.duration,
-    TrackTilePosition.rightItem2: TrackTileItem.none,
-  }.obs;
+  late final editTagsKeepFileDates = _key('editTagsKeepFileDates', true);
+  late final downloadFilesWriteUploadDate = _key('downloadFilesWriteUploadDate', false);
+  late final downloadFilesKeepCachedVersions = _key('downloadFilesKeepCachedVersions', isKuru ? false : true);
+  late final downloadAddAudioToLocalLibrary = _key('downloadAddAudioToLocalLibrary', true);
+  late final downloadAddToLocalPlaylist = _key('downloadAddToLocalPlaylist', false);
+  late final downloadAudioOnly = _key('downloadAudioOnly', isKuru ? true : false);
+  late final downloadOverrideOldFiles = _key('downloadOverrideOldFiles', false);
+  late final enablePip = _key('enablePip', true, sync: false);
+  late final pickColorsFromDeviceWallpaper = _key('pickColorsFromDeviceWallpaper', false, sync: false);
+  late final onNotificationTapAction = _keyEnum('onNotificationTapAction', NotificationTapAction.openApp, NotificationTapAction.values);
+  late final performanceMode = _keyEnum('performanceMode', isDesktop ? PerformanceMode.goodLooking : PerformanceMode.balanced, PerformanceMode.values, sync: false);
+  late final floatingActionButton = _keyEnum('floatingActionButton', FABType.search, FABType.values);
+  late final vibrationType = _keyEnum('vibrationType', VibrationType.vibration, VibrationType.values);
 
-  final queueInsertion = <QueueInsertionType, QueueInsertion>{
-    QueueInsertionType.moreAlbum: const QueueInsertion(numberOfTracks: 10, insertNext: false, sortBy: InsertionSortingType.random),
-    QueueInsertionType.moreArtist: const QueueInsertion(numberOfTracks: 10, insertNext: false, sortBy: InsertionSortingType.random),
-    QueueInsertionType.moreFolder: const QueueInsertion(numberOfTracks: 10, insertNext: false, sortBy: InsertionSortingType.random),
-    QueueInsertionType.random: const QueueInsertion(numberOfTracks: 10, insertNext: false, sortBy: InsertionSortingType.random),
-    QueueInsertionType.listenTimeRange: const QueueInsertion(numberOfTracks: 0, insertNext: true, sortBy: InsertionSortingType.listenCount),
-    QueueInsertionType.mood: const QueueInsertion(numberOfTracks: 20, insertNext: true, sortBy: InsertionSortingType.listenCount),
-    QueueInsertionType.rating: const QueueInsertion(numberOfTracks: 20, insertNext: false, sortBy: InsertionSortingType.rating),
-    QueueInsertionType.sameReleaseDate: const QueueInsertion(numberOfTracks: 30, insertNext: true, sortBy: InsertionSortingType.listenCount),
-    QueueInsertionType.algorithm: const QueueInsertion(numberOfTracks: 20, insertNext: true, sortBy: InsertionSortingType.listenCount),
-  }.obs;
+  late final trackItem = _keyMap<TrackTilePosition, TrackTileItem>(
+    'trackItem',
+    const {
+      TrackTilePosition.row1Item1: TrackTileItem.title,
+      TrackTilePosition.row1Item2: TrackTileItem.none,
+      TrackTilePosition.row1Item3: TrackTileItem.none,
+      TrackTilePosition.row2Item1: TrackTileItem.artists,
+      TrackTilePosition.row2Item2: TrackTileItem.none,
+      TrackTilePosition.row2Item3: TrackTileItem.none,
+      TrackTilePosition.row3Item1: TrackTileItem.album,
+      TrackTilePosition.row3Item2: isKuru ? TrackTileItem.firstListenDate : TrackTileItem.year,
+      TrackTilePosition.row3Item3: TrackTileItem.none,
+      TrackTilePosition.rightItem1: TrackTileItem.duration,
+      TrackTilePosition.rightItem2: TrackTileItem.none,
+    },
+    key: TrackTilePosition.values.asCodec(),
+    value: TrackTileItem.values.asCodec(),
+  );
 
-  final homePageItems = <HomePageItems>[
-    HomePageItems.mixes,
-    HomePageItems.recentListens,
-    HomePageItems.topRecentListens,
-    HomePageItems.lostMemories,
-    HomePageItems.recentlyAdded,
-    HomePageItems.recentAlbums,
-    HomePageItems.recentArtists,
-  ].obs;
+  late final queueInsertion = _keyMap<QueueInsertionType, QueueInsertion>(
+    'queueInsertion',
+    const {
+      QueueInsertionType.moreAlbum: QueueInsertion(numberOfTracks: 10, insertNext: false, shuffle: true),
+      QueueInsertionType.moreArtist: QueueInsertion(numberOfTracks: 10, insertNext: false, shuffle: true),
+      QueueInsertionType.moreFolder: QueueInsertion(numberOfTracks: 10, insertNext: false, shuffle: true),
+      QueueInsertionType.random: QueueInsertion(numberOfTracks: 10, insertNext: false),
+      QueueInsertionType.listenTimeRange: QueueInsertion(numberOfTracks: 0, insertNext: true),
+      QueueInsertionType.mood: QueueInsertion(numberOfTracks: 20, insertNext: true, sorting: SortChain([SortEntry(SortType.mostPlayed)])),
+      QueueInsertionType.rating: QueueInsertion(numberOfTracks: 20, insertNext: false, sorting: SortChain([SortEntry(SortType.rating)], reverse: true)),
+      QueueInsertionType.sameReleaseDate: QueueInsertion(numberOfTracks: 30, insertNext: true, sorting: SortChain([SortEntry(SortType.mostPlayed)])),
+      QueueInsertionType.algorithm: QueueInsertion(numberOfTracks: 20, insertNext: true),
+      QueueInsertionType.algorithmDiscoverDate: QueueInsertion(numberOfTracks: 20, insertNext: true),
+      QueueInsertionType.algorithmTimeRange: QueueInsertion(numberOfTracks: 20, insertNext: true),
+      QueueInsertionType.similar: QueueInsertion(numberOfTracks: 20, insertNext: true, similarSources: SimilarTracksSource.values),
+      QueueInsertionType.mix: QueueInsertion(numberOfTracks: 0, insertNext: true),
+      QueueInsertionType.advancedPlay: QueueInsertion(numberOfTracks: 0, insertNext: false),
+      QueueInsertionType.advancedShuffle: QueueInsertion(numberOfTracks: 0, insertNext: false, shuffle: true),
+    },
+    key: QueueInsertionType.values.asCodec(),
+    value: _ObjectCodec(QueueInsertion.fromJson, (v) => v.toJson()),
+  );
 
-  final activeArtistType = MediaType.artist.obs;
+  late final homePageItems = _keyEnumList(
+    'homePageItems',
+    const [
+      HomePageItems.mixes, HomePageItems.recentListens, HomePageItems.topRecentListens, HomePageItems.lostMemories, //
+      HomePageItems.recentQueues, HomePageItems.recentlyAdded, HomePageItems.recentAlbums, HomePageItems.recentArtists, //
+    ],
+    HomePageItems.values,
+  );
 
-  final activeSearchMediaTypes = <MediaType>[
-    MediaType.track,
-    MediaType.album,
-    MediaType.artist,
-  ].obs;
+  late final activeArtistType = _keyEnum('activeArtistType', MediaType.artist, MediaType.values);
 
-  final albumIdentifiers = <AlbumIdentifier>[
-    AlbumIdentifier.albumName,
-  ].obs;
+  late final activeGenreType = _keyEnum('activeGenreType', MediaType.genre, MediaType.values);
 
-  final mediaItemsTrackSorting = <MediaType, List<SortType>>{
-    MediaType.album: [SortType.trackNo, SortType.year, SortType.title],
-    MediaType.artist: [SortType.year, SortType.title],
-    MediaType.genre: [SortType.year, SortType.title],
-    MediaType.folder: [SortType.filename],
-  }.obs;
+  late final activeSearchMediaTypes = _keyList(
+    'activeSearchMediaTypes',
+    isKuru ? const [MediaType.track, MediaType.album, MediaType.artist, MediaType.folder] : const [MediaType.track, MediaType.album, MediaType.artist],
+    item: MediaType.values.asCodec(),
+  );
 
-  final mediaItemsTrackSortingReverse = <MediaType, bool>{
-    MediaType.album: false,
-    MediaType.artist: false,
-    MediaType.genre: false,
-    MediaType.folder: false,
-  }.obs;
+  late final albumIdentifiers = _keyList(
+    'albumIdentifiers',
+    const [AlbumIdentifier.albumName, AlbumIdentifier.albumArtist],
+    item: AlbumIdentifier.values.asCodec(),
+  );
 
-  double fontScaleLRC = 1.0;
-  double fontScaleLRCFull = 1.0;
+  static const _kDefaultTracksSorting = isKuru ? [SortType.firstListen, SortType.title] : [SortType.title, SortType.year, SortType.album];
 
-  bool canAskForBatteryOptimizations = true;
+  static final _kDefaultTrackSorting = <MediaType, SortChain<SortType>>{
+    MediaType.track: SortChain.of(_kDefaultTracksSorting),
+    MediaType.album: SortChain.of(const [SortType.discNo, SortType.trackNo, SortType.year, SortType.title]),
+    MediaType.artist: SortChain.of(const [SortType.year, SortType.title]),
+    MediaType.albumArtist: SortChain.of(const [SortType.year, SortType.title]),
+    MediaType.composer: SortChain.of(const [SortType.year, SortType.title]),
+    MediaType.genre: SortChain.of(const [SortType.year, SortType.title]),
+    MediaType.style: SortChain.of(const [SortType.year, SortType.title]),
+    MediaType.language: SortChain.of(const [SortType.year, SortType.title]),
+    MediaType.mood: SortChain.of(const [SortType.title]),
+    MediaType.tag: SortChain.of(const [SortType.title]),
+    MediaType.rating: SortChain.of(const [SortType.title]),
+    MediaType.folder: SortChain.of(const [SortType.filename]),
+    MediaType.folderMusic: SortChain.of(const [SortType.filename]),
+    MediaType.folderVideo: SortChain.of(const [SortType.filename]),
+  };
+
+  /// used while no preset is active, sorting reads [mediaItemsTrackSorting].
+  late final mediaItemsTrackSortingDefault = _keyMap<MediaType, SortChain<SortType>>(
+    'mediaItemsTrackSorting_v2',
+    _kDefaultTrackSorting,
+    key: MediaType.values.asCodec(),
+    value: const _ObjectCodec(_trackSortingFromJson, _sortingToJson),
+  );
+
+  late final mediaItemsTrackSortingPresets = _keyMap<MediaType, TrackSortPresets>(
+    'mediaItemsTrackSortingPresets_v2',
+    const {},
+    key: MediaType.values.asCodec(),
+    value: _ObjectCodec(TrackSortPresets.fromJson, (v) => v.toJson()),
+  );
+
+  /// [mediaItemsTrackSortingDefault] with each type's active preset applied.
+  RxBaseCore<Map<MediaType, SortChain<SortType>>> get mediaItemsTrackSorting => _activeTrackSorting.sorting;
+
+  late final _activeTrackSorting = _ActiveTrackSorting(mediaItemsTrackSortingDefault, mediaItemsTrackSortingPresets);
+
+  static SortChain<SortType> _trackSortingFromJson(Map<String, dynamic> json) => SortChain.fromMap(json, SortType.values);
+
+  /// groups always sort by something, an empty chain falls back to the default.
+  static SortChain<GroupSortType>? _groupSortingFromJson(Map<String, dynamic> json) {
+    final sorting = SortChain.fromMap(json, GroupSortType.values);
+    return sorting.isEmpty ? null : sorting;
+  }
+
+  static Object? _sortingToJson(SortChain sorting) => sorting.toJson();
+
+  late final imageSourceAlbum = _keyList('imageSourceAlbum', const [LibraryImageSource.lastfm, LibraryImageSource.local], item: LibraryImageSource.values.asCodec());
+  late final imageSourceArtist = _keyList('imageSourceArtist', const [LibraryImageSource.lastfm, LibraryImageSource.local], item: LibraryImageSource.values.asCodec());
+
+  late final ignoreCommonPrefixForTypes = _keyList('ignoreCommonPrefixForTypes', const <TrackSearchFilter>[], item: TrackSearchFilter.values.asCodec());
+  late final commonPrefixes = _keyList<String>('commonPrefixes', const ['the ', 'a ', 'an ']);
+
+  late final fontScaleLRC = _key('fontScaleLRC', 1.0);
+  late final fontScaleLRCFull = _key<double?>('fontScaleLRCFull', null);
+
+  static const _kDefaultLyricsEffects = [
+    LyricsEffect.focalScale, LyricsEffect.depthBlur, LyricsEffect.springPop, LyricsEffect.interludeDots, LyricsEffect.seekGlide, //
+    LyricsEffect.accentTint, LyricsEffect.glow, LyricsEffect.wordBump, LyricsEffect.shimmer, LyricsEffect.feather, //
+  ];
+  static const _kDefaultLyricsEffectsLine = [LyricsEffect.accentTint, LyricsEffect.glow, LyricsEffect.shimmer, LyricsEffect.feather];
+  late final lyricsEffectsLine = _keyEnumList('lyricsEffectsLine', _kDefaultLyricsEffectsLine, LyricsEffect.karaokeEffects);
+  late final lyricsEffectsNormal = _keyEnumList('lyricsEffectsNormal', _kDefaultLyricsEffects, LyricsEffect.values);
+  late final lyricsEffectsExpanded = _keyEnumList('lyricsEffectsExpanded', _kDefaultLyricsEffects, LyricsEffect.values);
+
+  late final canAskForBatteryOptimizations = _key('canAskForBatteryOptimizations', true, sync: false);
+
+  /// queue published to media browser clients (android auto, wear).
+  late final mediaBrowserQueue = _key('mediaBrowserQueue', true, sync: false);
+  late final nowPlayingBroadcast = _key('nowPlayingBroadcast', false, sync: false);
+  late final webhookUrl = _key('webhookUrl', '', sync: false);
+  late final webhookEvents = _keySet<WebhookEvent>('webhookEvents', _kDefaultWebhookEvents, item: WebhookEvent.values.asCodec(), sync: false);
+  late final lyricsIntegrations = _keySet<LyricsIntegration>('lyricsIntegrations', const {}, item: LyricsIntegration.values.asCodec(), sync: false);
+
+  static const _kDefaultWebhookEvents = {WebhookEvent.trackChanged, WebhookEvent.play, WebhookEvent.pause};
+
   bool didSupportNamida = false;
+  late final eggs = _keyObject<EggsData>('eggs', const EggsData(), EggsData.fromJson, (v) => v.toJson());
 
-  Future<void> prepareSettingsFile() async {
-    final json = await prepareSettingsFile_();
-    if (json == null) return;
-
-    try {
-      /// Assigning Values
-      selectedLanguage.value = NamidaLanguage.fromJson(json['selectedLanguage']);
-      themeMode.value = ThemeMode.values.getEnum(json['themeMode']) ?? themeMode.value;
-      pitchBlack.value = json['pitchBlack'] ?? pitchBlack.value;
-      autoColor.value = json['autoColor'] ?? autoColor.value;
-      staticColor.value = json['staticColor'] ?? staticColor.value;
-      staticColorDark.value = json['staticColorDark'] ?? staticColorDark.value;
-      selectedLibraryTab.value = json['autoLibraryTab'] ?? autoLibraryTab.value
-          ? LibraryTab.values.getEnum(json['selectedLibraryTab']) ?? selectedLibraryTab.value
-          : LibraryTab.values.getEnum(json['staticLibraryTab']) ?? staticLibraryTab.value;
-      staticLibraryTab.value = LibraryTab.values.getEnum(json['staticLibraryTab']) ?? staticLibraryTab.value;
-      autoLibraryTab.value = json['autoLibraryTab'] ?? autoLibraryTab.value;
-      final libraryListFromStorage = List<String>.from(json['libraryTabs'] ?? []);
-      libraryTabs.value = libraryListFromStorage.isNotEmpty ? List<LibraryTab>.from(libraryListFromStorage.map((e) => LibraryTab.values.getEnum(e))) : libraryTabs.toList();
-
-      final homePageItemsFromStorage = List<String>.from(json['homePageItems'] ?? []);
-      homePageItems.value =
-          homePageItemsFromStorage.isNotEmpty ? List<HomePageItems>.from(homePageItemsFromStorage.map((e) => HomePageItems.values.getEnum(e))) : homePageItems.toList();
-
-      activeArtistType.value = MediaType.values.getEnum(json['activeArtistType']) ?? activeArtistType.value;
-
-      final activeSearchMediaTypesFromStorage = List<String>.from(json['activeSearchMediaTypes'] ?? []);
-      activeSearchMediaTypes.value = activeSearchMediaTypesFromStorage.isNotEmpty
-          ? List<MediaType>.from(activeSearchMediaTypesFromStorage.map((e) => MediaType.values.getEnum(e)))
-          : activeSearchMediaTypes.toList();
-
-      final albumIdentifiersFromStorage = List<String>.from(json['albumIdentifiers'] ?? []);
-      albumIdentifiers.value = albumIdentifiersFromStorage.isNotEmpty
-          ? List<AlbumIdentifier>.from(albumIdentifiersFromStorage.map((e) => AlbumIdentifier.values.getEnum(e)))
-          : albumIdentifiers.toList();
-
-      searchResultsPlayMode.value = json['searchResultsPlayMode'] ?? searchResultsPlayMode.value;
-      borderRadiusMultiplier.value = json['borderRadiusMultiplier'] ?? borderRadiusMultiplier.value;
-      fontScaleFactor.value = json['fontScaleFactor'] ?? fontScaleFactor.value;
-      artworkCacheHeightMultiplier.value = json['artworkCacheHeightMultiplier'] ?? artworkCacheHeightMultiplier.value;
-      trackThumbnailSizeinList.value = json['trackThumbnailSizeinList'] ?? trackThumbnailSizeinList.value;
-      trackListTileHeight.value = json['trackListTileHeight'] ?? trackListTileHeight.value;
-      albumThumbnailSizeinList.value = json['albumThumbnailSizeinList'] ?? albumThumbnailSizeinList.value;
-      albumListTileHeight.value = json['albumListTileHeight'] ?? albumListTileHeight.value;
-
-      useMediaStore.value = json['useMediaStore'] ?? useMediaStore.value;
-      displayTrackNumberinAlbumPage.value = json['displayTrackNumberinAlbumPage'] ?? displayTrackNumberinAlbumPage.value;
-      albumCardTopRightDate.value = json['albumCardTopRightDate'] ?? albumCardTopRightDate.value;
-      forceSquaredTrackThumbnail.value = json['forceSquaredTrackThumbnail'] ?? forceSquaredTrackThumbnail.value;
-      forceSquaredAlbumThumbnail.value = json['forceSquaredAlbumThumbnail'] ?? forceSquaredAlbumThumbnail.value;
-      useAlbumStaggeredGridView.value = json['useAlbumStaggeredGridView'] ?? useAlbumStaggeredGridView.value;
-      useSettingCollapsedTiles.value = json['useSettingCollapsedTiles'] ?? useSettingCollapsedTiles.value;
-      albumGridCount.value = json['albumGridCount'] ?? albumGridCount.value;
-      artistGridCount.value = json['artistGridCount'] ?? artistGridCount.value;
-      genreGridCount.value = json['genreGridCount'] ?? genreGridCount.value;
-      playlistGridCount.value = json['playlistGridCount'] ?? playlistGridCount.value;
-      enableBlurEffect.value = json['enableBlurEffect'] ?? enableBlurEffect.value;
-      enableGlowEffect.value = json['enableGlowEffect'] ?? enableGlowEffect.value;
-      hourFormat12.value = json['hourFormat12'] ?? hourFormat12.value;
-      dateTimeFormat.value = json['dateTimeFormat'] ?? dateTimeFormat.value;
-
-      trackArtistsSeparators.value = List<String>.from(json['trackArtistsSeparators'] ?? trackArtistsSeparators);
-      trackGenresSeparators.value = List<String>.from(json['trackGenresSeparators'] ?? trackGenresSeparators);
-      trackArtistsSeparatorsBlacklist.value = List<String>.from(json['trackArtistsSeparatorsBlacklist'] ?? trackArtistsSeparatorsBlacklist);
-      trackGenresSeparatorsBlacklist.value = List<String>.from(json['trackGenresSeparatorsBlacklist'] ?? trackGenresSeparatorsBlacklist);
-      tracksSort.value = SortType.values.getEnum(json['tracksSort']) ?? tracksSort.value;
-      tracksSortReversed.value = json['tracksSortReversed'] ?? tracksSortReversed.value;
-      tracksSortSearch.value = SortType.values.getEnum(json['tracksSortSearch']) ?? tracksSortSearch.value;
-      tracksSortSearchReversed.value = json['tracksSortSearchReversed'] ?? tracksSortSearchReversed.value;
-      tracksSortSearchIsAuto.value = json['tracksSortSearchIsAuto'] ?? tracksSortSearchIsAuto.value;
-      albumSort.value = GroupSortType.values.getEnum(json['albumSort']) ?? albumSort.value;
-      albumSortReversed.value = json['albumSortReversed'] ?? albumSortReversed.value;
-      artistSort.value = GroupSortType.values.getEnum(json['artistSort']) ?? artistSort.value;
-      artistSortReversed.value = json['artistSortReversed'] ?? artistSortReversed.value;
-      genreSort.value = GroupSortType.values.getEnum(json['genreSort']) ?? genreSort.value;
-      genreSortReversed.value = json['genreSortReversed'] ?? genreSortReversed.value;
-      playlistSort.value = GroupSortType.values.getEnum(json['playlistSort']) ?? playlistSort.value;
-      playlistSortReversed.value = json['playlistSortReversed'] ?? playlistSortReversed.value;
-      ytPlaylistSort.value = GroupSortType.values.getEnum(json['ytPlaylistSort']) ?? ytPlaylistSort.value;
-      ytPlaylistSortReversed.value = json['ytPlaylistSortReversed'] ?? ytPlaylistSortReversed.value;
-      indexMinDurationInSec.value = json['indexMinDurationInSec'] ?? indexMinDurationInSec.value;
-      indexMinFileSizeInB.value = json['indexMinFileSizeInB'] ?? indexMinFileSizeInB.value;
-
+  @override
+  void _migrateLegacy() {
+    _migrateKey('selectedLanguage', 'language', (json) {
+      if (_raw['language'] != null || json is! Map<String, dynamic>) return null;
+      // -- apply previous language only if it wasn't english, since this was the default
+      // -- cuz null just falls back to device language or english now
       try {
-        // -- backward compability, since the previous type was String
-        final trackSearchFilterInStorage = List<String>.from(json['trackSearchFilter'] ?? []);
-        if (trackSearchFilterInStorage.isNotEmpty) {
-          trackSearchFilter.value = List<TrackSearchFilter>.from(trackSearchFilterInStorage.map((e) => TrackSearchFilter.values.getEnum(e)));
-        }
-      } catch (_) {}
+        return NamidaLanguage.fromJson(json).codeOnly == 'en' ? null : json;
+      } catch (_) {
+        return null;
+      }
+    });
+    _migrateKey('staticColor', 'staticColor_v2', (json) => _raw['staticColor_v2'] == null && json != kMainColorLightOldValue ? json : null);
+    _migrateKey('staticColorDark', 'staticColorDark_v2', (json) => _raw['staticColorDark_v2'] == null && json != kMainColorDarkOldValue ? json : null);
+    // -- keys the old loader had already reset by only reading their `_v2` twin
+    _dropKey('useMediaStore');
+    _dropKey('tracksSortSearchIsAuto');
+    _dropKey('showUnknownFieldsInTrackInfoDialog');
+    _dropKey('defaultBackupLocation');
+    _dropKey('backupItemslist');
+    _legacyWindowBounds = const _RectCodec().decode(_dropKey('windowBounds'));
+    _dropKey('advancedPlaySorts');
+    _dropKey('advancedPlaySortReverse');
+    _dropKey('advancedPlayMinimums');
 
-      playlistSearchFilter.value = List<String>.from(json['playlistSearchFilter'] ?? playlistSearchFilter);
-      directoriesToScan.value = List<String>.from(json['directoriesToScan'] ?? directoriesToScan);
-      directoriesToExclude.value = List<String>.from(json['directoriesToExclude'] ?? directoriesToExclude);
-      preventDuplicatedTracks.value = json['preventDuplicatedTracks'] ?? preventDuplicatedTracks.value;
-      respectNoMedia.value = json['respectNoMedia'] ?? respectNoMedia.value;
-      defaultBackupLocation.value = json['defaultBackupLocation'] ?? defaultBackupLocation.value;
-      autoBackupIntervalDays.value = json['autoBackupIntervalDays'] ?? autoBackupIntervalDays.value;
-      defaultFolderStartupLocation.value = json['defaultFolderStartupLocation'] ?? defaultFolderStartupLocation.value;
-      ytDownloadLocation.value = json['ytDownloadLocation'] ?? ytDownloadLocation.value;
-      enableFoldersHierarchy.value = json['enableFoldersHierarchy'] ?? enableFoldersHierarchy.value;
-      displayArtistBeforeTitle.value = json['displayArtistBeforeTitle'] ?? displayArtistBeforeTitle.value;
-      heatmapListensView.value = json['heatmapListensView'] ?? heatmapListensView.value;
-      backupItemslist.value = List<String>.from(json['backupItemslist'] ?? backupItemslist);
-      enableVideoPlayback.value = json['enableVideoPlayback'] ?? enableVideoPlayback.value;
-      enableLyrics.value = json['enableLyrics'] ?? enableLyrics.value;
-      lyricsSource.value = LyricsSource.values.getEnum(json['lyricsSource']) ?? lyricsSource.value;
-      videoPlaybackSource.value = VideoPlaybackSource.values.getEnum(json['videoPlaybackSource']) ?? videoPlaybackSource.value;
-      youtubeVideoQualities.value = List<String>.from(json['youtubeVideoQualities'] ?? youtubeVideoQualities);
-
-      animatingThumbnailScaleMultiplier.value = json['animatingThumbnailScaleMultiplier'] ?? animatingThumbnailScaleMultiplier.value;
-      animatingThumbnailIntensity.value = json['animatingThumbnailIntensity'] ?? animatingThumbnailIntensity.value;
-      animatingThumbnailInversed.value = json['animatingThumbnailInversed'] ?? animatingThumbnailInversed.value;
-      enablePartyModeInMiniplayer.value = json['enablePartyModeInMiniplayer'] ?? enablePartyModeInMiniplayer.value;
-      enablePartyModeColorSwap.value = json['enablePartyModeColorSwap'] ?? enablePartyModeColorSwap.value;
-      enableMiniplayerParticles.value = json['enableMiniplayerParticles'] ?? enableMiniplayerParticles.value;
-      enableMiniplayerParallaxEffect.value = json['enableMiniplayerParallaxEffect'] ?? enableMiniplayerParallaxEffect.value;
-      forceMiniplayerTrackColor.value = json['forceMiniplayerTrackColor'] ?? forceMiniplayerTrackColor.value;
-      isTrackPlayedSecondsCount.value = json['isTrackPlayedSecondsCount'] ?? isTrackPlayedSecondsCount.value;
-      isTrackPlayedPercentageCount.value = json['isTrackPlayedPercentageCount'] ?? isTrackPlayedPercentageCount.value;
-      waveformTotalBars.value = json['waveformTotalBars'] ?? waveformTotalBars.value;
-      videosMaxCacheInMB.value = json['videosMaxCacheInMB'] ?? videosMaxCacheInMB.value;
-      audiosMaxCacheInMB.value = json['audiosMaxCacheInMB'] ?? audiosMaxCacheInMB.value;
-      imagesMaxCacheInMB.value = json['imagesMaxCacheInMB'] ?? imagesMaxCacheInMB.value;
-      ytMiniplayerDimAfterSeconds.value = json['ytMiniplayerDimAfterSeconds'] ?? ytMiniplayerDimAfterSeconds.value;
-      ytMiniplayerDimOpacity.value = json['ytMiniplayerDimOpacity'] ?? ytMiniplayerDimOpacity.value;
-      youtubeStyleMiniplayer.value = json['youtubeStyleMiniplayer'] ?? youtubeStyleMiniplayer.value;
-      hideStatusBarInExpandedMiniplayer.value = json['hideStatusBarInExpandedMiniplayer'] ?? hideStatusBarInExpandedMiniplayer.value;
-      displayFavouriteButtonInNotification.value = json['displayFavouriteButtonInNotification'] ?? displayFavouriteButtonInNotification.value;
-      enableSearchCleanup.value = json['enableSearchCleanup'] ?? enableSearchCleanup.value;
-      enableBottomNavBar.value = json['enableBottomNavBar'] ?? enableBottomNavBar.value;
-      ytPreferNewComments.value = json['ytPreferNewComments'] ?? ytPreferNewComments.value;
-      ytAutoExtractVideoTagsFromInfo.value = json['ytAutoExtractVideoTagsFromInfo'] ?? ytAutoExtractVideoTagsFromInfo.value;
-      displayAudioInfoMiniplayer.value = json['displayAudioInfoMiniplayer'] ?? displayAudioInfoMiniplayer.value;
-      showUnknownFieldsInTrackInfoDialog.value = json['showUnknownFieldsInTrackInfoDialog'] ?? showUnknownFieldsInTrackInfoDialog.value;
-      extractFeatArtistFromTitle.value = json['extractFeatArtistFromTitle'] ?? extractFeatArtistFromTitle.value;
-      groupArtworksByAlbum.value = json['groupArtworksByAlbum'] ?? groupArtworksByAlbum.value;
-      enableM3USync.value = json['enableM3USync'] ?? enableM3USync.value;
-      prioritizeEmbeddedLyrics.value = json['prioritizeEmbeddedLyrics'] ?? prioritizeEmbeddedLyrics.value;
-      swipeableDrawer.value = json['swipeableDrawer'] ?? swipeableDrawer.value;
-      dismissibleMiniplayer.value = json['dismissibleMiniplayer'] ?? dismissibleMiniplayer.value;
-      enableClipboardMonitoring.value = json['enableClipboardMonitoring'] ?? enableClipboardMonitoring.value;
-      ytRememberAudioOnly.value = json['ytRememberAudioOnly'] ?? ytRememberAudioOnly.value;
-      if (ytRememberAudioOnly.value) ytIsAudioOnlyMode.value = json['ytIsAudioOnlyMode'] ?? ytIsAudioOnlyMode.value;
-      ytTopComments.value = json['ytTopComments'] ?? ytTopComments.value;
-      artworkGestureScale.value = json['artworkGestureScale'] ?? artworkGestureScale.value;
-      artworkGestureDoubleTapLRC.value = json['artworkGestureDoubleTapLRC'] ?? artworkGestureDoubleTapLRC.value;
-      previousButtonReplays.value = json['previousButtonReplays'] ?? previousButtonReplays.value;
-      refreshOnStartup.value = json['refreshOnStartup'] ?? refreshOnStartup.value;
-
-      final listFromStorage = List<String>.from(json['tagFieldsToEdit'] ?? []);
-      tagFieldsToEdit.value = listFromStorage.isNotEmpty ? List<TagField>.from(listFromStorage.map((e) => TagField.values.getEnum(e))) : tagFieldsToEdit;
-
-      wakelockMode.value = WakelockMode.values.getEnum(json['wakelockMode']) ?? wakelockMode.value;
-
-      localVideoMatchingType.value = LocalVideoMatchingType.values.getEnum(json['localVideoMatchingType']) ?? localVideoMatchingType.value;
-      localVideoMatchingCheckSameDir.value = json['localVideoMatchingCheckSameDir'] ?? localVideoMatchingCheckSameDir.value;
-
-      trackPlayMode.value = TrackPlayMode.values.getEnum(json['trackPlayMode']) ?? trackPlayMode.value;
-
-      mostPlayedTimeRange.value = MostPlayedTimeRange.values.getEnum(json['mostPlayedTimeRange']) ?? mostPlayedTimeRange.value;
-      mostPlayedCustomDateRange.value = json['mostPlayedCustomDateRange'] != null ? DateRange.fromJson(json['mostPlayedCustomDateRange']) : mostPlayedCustomDateRange.value;
-      mostPlayedCustomisStartOfDay.value = json['mostPlayedCustomisStartOfDay'] ?? mostPlayedCustomisStartOfDay.value;
-
-      ytMostPlayedTimeRange.value = MostPlayedTimeRange.values.getEnum(json['ytMostPlayedTimeRange']) ?? ytMostPlayedTimeRange.value;
-      ytMostPlayedCustomDateRange.value = json['ytMostPlayedCustomDateRange'] != null ? DateRange.fromJson(json['ytMostPlayedCustomDateRange']) : ytMostPlayedCustomDateRange.value;
-      ytMostPlayedCustomisStartOfDay.value = json['ytMostPlayedCustomisStartOfDay'] ?? ytMostPlayedCustomisStartOfDay.value;
-
-      /// Track Items
-      displayThirdRow.value = json['displayThirdRow'] ?? displayThirdRow.value;
-      displayThirdItemInEachRow.value = json['displayThirdItemInEachRow'] ?? displayThirdItemInEachRow.value;
-      trackTileSeparator.value = json['trackTileSeparator'] ?? trackTileSeparator.value;
-      displayFavouriteIconInListTile.value = json['displayFavouriteIconInListTile'] ?? displayFavouriteIconInListTile.value;
-      editTagsKeepFileDates.value = json['editTagsKeepFileDates'] ?? editTagsKeepFileDates.value;
-      downloadFilesWriteUploadDate.value = json['downloadFilesWriteUploadDate'] ?? downloadFilesWriteUploadDate.value;
-      downloadFilesKeepCachedVersions.value = json['downloadFilesKeepCachedVersions'] ?? downloadFilesKeepCachedVersions.value;
-      enablePip.value = json['enablePip'] ?? enablePip.value;
-      pickColorsFromDeviceWallpaper.value = json['pickColorsFromDeviceWallpaper'] ?? pickColorsFromDeviceWallpaper.value;
-      onNotificationTapAction.value = NotificationTapAction.values.getEnum(json['onNotificationTapAction']) ?? onNotificationTapAction.value;
-      onYoutubeLinkOpen.value = OnYoutubeLinkOpenAction.values.getEnum(json['onYoutubeLinkOpen']) ?? onYoutubeLinkOpen.value;
-      performanceMode.value = PerformanceMode.values.getEnum(json['performanceMode']) ?? performanceMode.value;
-      floatingActionButton.value = FABType.values.getEnum(json['floatingActionButton']) ?? floatingActionButton.value;
-      ytInitialHomePage.value = YTHomePages.values.getEnum(json['ytInitialHomePage']) ?? ytInitialHomePage.value;
-      ytTapToSeek.value = YTSeekActionMode.values.getEnum(json['ytTapToSeek']) ?? ytTapToSeek.value;
-      ytDragToSeek.value = YTSeekActionMode.values.getEnum(json['ytDragToSeek']) ?? ytDragToSeek.value;
-
-      trackItem.value = getEnumMap_(
-            json['trackItem'],
-            TrackTilePosition.values,
-            TrackTilePosition.rightItem3,
-            TrackTileItem.values,
-            TrackTileItem.none,
-          ) ??
-          trackItem.map((key, value) => MapEntry(key, value));
-
-      queueInsertion.value = ((json["queueInsertion"] as Map?)?.map(
-            (key, value) => MapEntry(QueueInsertionType.values.getEnum(key) ?? QueueInsertionType.moreAlbum, QueueInsertion.fromJson(value)),
-          )) ??
-          queueInsertion.map((key, value) => MapEntry(key, value));
-
-      final mediaItemsTrackSortingInStorage = json["mediaItemsTrackSorting"] as Map? ?? {};
-      mediaItemsTrackSorting.value = {
-        for (final e in mediaItemsTrackSortingInStorage.entries)
-          MediaType.values.getEnum(e.key) ?? MediaType.track: (e.value as List?)?.map((v) => SortType.values.getEnum(v) ?? SortType.title).toList() ?? <SortType>[SortType.year]
+    final tracksSort = _dropKey('tracksSort');
+    if (tracksSort is String) {
+      final Map sorting = _raw['mediaItemsTrackSorting'] ??= <String, dynamic>{
+        MediaType.track.name: <dynamic>[for (final sort in _kDefaultTracksSorting) sort.name],
       };
-      final mediaItemsTrackSortingReverseInStorage = json["mediaItemsTrackSortingReverse"] as Map? ?? {};
-      mediaItemsTrackSortingReverse.value = {for (final e in mediaItemsTrackSortingReverseInStorage.entries) MediaType.values.getEnum(e.key) ?? MediaType.track: e.value};
-
-      fontScaleLRC = json['fontScaleLRC'] ?? fontScaleLRC;
-      fontScaleLRCFull = json['fontScaleLRCFull'] ?? fontScaleLRC; // fallback to normal
-
-      canAskForBatteryOptimizations = json['canAskForBatteryOptimizations'] ?? canAskForBatteryOptimizations;
-    } catch (e) {
-      printy(e, isError: true);
+      final List trackSorts = sorting[MediaType.track.name] ??= <dynamic>[];
+      trackSorts.remove(tracksSort);
+      trackSorts.insert(0, tracksSort);
+    }
+    final tracksSortReversed = _dropKey('tracksSortReversed');
+    if (tracksSortReversed is bool) {
+      final Map reverse = _raw['mediaItemsTrackSortingReverse'] ??= <String, dynamic>{};
+      reverse[MediaType.track.name] = tracksSortReversed;
     }
   }
 
   @override
-  Object get jsonToWrite => {
-        'selectedLanguage': selectedLanguage.toJson(),
-        'themeMode': themeMode.value.convertToString,
-        'pitchBlack': pitchBlack.value,
-        'autoColor': autoColor.value,
-        'staticColor': staticColor.value,
-        'staticColorDark': staticColorDark.value,
-        'selectedLibraryTab': selectedLibraryTab.value.convertToString,
-        'staticLibraryTab': staticLibraryTab.value.convertToString,
-        'autoLibraryTab': autoLibraryTab.value,
-        'libraryTabs': libraryTabs.mapped((element) => element.convertToString),
-        'homePageItems': homePageItems.mapped((element) => element.convertToString),
-        'activeArtistType': activeArtistType.value.convertToString,
-        'activeSearchMediaTypes': activeSearchMediaTypes.mapped((element) => element.convertToString),
-        'albumIdentifiers': albumIdentifiers.mapped((element) => element.convertToString),
-        'searchResultsPlayMode': searchResultsPlayMode.value,
-        'borderRadiusMultiplier': borderRadiusMultiplier.value,
-        'fontScaleFactor': fontScaleFactor.value,
-        'artworkCacheHeightMultiplier': artworkCacheHeightMultiplier.value,
-        'trackThumbnailSizeinList': trackThumbnailSizeinList.value,
-        'trackListTileHeight': trackListTileHeight.value,
-        'albumThumbnailSizeinList': albumThumbnailSizeinList.value,
-        'albumListTileHeight': albumListTileHeight.value,
+  void _migrateKeys() {
+    for (final name in const ['albumSort', 'artistSort', 'genreSort', 'playlistSort']) {
+      final listName = '${name}s';
+      _migrateKey(name, listName, (json) => json is String && _raw[listName] == null ? [json] : null);
+    }
 
-        'useMediaStore': useMediaStore.value,
-        'displayTrackNumberinAlbumPage': displayTrackNumberinAlbumPage.value,
-        'albumCardTopRightDate': albumCardTopRightDate.value,
-        'forceSquaredTrackThumbnail': forceSquaredTrackThumbnail.value,
-        'forceSquaredAlbumThumbnail': forceSquaredAlbumThumbnail.value,
-        'useAlbumStaggeredGridView': useAlbumStaggeredGridView.value,
-        'useSettingCollapsedTiles': useSettingCollapsedTiles.value,
-        'albumGridCount': albumGridCount.value,
-        'artistGridCount': artistGridCount.value,
-        'genreGridCount': genreGridCount.value,
-        'playlistGridCount': playlistGridCount.value,
-        'enableBlurEffect': enableBlurEffect.value,
-        'enableGlowEffect': enableGlowEffect.value,
-        'hourFormat12': hourFormat12.value,
-        'dateTimeFormat': dateTimeFormat.value,
-        'trackArtistsSeparators': trackArtistsSeparators.toList(),
-        'trackGenresSeparators': trackGenresSeparators.toList(),
-        'trackArtistsSeparatorsBlacklist': trackArtistsSeparatorsBlacklist.toList(),
-        'trackGenresSeparatorsBlacklist': trackGenresSeparatorsBlacklist.toList(),
-        'tracksSort': tracksSort.value.convertToString,
-        'tracksSortReversed': tracksSortReversed.value,
-        'tracksSortSearch': tracksSortSearch.value.convertToString,
-        'tracksSortSearchReversed': tracksSortSearchReversed.value,
-        'tracksSortSearchIsAuto': tracksSortSearchIsAuto.value,
-        'albumSort': albumSort.value.convertToString,
-        'albumSortReversed': albumSortReversed.value,
-        'artistSort': artistSort.value.convertToString,
-        'artistSortReversed': artistSortReversed.value,
-        'genreSort': genreSort.value.convertToString,
-        'genreSortReversed': genreSortReversed.value,
-        'playlistSort': playlistSort.value.convertToString,
-        'playlistSortReversed': playlistSortReversed.value,
-        'ytPlaylistSort': ytPlaylistSort.value.convertToString,
-        'ytPlaylistSortReversed': ytPlaylistSortReversed.value,
-        'indexMinDurationInSec': indexMinDurationInSec.value,
-        'indexMinFileSizeInB': indexMinFileSizeInB.value,
-        'trackSearchFilter': trackSearchFilter.mapped((e) => e.convertToString),
-        'playlistSearchFilter': playlistSearchFilter.toList(),
-        'directoriesToScan': directoriesToScan.toList(),
-        'directoriesToExclude': directoriesToExclude.toList(),
-        'preventDuplicatedTracks': preventDuplicatedTracks.value,
-        'respectNoMedia': respectNoMedia.value,
-        'defaultBackupLocation': defaultBackupLocation.value,
-        'autoBackupIntervalDays': autoBackupIntervalDays.value,
-        'defaultFolderStartupLocation': defaultFolderStartupLocation.value,
-        'ytDownloadLocation': ytDownloadLocation.value,
-        'enableFoldersHierarchy': enableFoldersHierarchy.value,
-        'displayArtistBeforeTitle': displayArtistBeforeTitle.value,
-        'heatmapListensView': heatmapListensView.value,
-        'backupItemslist': backupItemslist.toList(),
-        'enableVideoPlayback': enableVideoPlayback.value,
-        'enableLyrics': enableLyrics.value,
-        'lyricsSource': lyricsSource.value.convertToString,
-        'videoPlaybackSource': videoPlaybackSource.value.convertToString,
-        'youtubeVideoQualities': youtubeVideoQualities.toList(),
-        'animatingThumbnailScaleMultiplier': animatingThumbnailScaleMultiplier.value,
-        'animatingThumbnailIntensity': animatingThumbnailIntensity.value,
-        'animatingThumbnailInversed': animatingThumbnailInversed.value,
-        'enablePartyModeInMiniplayer': enablePartyModeInMiniplayer.value,
-        'enablePartyModeColorSwap': enablePartyModeColorSwap.value,
-        'enableMiniplayerParticles': enableMiniplayerParticles.value,
-        'enableMiniplayerParallaxEffect': enableMiniplayerParallaxEffect.value,
-        'forceMiniplayerTrackColor': forceMiniplayerTrackColor.value,
-        'isTrackPlayedSecondsCount': isTrackPlayedSecondsCount.value,
-        'isTrackPlayedPercentageCount': isTrackPlayedPercentageCount.value,
-        'waveformTotalBars': waveformTotalBars.value,
-        'videosMaxCacheInMB': videosMaxCacheInMB.value,
-        'audiosMaxCacheInMB': audiosMaxCacheInMB.value,
-        'imagesMaxCacheInMB': imagesMaxCacheInMB.value,
-        'ytMiniplayerDimAfterSeconds': ytMiniplayerDimAfterSeconds.value,
-        'ytMiniplayerDimOpacity': ytMiniplayerDimOpacity.value,
-        'youtubeStyleMiniplayer': youtubeStyleMiniplayer.value,
-        'hideStatusBarInExpandedMiniplayer': hideStatusBarInExpandedMiniplayer.value,
-        'displayFavouriteButtonInNotification': displayFavouriteButtonInNotification.value,
-        'enableSearchCleanup': enableSearchCleanup.value,
-        'enableBottomNavBar': enableBottomNavBar.value,
-        'ytPreferNewComments': ytPreferNewComments.value,
-        'ytAutoExtractVideoTagsFromInfo': ytAutoExtractVideoTagsFromInfo.value,
-        'displayAudioInfoMiniplayer': displayAudioInfoMiniplayer.value,
-        'showUnknownFieldsInTrackInfoDialog': showUnknownFieldsInTrackInfoDialog.value,
-        'extractFeatArtistFromTitle': extractFeatArtistFromTitle.value,
-        'groupArtworksByAlbum': groupArtworksByAlbum.value,
-        'enableM3USync': enableM3USync.value,
-        'prioritizeEmbeddedLyrics': prioritizeEmbeddedLyrics.value,
-        'swipeableDrawer': swipeableDrawer.value,
-        'dismissibleMiniplayer': dismissibleMiniplayer.value,
-        'enableClipboardMonitoring': enableClipboardMonitoring.value,
-        'ytIsAudioOnlyMode': ytIsAudioOnlyMode.value,
-        'ytRememberAudioOnly': ytRememberAudioOnly.value,
-        'ytTopComments': ytTopComments.value,
-        'artworkGestureScale': artworkGestureScale.value,
-        'artworkGestureDoubleTapLRC': artworkGestureDoubleTapLRC.value,
-        'previousButtonReplays': previousButtonReplays.value,
-        'refreshOnStartup': refreshOnStartup.value,
-        'tagFieldsToEdit': tagFieldsToEdit.mapped((element) => element.convertToString),
-        'wakelockMode': wakelockMode.value.convertToString,
-        'localVideoMatchingType': localVideoMatchingType.value.convertToString,
-        'localVideoMatchingCheckSameDir': localVideoMatchingCheckSameDir.value,
-        'trackPlayMode': trackPlayMode.value.convertToString,
-        'onNotificationTapAction': onNotificationTapAction.value.convertToString,
-        'onYoutubeLinkOpen': onYoutubeLinkOpen.value.convertToString,
-        'performanceMode': performanceMode.value.convertToString,
-        'floatingActionButton': floatingActionButton.value.convertToString,
-        'ytInitialHomePage': ytInitialHomePage.value.convertToString,
-        'ytTapToSeek': ytTapToSeek.value.convertToString,
-        'ytDragToSeek': ytDragToSeek.value.convertToString,
-        'mostPlayedTimeRange': mostPlayedTimeRange.value.convertToString,
-        'mostPlayedCustomDateRange': mostPlayedCustomDateRange.value.toJson(),
-        'mostPlayedCustomisStartOfDay': mostPlayedCustomisStartOfDay.value,
-        'ytMostPlayedTimeRange': ytMostPlayedTimeRange.value.convertToString,
-        'ytMostPlayedCustomDateRange': ytMostPlayedCustomDateRange.value.toJson(),
-        'ytMostPlayedCustomisStartOfDay': ytMostPlayedCustomisStartOfDay.value,
+    // -- sorts and their reverse merged into one chain per media
+    final legacyTrackSorts = _dropKey('mediaItemsTrackSorting');
+    final legacyTrackSortsReverse = _dropKey('mediaItemsTrackSortingReverse');
+    if (_raw['mediaItemsTrackSorting_v2'] == null) {
+      final sortsMap = legacyTrackSorts is Map ? legacyTrackSorts : const {};
+      final reverseMap = legacyTrackSortsReverse is Map ? legacyTrackSortsReverse : const {};
+      final trackSorting = <String, dynamic>{};
+      for (final mediaName in {...sortsMap.keys, ...reverseMap.keys}) {
+        final media = MediaType.values.getEnum(mediaName);
+        final sortingJson = _legacySortingJson(sortsMap[mediaName], reverseMap[mediaName], _kDefaultTrackSorting[media]);
+        if (sortingJson != null) trackSorting[mediaName] = sortingJson;
+      }
+      if (trackSorting.isNotEmpty) _raw['mediaItemsTrackSorting_v2'] = trackSorting;
+    }
+    // -- same shape, old sort names load as non-reversed entries
+    _migrateKey('mediaItemsTrackSortingPresets', 'mediaItemsTrackSortingPresets_v2', (json) => _raw['mediaItemsTrackSortingPresets_v2'] == null ? json : null);
+    final groupSorting = <String, dynamic>{};
+    for (final e in _kDefaultGroupSorting.entries) {
+      final mediaName = e.key.name;
+      final legacySorts = _dropKey('${mediaName}Sorts');
+      final legacyReverse = _dropKey('${mediaName}SortReversed');
+      if (legacySorts == null && legacyReverse == null) continue;
+      final sortingJson = _legacySortingJson(legacySorts, legacyReverse, e.value);
+      if (sortingJson != null) groupSorting[mediaName] = sortingJson;
+    }
+    if (groupSorting.isNotEmpty && _raw['mediaGroupSorting'] == null) _raw['mediaGroupSorting'] = groupSorting;
 
-        /// Track Items
-        'displayThirdRow': displayThirdRow.value,
-        'displayThirdItemInEachRow': displayThirdItemInEachRow.value,
-        'trackTileSeparator': trackTileSeparator.value,
-        'displayFavouriteIconInListTile': displayFavouriteIconInListTile.value,
-        'editTagsKeepFileDates': editTagsKeepFileDates.value,
-        'downloadFilesWriteUploadDate': downloadFilesWriteUploadDate.value,
-        'downloadFilesKeepCachedVersions': downloadFilesKeepCachedVersions.value,
-        'enablePip': enablePip.value,
-        'pickColorsFromDeviceWallpaper': pickColorsFromDeviceWallpaper.value,
-        'trackItem': trackItem.map((key, value) => MapEntry(key.convertToString, value.convertToString)),
-        'queueInsertion': queueInsertion.map((key, value) => MapEntry(key.convertToString, value.toJson())),
-        'mediaItemsTrackSorting': mediaItemsTrackSorting.map((key, value) => MapEntry(key.convertToString, value.map((e) => e.convertToString).toList())),
-        'mediaItemsTrackSortingReverse': mediaItemsTrackSortingReverse.map((key, value) => MapEntry(key.convertToString, value)),
+    final isFavouriteInNotification = _dropKey('displayFavouriteButtonInNotification') == true;
+    final isStopInNotification = _dropKey('displayStopButtonInNotification') != false;
+    final didCustomizeNotification = isFavouriteInNotification || !isStopInNotification;
+    if (didCustomizeNotification && _raw['notificationButtons'] == null) {
+      _raw['notificationButtons'] = <String>[
+        if (isFavouriteInNotification) NotificationButton.favourite.name,
+        ..._kDefaultNotificationButtons.where((button) => button != NotificationButton.stop || isStopInNotification).map((button) => button.name),
+      ];
+    }
 
-        'fontScaleLRC': fontScaleLRC,
-        'fontScaleLRCFull': fontScaleLRCFull,
+    // -- `true` was the old default, only an explicit `false` is kept
+    _migrateKey('prioritizeEmbeddedLyrics', 'embeddedLyricsPriority', (json) => json == false && _raw['embeddedLyricsPriority'] == null ? EmbeddedLyricsPriority.off.name : null);
 
-        'canAskForBatteryOptimizations': canAskForBatteryOptimizations,
-      };
-
-  /// Writes the values of this  class to a json file, with a minimum interval of [2 seconds]
-  /// to prevent rediculous numbers of successive writes, especially for widgets like [NamidaWheelSlider]
-  Future<void> _writeToStorage() async => await writeToStorage();
-
-  /// Saves a value to the key, if [List] or [Set], then it will add to it.
-  void save({
-    NamidaLanguage? selectedLanguage,
-    ThemeMode? themeMode,
-    bool? pitchBlack,
-    bool? autoColor,
-    int? staticColor,
-    int? staticColorDark,
-    int? searchResultsPlayMode,
-    LibraryTab? selectedLibraryTab,
-    LibraryTab? staticLibraryTab,
-    bool? autoLibraryTab,
-    List<LibraryTab>? libraryTabs,
-    List<HomePageItems>? homePageItems,
-    MediaType? activeArtistType,
-    List<MediaType>? activeSearchMediaTypes,
-    List<AlbumIdentifier>? albumIdentifiers,
-    double? borderRadiusMultiplier,
-    double? fontScaleFactor,
-    double? artworkCacheHeightMultiplier,
-    double? trackThumbnailSizeinList,
-    double? trackListTileHeight,
-    double? albumThumbnailSizeinList,
-    double? albumListTileHeight,
-    bool? useMediaStore,
-    bool? displayTrackNumberinAlbumPage,
-    bool? albumCardTopRightDate,
-    bool? forceSquaredTrackThumbnail,
-    bool? forceSquaredAlbumThumbnail,
-    bool? useAlbumStaggeredGridView,
-    bool? useSettingCollapsedTiles,
-    int? albumGridCount,
-    int? artistGridCount,
-    int? genreGridCount,
-    int? playlistGridCount,
-    bool? enableBlurEffect,
-    bool? enableGlowEffect,
-    bool? hourFormat12,
-    String? dateTimeFormat,
-    List<String>? trackArtistsSeparators,
-    List<String>? trackGenresSeparators,
-    List<String>? trackArtistsSeparatorsBlacklist,
-    List<String>? trackGenresSeparatorsBlacklist,
-    SortType? tracksSort,
-    bool? tracksSortReversed,
-    SortType? tracksSortSearch,
-    bool? tracksSortSearchReversed,
-    bool? tracksSortSearchIsAuto,
-    GroupSortType? albumSort,
-    bool? albumSortReversed,
-    GroupSortType? artistSort,
-    bool? artistSortReversed,
-    GroupSortType? genreSort,
-    bool? genreSortReversed,
-    GroupSortType? playlistSort,
-    bool? playlistSortReversed,
-    GroupSortType? ytPlaylistSort,
-    bool? ytPlaylistSortReversed,
-    bool? displayThirdRow,
-    bool? displayThirdItemInEachRow,
-    String? trackTileSeparator,
-    int? indexMinDurationInSec,
-    int? indexMinFileSizeInB,
-    List<TrackSearchFilter>? trackSearchFilter,
-    List<String>? playlistSearchFilter,
-    List<String>? directoriesToScan,
-    List<String>? directoriesToExclude,
-    bool? preventDuplicatedTracks,
-    bool? respectNoMedia,
-    String? defaultBackupLocation,
-    int? autoBackupIntervalDays,
-    String? defaultFolderStartupLocation,
-    String? ytDownloadLocation,
-    bool? enableFoldersHierarchy,
-    bool? displayArtistBeforeTitle,
-    bool? heatmapListensView,
-    List<String>? backupItemslist,
-    bool? enableVideoPlayback,
-    bool? enableLyrics,
-    LyricsSource? lyricsSource,
-    VideoPlaybackSource? videoPlaybackSource,
-    List<String>? youtubeVideoQualities,
-    double? animatingThumbnailScaleMultiplier,
-    int? animatingThumbnailIntensity,
-    bool? animatingThumbnailInversed,
-    bool? enablePartyModeInMiniplayer,
-    bool? enablePartyModeColorSwap,
-    bool? enableMiniplayerParticles,
-    bool? enableMiniplayerParallaxEffect,
-    bool? forceMiniplayerTrackColor,
-    int? isTrackPlayedSecondsCount,
-    int? isTrackPlayedPercentageCount,
-    bool? displayFavouriteIconInListTile,
-    bool? editTagsKeepFileDates,
-    bool? downloadFilesWriteUploadDate,
-    bool? downloadFilesKeepCachedVersions,
-    bool? enablePip,
-    bool? pickColorsFromDeviceWallpaper,
-    int? waveformTotalBars,
-    int? videosMaxCacheInMB,
-    int? audiosMaxCacheInMB,
-    int? imagesMaxCacheInMB,
-    int? ytMiniplayerDimAfterSeconds,
-    double? ytMiniplayerDimOpacity,
-    bool? youtubeStyleMiniplayer,
-    bool? hideStatusBarInExpandedMiniplayer,
-    bool? displayFavouriteButtonInNotification,
-    bool? enableSearchCleanup,
-    bool? enableBottomNavBar,
-    bool? ytPreferNewComments,
-    bool? ytAutoExtractVideoTagsFromInfo,
-    bool? displayAudioInfoMiniplayer,
-    bool? showUnknownFieldsInTrackInfoDialog,
-    bool? extractFeatArtistFromTitle,
-    bool? groupArtworksByAlbum,
-    bool? enableM3USync,
-    bool? prioritizeEmbeddedLyrics,
-    bool? swipeableDrawer,
-    bool? dismissibleMiniplayer,
-    bool? enableClipboardMonitoring,
-    bool? ytIsAudioOnlyMode,
-    bool? ytRememberAudioOnly,
-    bool? ytTopComments,
-    bool? artworkGestureScale,
-    bool? artworkGestureDoubleTapLRC,
-    bool? previousButtonReplays,
-    bool? refreshOnStartup,
-    List<TagField>? tagFieldsToEdit,
-    WakelockMode? wakelockMode,
-    LocalVideoMatchingType? localVideoMatchingType,
-    bool? localVideoMatchingCheckSameDir,
-    TrackPlayMode? trackPlayMode,
-    NotificationTapAction? onNotificationTapAction,
-    OnYoutubeLinkOpenAction? onYoutubeLinkOpen,
-    PerformanceMode? performanceMode,
-    FABType? floatingActionButton,
-    YTHomePages? ytInitialHomePage,
-    YTSeekActionMode? ytTapToSeek,
-    YTSeekActionMode? ytDragToSeek,
-    MostPlayedTimeRange? mostPlayedTimeRange,
-    DateRange? mostPlayedCustomDateRange,
-    bool? mostPlayedCustomisStartOfDay,
-    MostPlayedTimeRange? ytMostPlayedTimeRange,
-    DateRange? ytMostPlayedCustomDateRange,
-    bool? ytMostPlayedCustomisStartOfDay,
-    double? fontScaleLRC,
-    double? fontScaleLRCFull,
-    bool? didSupportNamida,
-    bool? canAskForBatteryOptimizations,
-  }) {
-    if (selectedLanguage != null) this.selectedLanguage.value = selectedLanguage;
-    if (themeMode != null) this.themeMode.value = themeMode;
-    if (pitchBlack != null) this.pitchBlack.value = pitchBlack;
-    if (autoColor != null) this.autoColor.value = autoColor;
-    if (staticColor != null) this.staticColor.value = staticColor;
-    if (staticColorDark != null) this.staticColorDark.value = staticColorDark;
-    if (selectedLibraryTab != null) this.selectedLibraryTab.value = selectedLibraryTab;
-    if (staticLibraryTab != null) this.staticLibraryTab.value = staticLibraryTab;
-    if (autoLibraryTab != null) this.autoLibraryTab.value = autoLibraryTab;
-    if (libraryTabs != null) {
-      libraryTabs.loop((t, index) {
-        if (!this.libraryTabs.contains(t)) {
-          this.libraryTabs.add(t);
-        }
+    // -- custom ranges used to cover their first and last days whole
+    final dateRangeCodec = _ObjectCodec<DateRange>(DateRange.fromJson, (v) => v.toJson());
+    for (final name in const ['mostPlayedCustomDateRange', 'ytMostPlayedCustomDateRange']) {
+      _migrateKey(name, '${name}_v2', (json) {
+        final range = dateRangeCodec.decode(json);
+        if (range == null || range == DateRange.dummy()) return null;
+        final wholeDaysRange = DateRange.wholeDays(oldest: range.oldest, newest: range.newest);
+        return wholeDaysRange.toJson();
       });
     }
-    if (homePageItems != null) {
-      homePageItems.loop((t, index) {
-        if (!this.homePageItems.contains(t)) {
-          this.homePageItems.add(t);
-        }
-      });
-    }
-    if (activeArtistType != null) this.activeArtistType.value = activeArtistType;
-    if (activeSearchMediaTypes != null) {
-      activeSearchMediaTypes.loop((t, index) {
-        if (!this.activeSearchMediaTypes.contains(t)) {
-          this.activeSearchMediaTypes.add(t);
-        }
-      });
-    }
-    if (albumIdentifiers != null) {
-      albumIdentifiers.loop((t, index) {
-        if (!this.albumIdentifiers.contains(t)) {
-          this.albumIdentifiers.add(t);
-        }
-      });
-    }
-
-    if (searchResultsPlayMode != null) this.searchResultsPlayMode.value = searchResultsPlayMode;
-    if (borderRadiusMultiplier != null) this.borderRadiusMultiplier.value = borderRadiusMultiplier;
-    if (fontScaleFactor != null) this.fontScaleFactor.value = fontScaleFactor;
-    if (artworkCacheHeightMultiplier != null) this.artworkCacheHeightMultiplier.value = artworkCacheHeightMultiplier;
-    if (trackThumbnailSizeinList != null) this.trackThumbnailSizeinList.value = trackThumbnailSizeinList;
-    if (trackListTileHeight != null) this.trackListTileHeight.value = trackListTileHeight;
-
-    if (albumThumbnailSizeinList != null) this.albumThumbnailSizeinList.value = albumThumbnailSizeinList;
-    if (albumListTileHeight != null) this.albumListTileHeight.value = albumListTileHeight;
-
-    if (useMediaStore != null) this.useMediaStore.value = useMediaStore;
-
-    if (displayTrackNumberinAlbumPage != null) this.displayTrackNumberinAlbumPage.value = displayTrackNumberinAlbumPage;
-    if (albumCardTopRightDate != null) this.albumCardTopRightDate.value = albumCardTopRightDate;
-    if (forceSquaredTrackThumbnail != null) this.forceSquaredTrackThumbnail.value = forceSquaredTrackThumbnail;
-    if (forceSquaredAlbumThumbnail != null) this.forceSquaredAlbumThumbnail.value = forceSquaredAlbumThumbnail;
-    if (useAlbumStaggeredGridView != null) this.useAlbumStaggeredGridView.value = useAlbumStaggeredGridView;
-    if (useSettingCollapsedTiles != null) this.useSettingCollapsedTiles.value = useSettingCollapsedTiles;
-    if (albumGridCount != null) this.albumGridCount.value = albumGridCount;
-    if (artistGridCount != null) this.artistGridCount.value = artistGridCount;
-    if (genreGridCount != null) this.genreGridCount.value = genreGridCount;
-    if (playlistGridCount != null) this.playlistGridCount.value = playlistGridCount;
-    if (enableBlurEffect != null) this.enableBlurEffect.value = enableBlurEffect;
-    if (enableGlowEffect != null) this.enableGlowEffect.value = enableGlowEffect;
-    if (hourFormat12 != null) this.hourFormat12.value = hourFormat12;
-    if (dateTimeFormat != null) this.dateTimeFormat.value = dateTimeFormat;
-
-    ///
-    if (trackArtistsSeparators != null && !this.trackArtistsSeparators.contains(trackArtistsSeparators[0])) this.trackArtistsSeparators.addAll(trackArtistsSeparators);
-    if (trackGenresSeparators != null && !this.trackGenresSeparators.contains(trackGenresSeparators[0])) this.trackGenresSeparators.addAll(trackGenresSeparators);
-    if (trackArtistsSeparatorsBlacklist != null && !this.trackArtistsSeparatorsBlacklist.contains(trackArtistsSeparatorsBlacklist[0])) {
-      this.trackArtistsSeparatorsBlacklist.addAll(trackArtistsSeparatorsBlacklist);
-    }
-    if (trackGenresSeparatorsBlacklist != null && !this.trackGenresSeparatorsBlacklist.contains(trackGenresSeparatorsBlacklist[0])) {
-      this.trackGenresSeparatorsBlacklist.addAll(trackGenresSeparatorsBlacklist);
-    }
-    if (tracksSort != null) this.tracksSort.value = tracksSort;
-    if (tracksSortReversed != null) this.tracksSortReversed.value = tracksSortReversed;
-    if (tracksSortSearch != null) this.tracksSortSearch.value = tracksSortSearch;
-    if (tracksSortSearchReversed != null) this.tracksSortSearchReversed.value = tracksSortSearchReversed;
-    if (tracksSortSearchIsAuto != null) this.tracksSortSearchIsAuto.value = tracksSortSearchIsAuto;
-    if (albumSort != null) this.albumSort.value = albumSort;
-    if (albumSortReversed != null) this.albumSortReversed.value = albumSortReversed;
-    if (artistSort != null) this.artistSort.value = artistSort;
-    if (artistSortReversed != null) this.artistSortReversed.value = artistSortReversed;
-    if (genreSort != null) this.genreSort.value = genreSort;
-    if (genreSortReversed != null) this.genreSortReversed.value = genreSortReversed;
-    if (playlistSort != null) this.playlistSort.value = playlistSort;
-    if (playlistSortReversed != null) this.playlistSortReversed.value = playlistSortReversed;
-    if (ytPlaylistSort != null) this.ytPlaylistSort.value = ytPlaylistSort;
-    if (ytPlaylistSortReversed != null) this.ytPlaylistSortReversed.value = ytPlaylistSortReversed;
-    if (displayThirdRow != null) this.displayThirdRow.value = displayThirdRow;
-    if (displayThirdItemInEachRow != null) this.displayThirdItemInEachRow.value = displayThirdItemInEachRow;
-    if (trackTileSeparator != null) this.trackTileSeparator.value = trackTileSeparator;
-    if (indexMinDurationInSec != null) this.indexMinDurationInSec.value = indexMinDurationInSec;
-    if (indexMinFileSizeInB != null) this.indexMinFileSizeInB.value = indexMinFileSizeInB;
-    if (trackSearchFilter != null) {
-      trackSearchFilter.loop((f, index) {
-        if (!this.trackSearchFilter.contains(f)) {
-          this.trackSearchFilter.add(f);
-        }
-      });
-    }
-    if (playlistSearchFilter != null) {
-      playlistSearchFilter.loop((f, index) {
-        if (!this.playlistSearchFilter.contains(f)) {
-          this.playlistSearchFilter.add(f);
-        }
-      });
-    }
-    if (directoriesToScan != null) {
-      directoriesToScan.loop((d, index) {
-        if (!this.directoriesToScan.contains(d)) {
-          this.directoriesToScan.add(d);
-        }
-      });
-    }
-    if (directoriesToExclude != null) {
-      directoriesToExclude.loop((d, index) {
-        if (!this.directoriesToExclude.contains(d)) {
-          this.directoriesToExclude.add(d);
-        }
-      });
-    }
-    if (preventDuplicatedTracks != null) this.preventDuplicatedTracks.value = preventDuplicatedTracks;
-    if (respectNoMedia != null) this.respectNoMedia.value = respectNoMedia;
-    if (defaultBackupLocation != null) this.defaultBackupLocation.value = defaultBackupLocation;
-    if (autoBackupIntervalDays != null) this.autoBackupIntervalDays.value = autoBackupIntervalDays;
-    if (defaultFolderStartupLocation != null) this.defaultFolderStartupLocation.value = defaultFolderStartupLocation;
-    if (ytDownloadLocation != null) this.ytDownloadLocation.value = ytDownloadLocation;
-    if (enableFoldersHierarchy != null) this.enableFoldersHierarchy.value = enableFoldersHierarchy;
-    if (displayArtistBeforeTitle != null) this.displayArtistBeforeTitle.value = displayArtistBeforeTitle;
-    if (heatmapListensView != null) this.heatmapListensView.value = heatmapListensView;
-    if (backupItemslist != null) {
-      backupItemslist.loop((d, index) {
-        if (!this.backupItemslist.contains(d)) {
-          this.backupItemslist.add(d);
-        }
-      });
-    }
-    if (youtubeVideoQualities != null) {
-      youtubeVideoQualities.loop((q, index) {
-        if (!this.youtubeVideoQualities.contains(q)) {
-          this.youtubeVideoQualities.add(q);
-        }
-      });
-    }
-    if (enableVideoPlayback != null) this.enableVideoPlayback.value = enableVideoPlayback;
-    if (enableLyrics != null) this.enableLyrics.value = enableLyrics;
-    if (lyricsSource != null) this.lyricsSource.value = lyricsSource;
-    if (videoPlaybackSource != null) this.videoPlaybackSource.value = videoPlaybackSource;
-    if (animatingThumbnailScaleMultiplier != null) this.animatingThumbnailScaleMultiplier.value = animatingThumbnailScaleMultiplier;
-    if (animatingThumbnailIntensity != null) this.animatingThumbnailIntensity.value = animatingThumbnailIntensity;
-    if (animatingThumbnailInversed != null) this.animatingThumbnailInversed.value = animatingThumbnailInversed;
-    if (enablePartyModeInMiniplayer != null) this.enablePartyModeInMiniplayer.value = enablePartyModeInMiniplayer;
-    if (enablePartyModeColorSwap != null) this.enablePartyModeColorSwap.value = enablePartyModeColorSwap;
-    if (enableMiniplayerParticles != null) this.enableMiniplayerParticles.value = enableMiniplayerParticles;
-    if (enableMiniplayerParallaxEffect != null) this.enableMiniplayerParallaxEffect.value = enableMiniplayerParallaxEffect;
-    if (forceMiniplayerTrackColor != null) this.forceMiniplayerTrackColor.value = forceMiniplayerTrackColor;
-    if (isTrackPlayedSecondsCount != null) this.isTrackPlayedSecondsCount.value = isTrackPlayedSecondsCount;
-    if (isTrackPlayedPercentageCount != null) this.isTrackPlayedPercentageCount.value = isTrackPlayedPercentageCount;
-    if (displayFavouriteIconInListTile != null) this.displayFavouriteIconInListTile.value = displayFavouriteIconInListTile;
-    if (editTagsKeepFileDates != null) this.editTagsKeepFileDates.value = editTagsKeepFileDates;
-    if (downloadFilesWriteUploadDate != null) this.downloadFilesWriteUploadDate.value = downloadFilesWriteUploadDate;
-    if (downloadFilesKeepCachedVersions != null) this.downloadFilesKeepCachedVersions.value = downloadFilesKeepCachedVersions;
-    if (enablePip != null) this.enablePip.value = enablePip;
-    if (pickColorsFromDeviceWallpaper != null) this.pickColorsFromDeviceWallpaper.value = pickColorsFromDeviceWallpaper;
-    if (waveformTotalBars != null) this.waveformTotalBars.value = waveformTotalBars;
-    if (videosMaxCacheInMB != null) this.videosMaxCacheInMB.value = videosMaxCacheInMB;
-    if (audiosMaxCacheInMB != null) this.audiosMaxCacheInMB.value = audiosMaxCacheInMB;
-    if (imagesMaxCacheInMB != null) this.imagesMaxCacheInMB.value = imagesMaxCacheInMB;
-    if (ytMiniplayerDimAfterSeconds != null) this.ytMiniplayerDimAfterSeconds.value = ytMiniplayerDimAfterSeconds;
-    if (ytMiniplayerDimOpacity != null) this.ytMiniplayerDimOpacity.value = ytMiniplayerDimOpacity;
-    if (youtubeStyleMiniplayer != null) this.youtubeStyleMiniplayer.value = youtubeStyleMiniplayer;
-
-    if (hideStatusBarInExpandedMiniplayer != null) this.hideStatusBarInExpandedMiniplayer.value = hideStatusBarInExpandedMiniplayer;
-
-    if (displayFavouriteButtonInNotification != null) this.displayFavouriteButtonInNotification.value = displayFavouriteButtonInNotification;
-    if (enableSearchCleanup != null) this.enableSearchCleanup.value = enableSearchCleanup;
-    if (enableBottomNavBar != null) this.enableBottomNavBar.value = enableBottomNavBar;
-    if (ytPreferNewComments != null) this.ytPreferNewComments.value = ytPreferNewComments;
-
-    if (ytAutoExtractVideoTagsFromInfo != null) this.ytAutoExtractVideoTagsFromInfo.value = ytAutoExtractVideoTagsFromInfo;
-
-    if (displayAudioInfoMiniplayer != null) this.displayAudioInfoMiniplayer.value = displayAudioInfoMiniplayer;
-    if (showUnknownFieldsInTrackInfoDialog != null) this.showUnknownFieldsInTrackInfoDialog.value = showUnknownFieldsInTrackInfoDialog;
-    if (extractFeatArtistFromTitle != null) this.extractFeatArtistFromTitle.value = extractFeatArtistFromTitle;
-    if (groupArtworksByAlbum != null) this.groupArtworksByAlbum.value = groupArtworksByAlbum;
-    if (enableM3USync != null) this.enableM3USync.value = enableM3USync;
-    if (prioritizeEmbeddedLyrics != null) this.prioritizeEmbeddedLyrics.value = prioritizeEmbeddedLyrics;
-    if (swipeableDrawer != null) this.swipeableDrawer.value = swipeableDrawer;
-    if (dismissibleMiniplayer != null) this.dismissibleMiniplayer.value = dismissibleMiniplayer;
-    if (enableClipboardMonitoring != null) this.enableClipboardMonitoring.value = enableClipboardMonitoring;
-    if (ytIsAudioOnlyMode != null) this.ytIsAudioOnlyMode.value = ytIsAudioOnlyMode;
-    if (ytRememberAudioOnly != null) this.ytRememberAudioOnly.value = ytRememberAudioOnly;
-    if (ytTopComments != null) this.ytTopComments.value = ytTopComments;
-    if (artworkGestureScale != null) this.artworkGestureScale.value = artworkGestureScale;
-    if (artworkGestureDoubleTapLRC != null) this.artworkGestureDoubleTapLRC.value = artworkGestureDoubleTapLRC;
-    if (previousButtonReplays != null) this.previousButtonReplays.value = previousButtonReplays;
-    if (refreshOnStartup != null) this.refreshOnStartup.value = refreshOnStartup;
-    if (tagFieldsToEdit != null) {
-      tagFieldsToEdit.loop((d, index) {
-        if (!this.tagFieldsToEdit.contains(d)) {
-          this.tagFieldsToEdit.add(d);
-        }
-      });
-    }
-    if (wakelockMode != null) this.wakelockMode.value = wakelockMode;
-    if (localVideoMatchingType != null) this.localVideoMatchingType.value = localVideoMatchingType;
-    if (localVideoMatchingCheckSameDir != null) this.localVideoMatchingCheckSameDir.value = localVideoMatchingCheckSameDir;
-
-    if (trackPlayMode != null) this.trackPlayMode.value = trackPlayMode;
-    if (onNotificationTapAction != null) this.onNotificationTapAction.value = onNotificationTapAction;
-    if (onYoutubeLinkOpen != null) this.onYoutubeLinkOpen.value = onYoutubeLinkOpen;
-    if (performanceMode != null) this.performanceMode.value = performanceMode;
-
-    if (floatingActionButton != null) this.floatingActionButton.value = floatingActionButton;
-    if (ytInitialHomePage != null) this.ytInitialHomePage.value = ytInitialHomePage;
-    if (ytTapToSeek != null) this.ytTapToSeek.value = ytTapToSeek;
-    if (ytDragToSeek != null) this.ytDragToSeek.value = ytDragToSeek;
-    if (mostPlayedTimeRange != null) this.mostPlayedTimeRange.value = mostPlayedTimeRange;
-    if (mostPlayedCustomDateRange != null) this.mostPlayedCustomDateRange.value = mostPlayedCustomDateRange;
-    if (mostPlayedCustomisStartOfDay != null) this.mostPlayedCustomisStartOfDay.value = mostPlayedCustomisStartOfDay;
-    if (ytMostPlayedTimeRange != null) this.ytMostPlayedTimeRange.value = ytMostPlayedTimeRange;
-    if (ytMostPlayedCustomDateRange != null) this.ytMostPlayedCustomDateRange.value = ytMostPlayedCustomDateRange;
-    if (ytMostPlayedCustomisStartOfDay != null) this.ytMostPlayedCustomisStartOfDay.value = ytMostPlayedCustomisStartOfDay;
-
-    if (fontScaleLRC != null) this.fontScaleLRC = fontScaleLRC;
-    if (fontScaleLRCFull != null) this.fontScaleLRCFull = fontScaleLRCFull;
-
-    if (didSupportNamida != null) this.didSupportNamida = didSupportNamida;
-    if (canAskForBatteryOptimizations != null) this.canAskForBatteryOptimizations = canAskForBatteryOptimizations;
-    _writeToStorage();
   }
 
-  void insertInList(
-    index, {
-    LibraryTab? libraryTab1,
-    String? youtubeVideoQualities1,
-    TagField? tagFieldsToEdit1,
-    HomePageItems? homePageItem1,
-  }) {
-    if (libraryTab1 != null) libraryTabs.insert(index, libraryTab1);
-    if (homePageItem1 != null) homePageItems.insert(index, homePageItem1);
-    if (youtubeVideoQualities1 != null) youtubeVideoQualities.insertSafe(index, youtubeVideoQualities1);
-    if (tagFieldsToEdit1 != null) tagFieldsToEdit.insertSafe(index, tagFieldsToEdit1);
-
-    _writeToStorage();
+  /// [sorts] and [reverse] as their old separate keys stored them, a missing one is taken from [defaultSorting].
+  static Map<String, dynamic>? _legacySortingJson(dynamic sorts, dynamic reverse, SortChain? defaultSorting) {
+    List? sortsJson = sorts is List ? sorts : null;
+    if (sortsJson == null && defaultSorting != null) sortsJson = SortEntry.listToJson(defaultSorting.entries);
+    if (sortsJson == null) return null;
+    final isReversed = reverse is bool ? reverse : defaultSorting?.reverse == true;
+    return {
+      'sorts': sortsJson,
+      if (isReversed) 'reverse': isReversed,
+    };
   }
 
-  void removeFromList({
-    String? trackArtistsSeparator,
-    String? trackGenresSeparator,
-    String? trackArtistsSeparatorsBlacklist1,
-    String? trackGenresSeparatorsBlacklist1,
-    TrackSearchFilter? trackSearchFilter1,
-    List<TrackSearchFilter>? trackSearchFilterAll,
-    String? playlistSearchFilter1,
-    List<String>? playlistSearchFilterAll,
-    String? directoriesToScan1,
-    List<String>? directoriesToScanAll,
-    String? directoriesToExclude1,
-    List<String>? directoriesToExcludeAll,
-    LibraryTab? libraryTab1,
-    List<LibraryTab>? libraryTabsAll,
-    HomePageItems? homePageItem1,
-    List<HomePageItems>? homePageItemsAll,
-    MediaType? activeSearchMediaTypes1,
-    AlbumIdentifier? albumIdentifiers1,
-    List<AlbumIdentifier>? albumIdentifiersAll,
-    String? backupItemslist1,
-    List<String>? backupItemslistAll,
-    String? youtubeVideoQualities1,
-    List<String>? youtubeVideoQualitiesAll,
-    TagField? tagFieldsToEdit1,
-    List<TagField>? tagFieldsToEditAll,
-  }) {
-    if (trackArtistsSeparator != null) trackArtistsSeparators.remove(trackArtistsSeparator);
-    if (trackGenresSeparator != null) trackGenresSeparators.remove(trackGenresSeparator);
-    if (trackArtistsSeparatorsBlacklist1 != null) trackArtistsSeparatorsBlacklist.remove(trackArtistsSeparatorsBlacklist1);
-    if (trackGenresSeparatorsBlacklist1 != null) trackGenresSeparatorsBlacklist.remove(trackGenresSeparatorsBlacklist1);
-    if (trackSearchFilter1 != null) trackSearchFilter.remove(trackSearchFilter1);
-    if (trackSearchFilterAll != null) trackSearchFilterAll.loop((f, index) => trackSearchFilter.remove(f));
-    if (playlistSearchFilter1 != null) playlistSearchFilter.remove(playlistSearchFilter1);
-    if (playlistSearchFilterAll != null) {
-      playlistSearchFilterAll.loop((f, index) => playlistSearchFilter.remove(f));
+  /// writes to the active preset, [toDefault] writes to the default chain and deselects the preset.
+  void updateMediaItemsTrackSorting(MediaType media, SortChain<SortType> sorting, {bool toDefault = false}) {
+    final presets = mediaItemsTrackSortingPresets.value[media];
+    final hasActivePreset = presets?.activeIndex != null;
+    if (presets != null && hasActivePreset && !toDefault) {
+      final newPresets = presets.withActiveSorting(sorting);
+      mediaItemsTrackSortingPresets.update((map) => map[media] = newPresets);
+      return;
     }
-    if (directoriesToScan1 != null) directoriesToScan.remove(directoriesToScan1);
-    if (directoriesToScanAll != null) directoriesToScanAll.loop((f, index) => directoriesToScan.remove(f));
-    if (directoriesToExclude1 != null) directoriesToExclude.remove(directoriesToExclude1);
-    if (directoriesToExcludeAll != null) directoriesToExcludeAll.loop((f, index) => directoriesToExclude.remove(f));
-    if (libraryTab1 != null) libraryTabs.remove(libraryTab1);
-    if (libraryTabsAll != null) libraryTabsAll.loop((t, index) => libraryTabs.remove(t));
-    if (homePageItem1 != null) homePageItems.remove(homePageItem1);
-    if (homePageItemsAll != null) homePageItemsAll.loop((t, index) => homePageItems.remove(t));
-    if (activeSearchMediaTypes1 != null) activeSearchMediaTypes.remove(activeSearchMediaTypes1);
-    if (albumIdentifiers1 != null) albumIdentifiers.remove(albumIdentifiers1);
-    if (albumIdentifiersAll != null) albumIdentifiersAll.loop((t, index) => albumIdentifiers.remove(t));
-    if (backupItemslist1 != null) backupItemslist.remove(backupItemslist1);
-    if (backupItemslistAll != null) backupItemslistAll.loop((t, index) => backupItemslist.remove(t));
-    if (youtubeVideoQualities1 != null) youtubeVideoQualities.remove(youtubeVideoQualities1);
-    if (youtubeVideoQualitiesAll != null) youtubeVideoQualitiesAll.loop((t, index) => youtubeVideoQualities.remove(t));
-    if (tagFieldsToEdit1 != null) tagFieldsToEdit.remove(tagFieldsToEdit1);
-    if (tagFieldsToEditAll != null) tagFieldsToEditAll.loop((t, index) => tagFieldsToEdit.remove(t));
 
-    _writeToStorage();
+    final didChange = sorting != mediaItemsTrackSortingDefault.value[media];
+    final deselectedPresets = hasActivePreset ? presets?.withActive(null) : null;
+    if (!didChange && deselectedPresets == null) return;
+
+    // -- default first, it doesn't change the active sorting while a preset is still selected
+    transaction(() {
+      if (didChange) mediaItemsTrackSortingDefault.update((map) => map[media] = sorting);
+      if (deselectedPresets != null) mediaItemsTrackSortingPresets.update((map) => map[media] = deselectedPresets);
+    });
   }
 
-  void updateTrackItemList(TrackTilePosition p, TrackTileItem i) {
-    trackItem[p] = i;
-    _writeToStorage();
+  void selectTrackSortPreset(MediaType media, int? index) {
+    final presets = mediaItemsTrackSortingPresets.value[media];
+    if (presets == null || presets.activeIndex == index) return;
+    final newPresets = presets.withActive(index);
+    mediaItemsTrackSortingPresets.update((map) => map[media] = newPresets);
   }
 
-  void updateQueueInsertion(QueueInsertionType type, QueueInsertion qi) {
-    queueInsertion[type] = qi;
-    _writeToStorage();
+  /// saves the active sorting of [media] as a new preset and selects it.
+  void addTrackSortPreset(MediaType media, String name) {
+    final presets = mediaItemsTrackSortingPresets.value[media] ?? const TrackSortPresets.empty();
+    if (!presets.canAdd) return;
+    final sorting = mediaItemsTrackSorting.value[media] ?? const SortChain<SortType>([]);
+    final preset = TrackSortPreset(name: name, sorting: sorting);
+    final newPresets = presets.withAdded(preset);
+    mediaItemsTrackSortingPresets.update((map) => map[media] = newPresets);
   }
 
-  void updateMediaItemsTrackSorting(MediaType media, List<SortType> allsorts) {
-    mediaItemsTrackSorting[media] = allsorts;
-    _writeToStorage();
+  void renameTrackSortPreset(MediaType media, int index, String name) {
+    final presets = mediaItemsTrackSortingPresets.value[media];
+    if (presets == null) return;
+    final newPreset = presets.presets[index].copyWith(name: name);
+    final newPresets = presets.withReplaced(index, newPreset);
+    mediaItemsTrackSortingPresets.update((map) => map[media] = newPresets);
   }
 
-  void updateMediaItemsTrackSortingReverse(MediaType media, bool isReverse) {
-    mediaItemsTrackSortingReverse[media] = isReverse;
-    _writeToStorage();
+  void removeTrackSortPreset(MediaType media, int index) {
+    final presets = mediaItemsTrackSortingPresets.value[media];
+    if (presets == null) return;
+    final newPresets = presets.withRemoved(index);
+    mediaItemsTrackSortingPresets.update((map) {
+      if (newPresets.presets.isEmpty) {
+        map.remove(media);
+      } else {
+        map[media] = newPresets;
+      }
+    });
   }
+
+  void updateGroupSorting(MediaType media, SortChain<GroupSortType> sorting) {
+    final sortingMedia = _groupSortingMediaOf(media);
+    if (sortingMedia == null) return;
+    if (sorting == mediaGroupSorting.value[sortingMedia]) return;
+    mediaGroupSorting.update((map) => map[sortingMedia] = sorting);
+  }
+
+  bool hasGroupSorting(MediaType media) => _groupSortingMediaOf(media) != null;
+
+  /// a media not sorted as a group gets [_kFallbackGroupSorting].
+  SortChain<GroupSortType> groupSortingOf(MediaType media) => _groupSortingIn(mediaGroupSorting.value, media);
+
+  SortChain<GroupSortType> groupSortingOfR(MediaType media) => _groupSortingIn(mediaGroupSorting.valueR, media);
+
+  static final _kFallbackGroupSorting = SortChain.of(const [GroupSortType.title]);
+
+  static SortChain<GroupSortType> _groupSortingIn(Map<MediaType, SortChain<GroupSortType>> map, MediaType media) {
+    final sortingMedia = _groupSortingMediaOf(media);
+    return map[sortingMedia] ?? _kFallbackGroupSorting;
+  }
+
+  static MediaType? _groupSortingMediaOf(MediaType media) => switch (media) {
+    MediaType.album || MediaType.language || MediaType.playlist || MediaType.mood || MediaType.tag => media,
+    MediaType.artist || MediaType.albumArtist || MediaType.composer => MediaType.artist,
+    MediaType.genre || MediaType.style => MediaType.genre,
+    MediaType.track || MediaType.folder || MediaType.folderMusic || MediaType.folderVideo || MediaType.rating => null,
+  };
+
+  void updateActiveTrSearch({required bool tracks, required bool videos}) {
+    activeTrSearch.update(
+      (map) {
+        map[TrackTypeSearch.tr] = tracks;
+        map[TrackTypeSearch.v] = videos;
+      },
+    );
+  }
+
+  @override
+  Set<String> get sensitiveKeys => const {'webhookUrl'};
 
   @override
   String get filePath => AppPaths.SETTINGS;
+}
+
+/// stored tabs are collapsed to their group, so variants never produce duplicate tabs.
+class _LibraryTabGroupCodec extends _SettingsCodec<LibraryTab> {
+  const _LibraryTabGroupCodec();
+
+  @override
+  LibraryTab? decode(dynamic json) {
+    final tab = json is String ? LibraryTab.values.getEnum(json) : null;
+    return tab?.group;
+  }
+
+  @override
+  Object? encode(LibraryTab value) => value.name;
+}
+
+class _CountPerRowCodec extends _SettingsCodec<CountPerRow?> {
+  const _CountPerRowCodec();
+
+  @override
+  CountPerRow? decode(dynamic json) => CountPerRow.fromJsonValue(json);
+
+  @override
+  Object? encode(CountPerRow? value) => value?.rawValue;
+}
+
+class _DirectoryIndexCodec extends _SettingsCodec<DirectoryIndex> {
+  const _DirectoryIndexCodec();
+
+  @override
+  DirectoryIndex? decode(dynamic json) {
+    try {
+      return DirectoryIndex.fromMap(json);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  @override
+  Object? encode(DirectoryIndex value) => value.toMap();
+}
+
+// by claude
+class _ActiveTrackSorting {
+  final _SettingsMapKey<MediaType, SortChain<SortType>> _defaultSorting;
+  final _SettingsMapKey<MediaType, TrackSortPresets> _presets;
+
+  final sorting = Rx<Map<MediaType, SortChain<SortType>>>(const {});
+
+  _ActiveTrackSorting(this._defaultSorting, this._presets) {
+    _rebuild();
+    _defaultSorting.addListener(_rebuild);
+    _presets.addListener(_rebuild);
+  }
+
+  void _rebuild() {
+    final newSorting = <MediaType, SortChain<SortType>>{..._defaultSorting.value};
+    for (final e in _presets.value.entries) {
+      final preset = e.value.activePreset;
+      if (preset == null) continue;
+      newSorting[e.key] = preset.sorting;
+    }
+    if (mapEquals(newSorting, sorting.value)) return;
+    sorting.value = _ProtectedMap(newSorting);
+  }
+}
+
+extension CountPerRowMapUtils on Map<LibraryTab, CountPerRow?> {
+  CountPerRow get(LibraryTab tab) {
+    final val = this[tab];
+    if (val == null || val.rawValue < 1) return CountPerRow.autoForTab(tab);
+    return val;
+  }
 }

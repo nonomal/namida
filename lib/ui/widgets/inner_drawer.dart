@@ -1,10 +1,12 @@
-// ignore_for_file: unused_element
-
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
-import 'package:get/get.dart';
 
+import 'package:namida/core/constants.dart';
 import 'package:namida/core/extensions.dart';
+import 'package:namida/core/utils.dart';
+import 'package:namida/main.dart';
+import 'package:namida/ui/widgets/animated_widgets.dart';
+import 'package:namida/ui/widgets/artwork.dart';
 import 'package:namida/ui/widgets/custom_widgets.dart';
 
 class NamidaInnerDrawer extends StatefulWidget {
@@ -15,7 +17,8 @@ class NamidaInnerDrawer extends StatefulWidget {
   final Curve curve;
   final double borderRadius;
   final double maxPercentage;
-  final bool swipeable;
+  final bool initiallySwipeable;
+  final bool Function() isEdgeSwipeOnly;
 
   const NamidaInnerDrawer({
     super.key,
@@ -26,7 +29,8 @@ class NamidaInnerDrawer extends StatefulWidget {
     this.curve = Curves.fastEaseInToSlowEaseOut,
     this.borderRadius = 0,
     this.maxPercentage = 0.472,
-    this.swipeable = true,
+    required this.initiallySwipeable,
+    required this.isEdgeSwipeOnly,
   });
 
   @override
@@ -34,42 +38,75 @@ class NamidaInnerDrawer extends StatefulWidget {
 }
 
 class NamidaInnerDrawerState extends State<NamidaInnerDrawer> with SingleTickerProviderStateMixin {
+  Animation<double> get animationView => controller.view;
+  double get drawerPercentage => (controller.value / _upperBoundRx.value).clampDouble(0.0, 1.0);
   bool get isOpened => _isOpened;
   void toggle() => isOpened ? _closeDrawer() : _openDrawer();
   void open() => _openDrawer();
   void close() => _closeDrawer();
-  void toggleCanSwipe(bool swipe) => setState(() => _canSwipe = swipe);
+  void toggleCanSwipe(bool swipe) {
+    if (_canSwipe == swipe) return;
+    setState(() => _canSwipe = swipe);
+  }
 
   late final AnimationController controller;
+  final _upperBoundRx = Rx(0.0);
 
   @override
   void initState() {
     controller = AnimationController(
       vsync: this,
+      upperBound: 2.0,
       duration: Duration.zero,
-      lowerBound: 0,
-      upperBound: widget.maxPercentage,
     );
+    controller.addStatusListener(_statusListener);
+    _upperBoundRx.value = widget.maxPercentage;
     super.initState();
   }
 
   @override
   void dispose() {
     controller.dispose();
+    _upperBoundRx.close();
     super.dispose();
   }
 
-  late bool _canSwipe = widget.swipeable;
+  @override
+  void didUpdateWidget(covariant NamidaInnerDrawer oldWidget) {
+    if (widget.maxPercentage != oldWidget.maxPercentage) {
+      _upperBoundRx.value = widget.maxPercentage;
+      if (_isOpened) controller.animateTo(_upperBoundRx.value, duration: Duration.zero); // just reanimate
+    }
+    super.didUpdateWidget(oldWidget);
+  }
+
+  late bool _canSwipe = widget.initiallySwipeable;
   bool _isOpened = false;
   double _distanceTraveled = 0;
+
+  static const _kEdgeSwipeWidth = 24.0;
+
+  bool _canAcceptDragPointer(PointerEvent event) {
+    if (controller.value > controller.lowerBound) return true;
+    if (!widget.isEdgeSwipeOnly()) return true;
+    return event.localPosition.dx <= _kEdgeSwipeWidth;
+  }
 
   void _recalculateDistanceTraveled() {
     _distanceTraveled = controller.value * context.width;
   }
 
+  void _statusListener(AnimationStatus status) {
+    final isMoving = switch (status) {
+      AnimationStatus.forward || AnimationStatus.reverse => true,
+      AnimationStatus.completed || AnimationStatus.dismissed => false,
+    };
+    ArtworkWidget.isMovingDrawer = isMoving;
+  }
+
   void _openDrawer() {
     _isOpened = true;
-    controller.animateTo(controller.upperBound, duration: widget.duration, curve: widget.curve);
+    controller.animateTo(_upperBoundRx.value, duration: widget.duration, curve: widget.curve);
   }
 
   void _closeDrawer() {
@@ -79,27 +116,29 @@ class NamidaInnerDrawerState extends State<NamidaInnerDrawer> with SingleTickerP
 
   @override
   Widget build(BuildContext context) {
-    final drawerChild = widget.drawerChild;
-    final scaffoldBody = widget.child;
+    final theme = context.theme;
+    final drawerChild = RepaintBoundary(child: widget.drawerChild);
+    final scaffoldBody = RepaintBoundary(child: widget.child);
     return AnimatedBuilder(
       animation: controller,
       builder: (context, _) {
+        double animationValue = controller.value;
         final child = Stack(
           children: [
             scaffoldBody,
             Positioned.fill(
               child: TapDetector(
-                onTap: controller.value == controller.lowerBound ? null : _closeDrawer,
+                onTap: animationValue == controller.lowerBound ? null : _closeDrawer,
                 child: IgnorePointer(
-                  ignoring: controller.value == controller.lowerBound,
+                  ignoring: animationValue == controller.lowerBound,
                   child: ColoredBox(
-                    color: Colors.black.withOpacity(controller.value * 1.2),
+                    color: Colors.black.withOpacityExt((animationValue * 1.2).clampDouble(0.0, 1.0)),
                   ),
                 ),
               ),
             ),
             // -- absort edge drags so that drawer can be swiped
-            if (_canSwipe)
+            if (_canSwipe && Namida.shouldAddEdgeAbsorbers)
               ColoredBox(
                 color: Colors.transparent,
                 child: SizedBox(
@@ -112,20 +151,21 @@ class NamidaInnerDrawerState extends State<NamidaInnerDrawer> with SingleTickerP
         final finalBuilder = Stack(
           children: [
             // -- bg
-            if (controller.value > 0) ...[
+            if (animationValue > 0) ...[
               Positioned.fill(
-                child: ColoredBox(
-                  color: context.theme.scaffoldBackgroundColor,
+                child: AnimatedColor(
+                  duration: const Duration(milliseconds: kThemeAnimationDurationMS),
+                  color: theme.scaffoldBackgroundColor,
                 ),
               ),
               Positioned.fill(
                 child: Transform.translate(
-                  offset: Offset(context.width * controller.value * 0.6, 0),
+                  offset: Offset(context.width * animationValue * 0.6, 0),
                   child: DecoratedBox(
                     decoration: BoxDecoration(
                       boxShadow: [
                         BoxShadow(
-                          color: context.theme.colorScheme.primary.withAlpha(context.isDarkMode ? 5 : 25),
+                          color: theme.colorScheme.primary.withAlpha(context.isDarkMode ? 5 : 25),
                           blurRadius: 58.0,
                           spreadRadius: 12.0,
                           offset: const Offset(-2.0, 0),
@@ -136,18 +176,24 @@ class NamidaInnerDrawerState extends State<NamidaInnerDrawer> with SingleTickerP
                 ),
               ),
               // -- drawer
-              Padding(
-                padding: EdgeInsets.only(right: context.width * (1 - controller.upperBound)),
-                child: Transform.translate(
-                  offset: Offset(-((controller.upperBound - controller.value) * context.width * 0.5), 0),
-                  child: drawerChild,
+              ObxO(
+                rx: _upperBoundRx,
+                builder: (context, upperBound) => Padding(
+                  padding: EdgeInsets.only(right: context.width * (1 - upperBound)),
+                  child: Transform.translate(
+                    offset: Offset(-((upperBound - animationValue) * context.width * 0.5), 0),
+                    child: drawerChild,
+                  ),
                 ),
               ),
               // -- drawer dim
               Positioned.fill(
                 child: IgnorePointer(
-                  child: ColoredBox(
-                    color: Colors.black.withOpacity((controller.upperBound - controller.value) * 1.8),
+                  child: ObxO(
+                    rx: _upperBoundRx,
+                    builder: (context, upperBound) => ColoredBox(
+                      color: Colors.black.withOpacityExt(((upperBound - animationValue) * 1.8).clampDouble(0.0, 1.0)),
+                    ),
                   ),
                 ),
               ),
@@ -155,12 +201,12 @@ class NamidaInnerDrawerState extends State<NamidaInnerDrawer> with SingleTickerP
 
             // -- child
             Transform.translate(
-              offset: Offset(context.width * controller.value, 0),
+              offset: Offset(context.width * animationValue, 0),
               child: widget.borderRadius > 0
                   ? ClipPath(
                       clipper: DecorationClipper(
                         decoration: BoxDecoration(
-                          borderRadius: BorderRadius.circular(widget.borderRadius * controller.value),
+                          borderRadius: BorderRadius.circular(widget.borderRadius * animationValue),
                         ),
                       ),
                       child: child,
@@ -171,27 +217,42 @@ class NamidaInnerDrawerState extends State<NamidaInnerDrawer> with SingleTickerP
         );
         return _canSwipe
             // -- touch absorber
-            ? _HorizontalDragDetector(
+            ? RawGestureDetector(
                 behavior: HitTestBehavior.translucent,
-                onDown: (details) {
-                  controller.stop();
-                  _recalculateDistanceTraveled();
-                },
-                onUpdate: (details) {
-                  _distanceTraveled = (_distanceTraveled + details.delta.dx).withMinimum(0);
-                  controller.animateTo(_distanceTraveled / context.width);
-                },
-                onEnd: (details) {
-                  final velocity = details.velocity.pixelsPerSecond.dx;
-                  if (velocity > 300) {
-                    _openDrawer();
-                  } else if (velocity < -300) {
-                    _closeDrawer();
-                  } else if (controller.value > (controller.upperBound * 0.4)) {
-                    _openDrawer();
-                  } else {
-                    _closeDrawer();
-                  }
+                gestures: {
+                  _DrawerDragGestureRecognizer: GestureRecognizerFactoryWithHandlers<_DrawerDragGestureRecognizer>(
+                    () => _DrawerDragGestureRecognizer(canAcceptPointer: _canAcceptDragPointer, debugOwner: this),
+                    (instance) {
+                      instance
+                        ..onDown = (details) {
+                          controller.stop();
+                          _recalculateDistanceTraveled();
+                        }
+                        ..onUpdate = (details) {
+                          double toAdd = details.delta.dx;
+                          if (controller.value > widget.maxPercentage) {
+                            double toSubtract = (toAdd * (0.15 + controller.value));
+                            toAdd -= toSubtract;
+                          }
+
+                          _distanceTraveled = (_distanceTraveled + toAdd).withMinimum(0);
+                          controller.animateTo(_distanceTraveled / context.width);
+                        }
+                        ..onEnd = (details) {
+                          final velocity = details.velocity.pixelsPerSecond.dx;
+                          if (velocity > 300) {
+                            _openDrawer();
+                          } else if (velocity < -300) {
+                            _closeDrawer();
+                          } else if (animationValue > (_upperBoundRx.value * 0.4)) {
+                            _openDrawer();
+                          } else {
+                            _closeDrawer();
+                          }
+                        }
+                        ..gestureSettings = MediaQuery.maybeGestureSettingsOf(context);
+                    },
+                  ),
                 },
                 child: finalBuilder,
               )
@@ -201,43 +262,15 @@ class NamidaInnerDrawerState extends State<NamidaInnerDrawer> with SingleTickerP
   }
 }
 
-class _HorizontalDragDetector extends StatelessWidget {
-  final GestureDragDownCallback? onDown;
-  final GestureDragUpdateCallback? onUpdate;
-  final GestureDragEndCallback? onEnd;
-  final void Function(HorizontalDragGestureRecognizer instance)? initializer;
-  final Widget? child;
-  final HitTestBehavior? behavior;
+// by claude
+class _DrawerDragGestureRecognizer extends HorizontalDragGestureRecognizer {
+  final bool Function(PointerEvent event) canAcceptPointer;
 
-  const _HorizontalDragDetector({
-    super.key,
-    this.initializer,
-    this.child,
-    this.behavior,
-    this.onDown,
-    this.onUpdate,
-    this.onEnd,
-  });
+  _DrawerDragGestureRecognizer({required this.canAcceptPointer, super.debugOwner});
 
   @override
-  Widget build(BuildContext context) {
-    final Map<Type, GestureRecognizerFactory> gestures = <Type, GestureRecognizerFactory>{};
-    gestures[HorizontalDragGestureRecognizer] = GestureRecognizerFactoryWithHandlers<HorizontalDragGestureRecognizer>(
-      () => HorizontalDragGestureRecognizer(debugOwner: this),
-      initializer ??
-          (HorizontalDragGestureRecognizer instance) {
-            instance
-              ..onDown = onDown
-              ..onUpdate = onUpdate
-              ..onEnd = onEnd
-              ..gestureSettings = MediaQuery.maybeGestureSettingsOf(context);
-          },
-    );
+  bool isPointerAllowed(PointerEvent event) => super.isPointerAllowed(event) && canAcceptPointer(event);
 
-    return RawGestureDetector(
-      behavior: behavior,
-      gestures: gestures,
-      child: child,
-    );
-  }
+  @override
+  bool isPointerPanZoomAllowed(PointerPanZoomStartEvent event) => super.isPointerPanZoomAllowed(event) && canAcceptPointer(event);
 }

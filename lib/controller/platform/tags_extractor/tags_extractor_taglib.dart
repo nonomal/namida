@@ -1,0 +1,480 @@
+part of 'tags_extractor.dart';
+
+class _TagsExtractorTagLib extends TagsExtractor {
+  _TagsExtractorTagLib._internal();
+
+  _TagLibIsolateManager? _isolateWriteExecuter;
+  int _isolateWriteExecuterClients = 0;
+
+  @override
+  Future<void> initializeForWrite() async {
+    _isolateWriteExecuterClients++;
+    if (_isolateWriteExecuterClients == 1) TagsExtractor.resetSafDeniedVolumes(); // -- new batch
+    if (_isolateWriteExecuter != null) return;
+
+    _isolateWriteExecuter = _TagLibIsolateManager();
+    await _isolateWriteExecuter!.initialize();
+  }
+
+  @override
+  Future<void> disposeForWrite() async {
+    _isolateWriteExecuterClients--;
+    if (_isolateWriteExecuterClients <= 0) {
+      await _isolateWriteExecuter?.dispose();
+    }
+  }
+
+  @override
+  Future<void> updateLogsPath() async {}
+
+  @override
+  Future<FAudioModel> extractMetadata({
+    required String trackPath,
+    required bool extractArtwork,
+    required String? artworkDirectory,
+    Set<AlbumIdentifier>? identifiers,
+    bool overrideArtwork = false,
+    required bool isVideo,
+    required bool isNetwork,
+    String? networkId,
+    Map<String, String>? httpHeaders,
+  }) async {
+    final taglibInfo = await TagLibRes.read(
+      trackPath,
+      extractArtwork: extractArtwork,
+      httpHeaders: httpHeaders,
+    );
+    return _toFAudioModel(
+      taglibInfo: taglibInfo,
+      trackPath: trackPath,
+      extractArtwork: extractArtwork,
+      artworkDirectory: artworkDirectory,
+      identifiers: identifiers,
+      overrideArtwork: overrideArtwork,
+      isVideo: isVideo,
+      isNetwork: isNetwork,
+      networkId: networkId,
+    );
+  }
+
+  Future<FAudioModel> _toFAudioModel({
+    required TagLibRes? taglibInfo,
+    required String trackPath,
+    required bool extractArtwork,
+    required String? artworkDirectory,
+    required Set<AlbumIdentifier>? identifiers,
+    required bool overrideArtwork,
+    required bool isVideo,
+    required bool isNetwork,
+    String? networkId,
+  }) async {
+    if (taglibInfo != null && isVideo) {
+      try {
+        // final stats = await File(trackPath).stat();
+        // videoController.addLocalVideoFileInfoToCacheMap(trackPath, taglibInfo, stats);
+      } catch (_) {}
+    }
+
+    final taglibInfoProps = taglibInfo?.properties;
+    FArtwork artwork = taglibInfoProps?.artwork ?? FArtwork();
+    if (extractArtwork) {
+      final canExtractWithFFmpeg = isVideo || taglibInfo == null; // -- taglib already checked for embedded artwork
+      if (artworkDirectory != null && artwork.file == null) {
+        final filename = TagsExtractor.buildImageFilename(
+          path: trackPath,
+          identifiers: identifiers,
+          isNetwork: isNetwork,
+          networkId: networkId,
+          infoCallback: () => (
+            albumName: taglibInfoProps?.album,
+            albumArtist: taglibInfoProps?.albumArtist,
+            year: taglibInfoProps?.date,
+            mbAlbumId: taglibInfoProps?.MUSICBRAINZ_ALBUMID,
+            mbAlbumArtistId: taglibInfoProps?.MUSICBRAINZ_ALBUMARTISTID,
+            title: taglibInfoProps?.title,
+            artist: taglibInfoProps?.artist,
+          ),
+          hashKeyCallback: () => trackPath.toFastHashKey(),
+          parentDirPath: artworkDirectory,
+        );
+
+        final possibleThumbFile = FileParts.join(artworkDirectory, filename);
+
+        final artworkBytes = artwork.bytes;
+        if (artworkBytes != null && artworkBytes.isNotEmpty) {
+          // -- embedded artwork already extracted, save it to the artwork directory & return the file only.
+          try {
+            if (overrideArtwork || !await possibleThumbFile.exists()) {
+              await possibleThumbFile.writeAsBytes(artworkBytes);
+            }
+            artwork.file = possibleThumbFile;
+            artwork.bytes = null;
+          } catch (_) {
+            // -- keep bytes if saving failed
+          }
+        } else {
+          artwork.file = possibleThumbFile;
+
+          final shouldExtract = overrideArtwork || !await possibleThumbFile.exists();
+          if (shouldExtract) {
+            File? thumbFile;
+            if (canExtractWithFFmpeg) {
+              thumbFile = await TagsExtractor.extractThumbnailCustom(
+                trackPath: trackPath,
+                filename: filename,
+                artworkDirectory: artworkDirectory,
+                isVideo: isVideo,
+                overrideOldArtwork: overrideArtwork,
+              );
+            }
+            artwork.file = thumbFile;
+          }
+        }
+      } else if (canExtractWithFFmpeg && artworkDirectory == null && artwork.file == null && artwork.bytes == null) {
+        // -- otherwise the artwork should be within info as bytes.
+        Uint8List? artworkBytes = artwork.bytes;
+        if (overrideArtwork || artworkBytes == null || artworkBytes.isEmpty) {
+          final File? tempFile = await TagsExtractor.extractThumbnailCustom(
+            trackPath: trackPath,
+            filename: null,
+            artworkDirectory: null,
+            isVideo: isVideo,
+            overrideOldArtwork: overrideArtwork,
+          );
+          artwork.bytes = await tempFile?.readAsBytes();
+          tempFile?.tryDeleting();
+        }
+      }
+    }
+
+    return taglibInfo?.toFAudioModel(artwork: artwork) ?? FAudioModel.dummy(trackPath, artwork);
+  }
+
+  @override
+  Stream<FAudioModel> extractMetadataAsStream({
+    required List<String> paths,
+    required ExtractingPathKey keyWrapper,
+    required bool extractArtwork,
+    required String? audioArtworkDirectory,
+    required String? videoArtworkDirectory,
+    bool overrideArtwork = false,
+    required bool isNetwork,
+  }) {
+    final threadsCount = Platform.numberOfProcessors;
+    // final pathKeysCount = threadsCount.withMaximum(paths.length);
+    // final pathKeys = List.generate(pathKeysCount, (_) => keyWrapper.next(), growable: false); // -- one shown path per reading thread
+    final controller = StreamController<FAudioModel>();
+    int remaining = paths.length;
+    // int receivedCount = 0;
+
+    // -- concurrent, so artwork writes don't queue behind each other
+    Future<void> onResult(String path, TagLibRes? taglibInfo) async {
+      // final pathKey = pathKeys[receivedCount % pathKeysCount];
+      // receivedCount++;
+      // currentPathsBeingExtracted[pathKey] = path;
+      final isVideo = path.isVideo();
+      final artworkDirectory = isVideo ? videoArtworkDirectory : audioArtworkDirectory;
+      FAudioModel info;
+      try {
+        info = await _toFAudioModel(
+          taglibInfo: taglibInfo,
+          trackPath: path,
+          extractArtwork: extractArtwork,
+          artworkDirectory: artworkDirectory,
+          identifiers: null,
+          overrideArtwork: overrideArtwork,
+          isVideo: isVideo,
+          isNetwork: isNetwork,
+        );
+      } catch (e, st) {
+        logger.error('Error extracting metadata', e: e, st: st);
+        info = FAudioModel.dummy(path, null);
+      }
+      controller.add(info);
+      remaining--;
+      if (remaining == 0) {
+        // for (final pathKey in pathKeys) {
+          // currentPathsBeingExtracted.remove(pathKey);
+        // }
+        controller.close();
+      }
+    }
+
+    if (paths.isEmpty) {
+      controller.close();
+    } else {
+      TagLibRes.readBatch(paths, threads: threadsCount, extractArtwork: extractArtwork).listen(
+        (res) {
+          final taglibInfo = TagLibRes.fromBatchResult(res);
+          onResult(res.path, taglibInfo);
+        },
+        onError: (Object e, StackTrace st) {
+          // -- batch couldn't start, nothing was read
+          logger.error('Error reading tags batch', e: e, st: st);
+          for (final path in paths) {
+            onResult(path, null);
+          }
+        },
+      );
+    }
+    return controller.stream;
+  }
+
+  @override
+  Future<FArtwork?> extractArtwork({required String trackPath, required bool isVideo, Map<String, String>? httpHeaders}) async {
+    final taglibInfo = await TagLibRes.read(
+      trackPath,
+      extractArtwork: true,
+      httpHeaders: httpHeaders,
+    );
+    Uint8List? bytes = taglibInfo?.properties.artwork?.bytes;
+
+    final canExtractWithFFmpeg = isVideo || taglibInfo == null; // -- taglib already checked for embedded artwork
+    if (bytes == null && canExtractWithFFmpeg) {
+      final File? tempFile = await TagsExtractor.extractThumbnailCustom(
+        trackPath: trackPath,
+        filename: null,
+        artworkDirectory: null,
+        isVideo: isVideo,
+      );
+      bytes = await tempFile?.readAsBytes();
+      tempFile?.tryDeleting();
+    }
+
+    return bytes == null ? null : FArtwork(bytes: bytes);
+  }
+
+  Future<String?> _writeTagsInternal({
+    required String path,
+    required FTags newTags,
+  }) async {
+    try {
+      await initializeForWrite();
+      return await _isolateWriteExecuter!.write(
+        _TagLibIsolateRequestWriteTags(
+          path: path,
+          newTags: newTags,
+        ),
+      );
+    } catch (e) {
+      return e.toString();
+    } finally {
+      await disposeForWrite();
+    }
+  }
+
+  @override
+  Future<String?> writeTags({
+    required String path,
+    required FTags newTags,
+    required String? commentToInsert,
+    required String? oldComment,
+    required bool displayFFmpegFallbackWarning,
+  }) {
+    return TagsExtractor.executeWriteWithSafFallback(
+      path: path,
+      operation: (effectivePath) => _writeTagsAndFallback(
+        path: effectivePath,
+        newTags: newTags,
+        commentToInsert: commentToInsert,
+        oldComment: oldComment,
+        displayFFmpegFallbackWarning: displayFFmpegFallbackWarning,
+      ),
+    );
+  }
+
+  Future<String?> _writeTagsAndFallback({
+    required String path,
+    required FTags newTags,
+    required String? commentToInsert,
+    required String? oldComment,
+    required bool displayFFmpegFallbackWarning,
+  }) async {
+    // -- 1. try tagger
+    String? error = await _writeTagsInternal(
+      path: path,
+      newTags: newTags,
+    );
+
+    bool didUpdate = error == null || error == '';
+
+    if (!didUpdate) {
+      // -- 2. try with ffmpeg
+      final ffmpegTagsMap = commentToInsert != null && commentToInsert.isNotEmpty
+          ? <String, String?>{
+              FFMPEGTagField.comment.tagKey: oldComment == null || oldComment.isEmpty ? commentToInsert : '$commentToInsert\n$oldComment',
+            }
+          : FFMPEGTagField.createTagsMapfromFTag(newTags);
+      didUpdate = await ffmpegController.ffmpegEditMetadata(
+        path: path,
+        tagsMap: ffmpegTagsMap,
+      );
+
+      final imageFile = newTags.artwork.file;
+      if (imageFile != null) {
+        await ffmpegController.editAudioThumbnail(audioPath: path, thumbnailPath: imageFile.path);
+      }
+      if (didUpdate && displayFFmpegFallbackWarning) {
+        snackyy(
+          title: lang.warning,
+          message: 'FFMPEG was used. Some tags might not have been updated',
+          isError: true,
+        );
+      }
+    }
+    if (didUpdate) return null;
+    return error;
+  }
+
+  @override
+  Future<WriteIfMissingResult> writeTagsIfMissing({required String path, required FTags newTags}) async {
+    bool didWrite = false;
+    final error = await TagsExtractor.executeWriteWithSafFallback(
+      path: path,
+      operation: (effectivePath) async {
+        final res = await _writeTagsIfMissingInternal(path: effectivePath, newTags: newTags);
+        didWrite = res.didWrite;
+        return res.error;
+      },
+    );
+    return (didWrite: didWrite, error: error);
+  }
+
+  Future<WriteIfMissingResult> _writeTagsIfMissingInternal({required String path, required FTags newTags}) async {
+    try {
+      await initializeForWrite();
+      final res = await _isolateWriteExecuter!.writeIfMissing(
+        _TagLibIsolateRequestWriteTagsIfMissing(
+          path: path,
+          newTags: newTags,
+        ),
+      );
+      return res ?? (didWrite: false, error: 'Unknown Error');
+    } catch (e) {
+      return (didWrite: false, error: e.toString());
+    } finally {
+      await disposeForWrite();
+    }
+  }
+}
+
+class _TagLibIsolateManager with PortsProvider<SendPort> {
+  _TagLibIsolateManager();
+
+  final _completers = <int, Completer<dynamic>?>{};
+  final _messageTokenWrapper = IsolateMessageTokenWrapper.create();
+
+  Future<void> dispose() => disposePort();
+
+  Future<String?> write(_TagLibIsolateRequestWriteTags request) async {
+    return await _executeIsolate(request) as String?;
+  }
+
+  Future<WriteIfMissingResult?> writeIfMissing(_TagLibIsolateRequestWriteTagsIfMissing request) async {
+    return await _executeIsolate(request) as WriteIfMissingResult?;
+  }
+
+  Future<dynamic> _executeIsolate(_TagLibIsolateRequestBase request) async {
+    if (!isInitialized) await initialize();
+    final token = _messageTokenWrapper.getToken();
+    _completers[token]?.complete(null); // useless but anyways
+    final completer = _completers[token] = Completer<dynamic>();
+    sendPort([token, request]);
+    var res = await completer.future;
+    if (res is _TagLibError) {
+      logger.error('Error reading/writing tags', e: res.e, st: res.st);
+      return null;
+    }
+    return res;
+  }
+
+  @override
+  IsolateFunctionReturnBuild<SendPort> isolateFunction(SendPort port) {
+    return IsolateFunctionReturnBuild(_prepareResourcesAndListen, port);
+  }
+
+  static void _prepareResourcesAndListen(SendPort sendPort) async {
+    final recievePort = ReceivePort();
+    sendPort.send(recievePort.sendPort);
+
+    // -- start listening
+    StreamSubscription? streamSub;
+    streamSub = recievePort.listen((p) async {
+      if (p == PortsProviderMessages.disposed) {
+        recievePort.close();
+        streamSub?.cancel();
+        return;
+      }
+
+      p as List;
+      final token = p[0] as int;
+      final request = p[1] as _TagLibIsolateRequestBase;
+
+      try {
+        final res = request.execute();
+        sendPort.send([token, res]);
+      } catch (e, st) {
+        sendPort.send([token, _TagLibError(e, st)]);
+        logger.error('Error reading tags', e: e, st: st);
+        return;
+      }
+    });
+
+    sendPort.send(PortsProviderMessages.prepared);
+  }
+
+  @override
+  void onResult(result) {
+    final token = result[0] as int;
+    final completer = _completers.remove(token);
+    if (completer != null && completer.isCompleted == false) {
+      completer.complete(result[1]);
+    }
+  }
+}
+
+class _TagLibIsolateRequestWriteTags extends _TagLibIsolateRequestBase<String?> {
+  final FTags newTags;
+  const _TagLibIsolateRequestWriteTags({required super.path, required this.newTags});
+
+  @override
+  String? execute() {
+    return TagLibRes.writeSync(
+      path,
+      newPropertiesMap: newTags.toTagLibMap(),
+      artwork: newTags.artwork,
+      chapters: newTags.chapters,
+    );
+  }
+}
+
+class _TagLibIsolateRequestWriteTagsIfMissing extends _TagLibIsolateRequestBase<WriteIfMissingResult> {
+  final FTags newTags;
+  const _TagLibIsolateRequestWriteTagsIfMissing({required super.path, required this.newTags});
+
+  @override
+  WriteIfMissingResult execute() {
+    return TagLibRes.writeIfMissingSync(
+      path,
+      newPropertiesMap: newTags.toTagLibMap(),
+    );
+  }
+}
+
+sealed class _TagLibIsolateRequestBase<T> {
+  final String path;
+
+  const _TagLibIsolateRequestBase({required this.path});
+
+  T execute();
+}
+
+class _TagLibError {
+  final Object e;
+  final StackTrace st;
+
+  const _TagLibError(
+    this.e,
+    this.st,
+  );
+}

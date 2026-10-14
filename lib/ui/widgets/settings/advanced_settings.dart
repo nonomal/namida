@@ -1,18 +1,25 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
-import 'package:get/get.dart' hide Response;
+
+import 'package:history_manager/history_manager.dart';
 
 import 'package:namida/base/setting_subpage_provider.dart';
 import 'package:namida/class/audio_cache_detail.dart';
+import 'package:namida/class/track.dart';
 import 'package:namida/class/video.dart';
+import 'package:namida/controller/audio_cache_controller.dart';
+import 'package:namida/controller/directory_index.dart';
 import 'package:namida/controller/edit_delete_controller.dart';
 import 'package:namida/controller/ffmpeg_controller.dart';
 import 'package:namida/controller/file_browser.dart';
 import 'package:namida/controller/history_controller.dart';
 import 'package:namida/controller/indexer_controller.dart';
+import 'package:namida/controller/lossless_check_controller.dart';
+import 'package:namida/controller/music_web_server/music_web_server_base.dart';
 import 'package:namida/controller/navigator_controller.dart';
-import 'package:namida/controller/player_controller.dart';
+import 'package:namida/controller/now_playing_broadcaster.dart';
+import 'package:namida/controller/rhythm_controller.dart';
 import 'package:namida/controller/settings_controller.dart';
 import 'package:namida/controller/storage_cache_manager.dart';
 import 'package:namida/controller/video_controller.dart';
@@ -22,26 +29,14 @@ import 'package:namida/core/extensions.dart';
 import 'package:namida/core/icon_fonts/broken_icons.dart';
 import 'package:namida/core/namida_converter_ext.dart';
 import 'package:namida/core/translations/language.dart';
+import 'package:namida/core/utils.dart';
 import 'package:namida/main.dart';
 import 'package:namida/ui/dialogs/edit_tags_dialog.dart';
 import 'package:namida/ui/widgets/custom_widgets.dart';
-import 'package:namida/ui/widgets/settings/extra_settings.dart';
+import 'package:namida/ui/widgets/settings/effects_tiles.dart';
+import 'package:namida/ui/widgets/settings/theme_settings.dart';
 import 'package:namida/ui/widgets/settings_card.dart';
-
-enum _AdvancedSettingKeys {
-  performanceMode,
-  rescanVideos,
-  removeSourceHistory,
-  updateDirPath,
-  fixYTDLPBigThumbnail,
-  compressImages,
-  maxImageCache,
-  maxAudioCache,
-  maxVideoCache,
-  clearImageCache,
-  clearAudioCache,
-  clearVideoCache,
-}
+import 'package:namida/youtube/controller/youtube_history_controller.dart';
 
 class AdvancedSettings extends SettingSubpageProvider {
   const AdvancedSettings({super.key, super.initialItem});
@@ -50,65 +45,252 @@ class AdvancedSettings extends SettingSubpageProvider {
   SettingSubpageEnum get settingPage => SettingSubpageEnum.advanced;
 
   @override
-  Map<Enum, List<String>> get lookupMap => {
-        _AdvancedSettingKeys.performanceMode: [lang.PERFORMANCE_MODE],
-        _AdvancedSettingKeys.rescanVideos: [lang.RESCAN_VIDEOS],
-        _AdvancedSettingKeys.removeSourceHistory: [lang.REMOVE_SOURCE_FROM_HISTORY],
-        _AdvancedSettingKeys.updateDirPath: [lang.UPDATE_DIRECTORY_PATH],
-        _AdvancedSettingKeys.fixYTDLPBigThumbnail: [lang.FIX_YTDLP_BIG_THUMBNAIL_SIZE],
-        _AdvancedSettingKeys.compressImages: [lang.COMPRESS_IMAGES],
-        _AdvancedSettingKeys.maxImageCache: [lang.MAX_IMAGE_CACHE_SIZE],
-        _AdvancedSettingKeys.maxAudioCache: [lang.MAX_AUDIO_CACHE_SIZE],
-        _AdvancedSettingKeys.maxVideoCache: [lang.MAX_VIDEO_CACHE_SIZE],
-        _AdvancedSettingKeys.clearImageCache: [lang.CLEAR_IMAGE_CACHE],
-        _AdvancedSettingKeys.clearAudioCache: [lang.CLEAR_AUDIO_CACHE],
-        _AdvancedSettingKeys.clearVideoCache: [lang.CLEAR_VIDEO_CACHE],
-      };
+  List<List<SettingEntry>> get sections => _sections;
 
-  Widget getPerformanceTile(BuildContext context) {
-    return getItemWrapper(
-      key: _AdvancedSettingKeys.performanceMode,
-      child: CustomListTile(
-        bgColor: getBgColor(_AdvancedSettingKeys.performanceMode),
-        icon: Broken.cpu_setting,
-        title: lang.PERFORMANCE_MODE,
-        trailing: NamidaPopupWrapper(
-          children: () => [
-            ...PerformanceMode.values.map(
-              (e) => Obx(
-                () => NamidaInkWell(
-                  margin: const EdgeInsets.symmetric(horizontal: 6.0, vertical: 2.0),
-                  padding: const EdgeInsets.symmetric(horizontal: 4.0, vertical: 6.0),
-                  borderRadius: 6.0,
-                  bgColor: settings.performanceMode.value == e ? context.theme.cardColor : null,
-                  child: Row(
-                    children: [
-                      Icon(
-                        e.toIcon(),
-                        size: 18.0,
-                      ),
-                      const SizedBox(width: 6.0),
-                      Text(
-                        e.toText(),
-                        style: context.textTheme.displayMedium?.copyWith(fontSize: 14.0.multipliedFontScale),
-                      ),
-                    ],
+  static final performanceMode = SettingCustom(
+    title: () => lang.performanceMode,
+    aliases: _getPerformanceModeAliases,
+    keys: [settings.performanceMode, settings.artworkCacheHeightMultiplier],
+    onReset: () => settings.performanceMode.value.executeAndSave(),
+    tile: (args) => _PerformanceModeTile(
+      bgColor: args.bgColor,
+    ),
+  );
+
+  static final _sections = <List<SettingEntry>>[
+    [
+      performanceMode,
+    ],
+    [
+      // SettingCustom(
+      //   title: () => lang.rescanVideos,
+      //   tile: (args) => _RescanVideosTile(
+      //     bgColor: args.bgColor,
+      //   ),
+      // ),
+      SettingCustom(
+        title: () => lang.removeSourceFromHistory,
+        tile: (args) => _RemoveSourceFromHistoryTile(
+          bgColor: args.bgColor,
+        ),
+      ),
+      SettingCustom(
+        title: () => lang.updateDirectoryPath,
+        tile: (args) => UpdateDirectoryPathListTile(
+          bgColor: args.bgColor,
+        ),
+      ),
+      // -- this will loop all choosen files, get yt thumbnail (download or cache), edit tags, without affecting file modified time.
+      SettingCustom(
+        title: () => lang.fixYtdlpBigThumbnailSize,
+        tile: (args) => _FixYTDLPThumbnailSizeListTile(
+          bgColor: args.bgColor,
+        ),
+      ),
+      SettingCustom(
+        title: () => lang.compressImages,
+        tile: (args) => _CompressImagesListTile(
+          bgColor: args.bgColor,
+        ),
+      ),
+    ],
+    [
+      SettingCustom(
+        title: () => lang.clearServerCache,
+        aliases: () => [lang.maxServerCacheSize],
+        keys: [settings.serversMaxCacheInMB],
+        tile: (args) => _ClearServerCacheListTile(
+          bgColor: args.bgColor,
+        ),
+      ),
+      SettingCustom(
+        title: () => lang.clearImageCache,
+        aliases: () => [lang.maxImageCacheSize],
+        keys: [settings.imagesMaxCacheInMB],
+        tile: (args) => _ClearImageCacheListTile(
+          bgColor: args.bgColor,
+        ),
+      ),
+      SettingCustom(
+        title: () => lang.clearAudioCache,
+        aliases: () => [lang.maxAudioCacheSize],
+        keys: [settings.audiosMaxCacheInMB],
+        tile: (args) => _ClearAudioCacheListTile(
+          bgColor: args.bgColor,
+        ),
+      ),
+      SettingCustom(
+        title: () => lang.clearVideoCache,
+        aliases: () => [lang.maxVideoCacheSize],
+        keys: [settings.videosMaxCacheInMB],
+        tile: (args) => _ClearVideoCacheListTile(
+          bgColor: args.bgColor,
+        ),
+      ),
+    ],
+  ];
+
+  static List<String> _getPerformanceModeAliases() => PerformanceMode.values.where((e) => e != PerformanceMode.custom).map((e) => e.toText()).toFixedList();
+
+  void _showAdvancedFlagsDialog() {
+    NamidaNavigator.inst.navigateDialog(
+      dialog: CustomBlurryDialog(
+        icon: Broken.flag,
+        title: lang.configure,
+        normalTitleStyle: true,
+        horizontalInset: 32.0,
+        actions: const [
+          DoneButton(),
+        ],
+        child: const _AdvancedFlagsOptions(),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SettingsCard(
+      title: lang.advancedSettings,
+      subtitle: lang.advancedSettingsSubtitle,
+      icon: Broken.hierarchy_3,
+      // icon: Broken.danger,
+      trailing: NamidaIconButton(
+        icon: Broken.flag,
+        tooltip: () => lang.configure,
+        iconColor: context.defaultIconColor(),
+        onPressed: _showAdvancedFlagsDialog,
+      ),
+      child: SettingSectionsColumn(
+        page: this,
+      ),
+    );
+  }
+}
+
+class _PerformanceModeTile extends StatelessWidget {
+  final Color? bgColor;
+
+  const _PerformanceModeTile({required this.bgColor});
+
+  void _onTap(BuildContext context) {
+    final theme = context.theme;
+    final textTheme = theme.textTheme;
+    const artworkPartsMultiplier = 100;
+    NamidaNavigator.inst.navigateDialog(
+      dialog: CustomBlurryDialog(
+        title: lang.configure,
+        actions: const [
+          DoneButton(),
+        ],
+        child: SizedBox(
+          width: context.width,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const SizedBox(height: 12.0),
+              CustomListTile(
+                icon: Broken.cpu_setting,
+                title: lang.performanceMode,
+                trailing: NamidaPopupWrapper(
+                  childrenDefault: () => PerformanceMode.values.map(
+                    (e) {
+                      void onTap() {
+                        e.executeAndSave();
+                        NamidaNavigator.inst.popMenu();
+                      }
+
+                      return NamidaPopupItem(
+                        selected: e == settings.performanceMode.value,
+                        icon: e.toIcon(),
+                        title: e.toText(),
+                        onTap: onTap,
+                      );
+                    },
                   ),
-                  onTap: () {
-                    e.execute();
-                    settings.save(performanceMode: e);
-                    NamidaNavigator.inst.popMenu();
-                  },
+                  child: ObxO(
+                    rx: settings.performanceMode,
+                    builder: (context, performanceMode) => Text(
+                      performanceMode.toText(),
+                      style: textTheme.displayMedium,
+                      textAlign: TextAlign.end,
+                    ),
+                  ),
                 ),
               ),
-            ),
-          ],
-          child: Obx(
-            () => Text(
-              settings.performanceMode.value.toText(),
-              style: context.textTheme.displaySmall?.copyWith(color: context.theme.colorScheme.onBackground.withAlpha(200)),
-              textAlign: TextAlign.end,
-            ),
+              const SizedBox(height: 6.0),
+              const NamidaContainerDivider(),
+              const SizedBox(height: 6.0),
+              SettingEntryTile(
+                entry: ThemeSetting.autoColoring,
+              ),
+              ObxO(
+                rx: settings.enableBlurEffect,
+                builder: (context, enableBlurEffect) => CustomSwitchListTile(
+                  icon: Broken.drop,
+                  title: lang.enableBlurEffect,
+                  subtitle: lang.performanceNote,
+                  onChanged: (p0) {
+                    settings.transaction(() {
+                      settings.enableBlurEffect.save(!p0);
+                      settings.performanceMode.save(PerformanceMode.custom);
+                    });
+                  },
+                  value: enableBlurEffect,
+                ),
+              ),
+              ObxO(
+                rx: settings.enableGlowEffect,
+                builder: (context, enableGlowEffect) => CustomSwitchListTile(
+                  icon: Broken.sun_1,
+                  title: lang.enableGlowEffect,
+                  subtitle: lang.performanceNote,
+                  onChanged: (p0) {
+                    settings.transaction(() {
+                      settings.enableGlowEffect.save(!p0);
+                      settings.performanceMode.save(PerformanceMode.custom);
+                    });
+                  },
+                  value: enableGlowEffect,
+                ),
+              ),
+              ObxO(
+                rx: settings.enableMiniplayerParallaxEffect,
+                builder: (context, enableMiniplayerParallaxEffect) => CustomSwitchListTile(
+                  icon: Broken.maximize,
+                  title: lang.enableParallaxEffect,
+                  subtitle: lang.performanceNote,
+                  onChanged: (isTrue) => settings.transaction(() {
+                    settings.enableMiniplayerParallaxEffect.save(!isTrue);
+                    settings.performanceMode.save(PerformanceMode.custom);
+                  }),
+                  value: enableMiniplayerParallaxEffect,
+                ),
+              ),
+              const EffectThemeTile.background(),
+              const EffectThemeTile.overlay(),
+              const VisualizerTile(),
+              const PlayerBackgroundTile(),
+              CustomListTile(
+                icon: Broken.card_pos,
+                title: lang.artwork,
+                subtitle: lang.performanceNote,
+                trailing: ObxO(
+                  rx: settings.artworkCacheHeightMultiplier,
+                  builder: (context, artworkCacheHeightMultiplier) => NamidaWheelSlider(
+                    min: (0.5 * artworkPartsMultiplier).round(),
+                    max: (1.5 * artworkPartsMultiplier).round(), // from 0.5 to 1.5 * 100 part
+                    initValue: (artworkCacheHeightMultiplier * artworkPartsMultiplier).round(),
+                    text: '${artworkCacheHeightMultiplier}x',
+                    onValueChanged: (val) {
+                      settings.transaction(() {
+                        settings.artworkCacheHeightMultiplier.save((val / artworkPartsMultiplier).roundDecimals(2));
+                        settings.performanceMode.save(PerformanceMode.custom);
+                      });
+                    },
+                  ),
+                ),
+              ),
+            ],
           ),
         ),
       ),
@@ -117,347 +299,416 @@ class AdvancedSettings extends SettingSubpageProvider {
 
   @override
   Widget build(BuildContext context) {
-    return SettingsCard(
-      title: lang.ADVANCED_SETTINGS,
-      subtitle: lang.ADVANCED_SETTINGS_SUBTITLE,
-      icon: Broken.hierarchy_3,
-      // icon: Broken.danger,
-      child: Column(
-        children: [
-          getPerformanceTile(context),
-          getItemWrapper(
-            key: _AdvancedSettingKeys.rescanVideos,
-            child: CustomListTile(
-              bgColor: getBgColor(_AdvancedSettingKeys.rescanVideos),
-              leading: const StackedIcon(
-                baseIcon: Broken.video,
-                secondaryIcon: Broken.refresh,
-              ),
-              trailingRaw: Obx(
-                () {
-                  final current = VideoController.inst.localVideoExtractCurrent.value;
-                  final total = VideoController.inst.localVideoExtractTotal.value;
-                  final isCounterVisible = total != 0;
-                  final isLoadingVisible = current != null;
+    final theme = context.theme;
+    final textTheme = theme.textTheme;
+    return CustomListTile(
+      bgColor: bgColor,
+      icon: Broken.cpu_setting,
+      title: lang.performanceMode,
+      trailing: ObxO(
+        rx: settings.performanceMode,
+        builder: (context, performanceMode) => Text(
+          performanceMode.toText(),
+          style: textTheme.displayMedium,
+          textAlign: TextAlign.end,
+        ),
+      ),
+      onTap: () => _onTap(context),
+    );
+  }
+}
 
-                  if (!isCounterVisible && !isLoadingVisible) return Text("${VideoController.inst.localVideosTotalCount}");
+// class _RescanVideosTile extends StatelessWidget {
+//   final Color? bgColor;
 
-                  return Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      if (isCounterVisible) Text("$current/$total"),
-                      if (isLoadingVisible) const LoadingIndicator(),
-                    ],
-                  );
-                },
-              ),
-              title: lang.RESCAN_VIDEOS,
-              onTap: () async {
-                await VideoController.inst.scanLocalVideos(forceReScan: true, fillPathsOnly: true);
-                snackyy(title: lang.DONE, message: lang.FINISHED_UPDATING_LIBRARY);
-              },
-            ),
-          ),
-          getItemWrapper(
-            key: _AdvancedSettingKeys.removeSourceHistory,
-            child: CustomListTile(
-              bgColor: getBgColor(_AdvancedSettingKeys.removeSourceHistory),
-              leading: const StackedIcon(
-                baseIcon: Broken.trash,
-                secondaryIcon: Broken.refresh,
-              ),
-              title: lang.REMOVE_SOURCE_FROM_HISTORY,
-              onTap: () async {
-                final RxList<TrackSource> sourcesToDelete = <TrackSource>[].obs;
-                bool isActive(TrackSource e) => sourcesToDelete.contains(e);
+//   const _RescanVideosTile({required this.bgColor});
 
-                final RxMap<TrackSource, int> sourcesMap = <TrackSource, int>{}.obs;
-                void resetSourcesMap() {
-                  TrackSource.values.loop((e, index) {
-                    sourcesMap[e] = 0;
-                  });
-                }
+//   Future<void> _onTap() async {
+//     await VideoController.inst.rescanLocalVideosPaths();
+//     snackyy(title: lang.done, message: lang.finishedUpdatingLibrary);
+//   }
 
-                final RxInt totalTracksToBeRemoved = 0.obs;
+//   @override
+//   Widget build(BuildContext context) {
+//     return CustomListTile(
+//       bgColor: bgColor,
+//       leading: const StackedIcon(
+//         baseIcon: Broken.video,
+//         secondaryIcon: Broken.refresh,
+//       ),
+//       trailingRaw: Obx(
+//         (context) {
+//           final current = VideoController.inst.localVideoExtractCurrent.valueR;
+//           final total = VideoController.inst.localVideoExtractTotal.valueR;
+//           final isCounterVisible = total != 0;
+//           final isLoadingVisible = current != null;
 
-                final RxInt totalTracksBetweenDates = 0.obs;
+//           if (!isCounterVisible && !isLoadingVisible) {
+//             return Text(
+//               "${VideoController.inst.localVideosTotalCount}",
+//               style: context.textTheme.displayMedium,
+//             );
+//           }
 
-                void calculateTotalTracks(DateTime? oldest, DateTime? newest) {
-                  final sussyDays = HistoryController.inst.historyDays.toList();
-                  final isBetweenDays = oldest != null && newest != null;
-                  if (isBetweenDays) {
-                    final oldestDay = oldest.toDaysSince1970();
-                    final newestDay = newest.toDaysSince1970();
+//           return Column(
+//             mainAxisSize: MainAxisSize.min,
+//             children: [
+//               if (isCounterVisible)
+//                 Text(
+//                   "$current/$total",
+//                   style: context.textTheme.displaySmall,
+//                 ),
+//               if (isLoadingVisible) const LoadingIndicator(),
+//             ],
+//           );
+//         },
+//       ),
+//       title: lang.rescanVideos,
+//       onTap: _onTap,
+//     );
+//   }
+// }
 
-                    sussyDays.retainWhere((element) => element >= oldestDay && element <= newestDay);
-                    printy(sussyDays);
-                  }
-                  resetSourcesMap();
-                  sussyDays.loop((d, index) {
-                    final tracks = HistoryController.inst.historyMap.value[d] ?? [];
-                    tracks.loop((twd, index) {
-                      sourcesMap.update(twd.source, (value) => value + 1, ifAbsent: () => 1);
-                    });
-                  });
-                  if (isBetweenDays) {
-                    totalTracksBetweenDates.value = sourcesMap.values.reduce((value, element) => value + element);
-                  }
-                  if (sourcesToDelete.isNotEmpty) {
-                    totalTracksToBeRemoved.value = 0;
-                    sourcesToDelete.loop((e, index) {
-                      totalTracksToBeRemoved.value += sourcesMap[e] ?? 0;
-                    });
-                  }
-                }
+class _RemoveSourceFromHistoryTile extends StatelessWidget {
+  final Color? bgColor;
 
-                // -- filling each source with its tracks number.
-                calculateTotalTracks(null, null);
+  const _RemoveSourceFromHistoryTile({required this.bgColor});
 
-                DateTime? oldestDate;
-                DateTime? newestDate;
-
-                NamidaNavigator.inst.navigateDialog(
-                  onDisposing: () {
-                    sourcesToDelete.close();
-                    sourcesMap.close();
-                    totalTracksToBeRemoved.close();
-                    totalTracksBetweenDates.close();
-                  },
-                  dialog: CustomBlurryDialog(
-                    title: lang.CHOOSE,
-                    actions: [
-                      const CancelButton(),
-                      NamidaButton(
-                        text: lang.REMOVE,
-                        onPressed: () async {
-                          final removedNum = await HistoryController.inst.removeSourcesTracksFromHistory(
-                            sourcesToDelete,
-                            oldestDate: oldestDate,
-                            newestDate: newestDate,
-                          );
-                          NamidaNavigator.inst.closeDialog();
-                          snackyy(title: lang.NOTE, message: "${lang.REMOVED} ${removedNum.displayTrackKeyword}");
-                        },
-                      )
-                    ],
-                    child: Obx(
-                      () => Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const SizedBox(height: 12.0),
-                          Row(
-                            children: [
-                              const SizedBox(width: 8.0),
-                              const Icon(Broken.danger),
-                              const SizedBox(width: 8.0),
-                              Obx(() => Text(
-                                    '${lang.TOTAL_TRACKS}: ${totalTracksToBeRemoved.value}',
-                                    style: context.textTheme.displayMedium,
-                                  )),
-                            ],
-                          ),
-                          const SizedBox(height: 12.0),
-                          ...sourcesMap.entries.map(
-                            (e) {
-                              final source = e.key;
-                              final count = e.value;
-                              return Padding(
-                                padding: const EdgeInsets.only(top: 10.0),
-                                child: Obx(
-                                  () => ListTileWithCheckMark(
-                                    active: isActive(source),
-                                    title: '${source.convertToString} (${count.formatDecimal()})',
-                                    onTap: () {
-                                      if (isActive(source)) {
-                                        sourcesToDelete.remove(source);
-                                        totalTracksToBeRemoved.value -= count;
-                                      } else {
-                                        sourcesToDelete.add(source);
-                                        totalTracksToBeRemoved.value += count;
-                                      }
-                                    },
-                                  ),
-                                ),
-                              );
-                            },
-                          ),
-                          const SizedBox(height: 12.0),
-                          BetweenDatesTextButton(
-                            useHistoryDates: true,
-                            onConfirm: (dates) {
-                              oldestDate = dates.firstOrNull;
-                              newestDate = dates.lastOrNull;
-                              calculateTotalTracks(oldestDate, newestDate);
-                              NamidaNavigator.inst.closeDialog();
-                            },
-                            tracksLength: totalTracksBetweenDates.value,
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                );
-              },
-            ),
-          ),
-          getItemWrapper(
-            key: _AdvancedSettingKeys.updateDirPath,
-            child: UpdateDirectoryPathListTile(
-              bgColor: getBgColor(_AdvancedSettingKeys.updateDirPath),
-            ),
-          ),
-          // -- this will loop all choosen files, get yt thumbnail (download or cache), edit tags, without affecting file modified time.
-          getItemWrapper(
-            key: _AdvancedSettingKeys.fixYTDLPBigThumbnail,
-            child: _FixYTDLPThumbnailSizeListTile(
-              bgColor: getBgColor(_AdvancedSettingKeys.fixYTDLPBigThumbnail),
-            ),
-          ),
-          getItemWrapper(
-            key: _AdvancedSettingKeys.compressImages,
-            child: _CompressImagesListTile(
-              bgColor: getBgColor(_AdvancedSettingKeys.compressImages),
-            ),
-          ),
-
-          () {
-            const stepper = 8 * 4;
-            const minimumValue = stepper;
-            int getValue(int mb) => (mb - minimumValue) ~/ stepper;
-            return getItemWrapper(
-              key: _AdvancedSettingKeys.maxImageCache,
-              child: CustomListTile(
-                bgColor: getBgColor(_AdvancedSettingKeys.maxImageCache),
-                leading: const StackedIcon(
-                  baseIcon: Broken.gallery,
-                  secondaryIcon: Broken.cpu,
-                ),
-                title: lang.MAX_IMAGE_CACHE_SIZE,
-                trailing: Obx(
-                  () => NamidaWheelSlider(
-                    totalCount: getValue(4 * 1024), // 4 GB
-                    initValue: getValue(settings.imagesMaxCacheInMB.value),
-
-                    text: (settings.imagesMaxCacheInMB.value * 1024 * 1024).fileSizeFormatted,
-                    onValueChanged: (val) {
-                      settings.save(imagesMaxCacheInMB: minimumValue + (val * stepper));
-                    },
-                  ),
-                ),
-              ),
-            );
-          }(),
-
-          () {
-            const stepper = 8 * 4;
-            const minimumValue = stepper;
-            int getValue(int mb) => (mb - minimumValue) ~/ stepper;
-            return getItemWrapper(
-              key: _AdvancedSettingKeys.maxAudioCache,
-              child: CustomListTile(
-                bgColor: getBgColor(_AdvancedSettingKeys.maxAudioCache),
-                leading: const StackedIcon(
-                  baseIcon: Broken.audio_square,
-                  secondaryIcon: Broken.cpu,
-                ),
-                title: lang.MAX_AUDIO_CACHE_SIZE,
-                trailing: Obx(
-                  () => NamidaWheelSlider(
-                    totalCount: getValue(4 * 1024), // 4 GB
-                    initValue: getValue(settings.audiosMaxCacheInMB.value),
-
-                    text: (settings.audiosMaxCacheInMB.value * 1024 * 1024).fileSizeFormatted,
-                    onValueChanged: (val) {
-                      settings.save(audiosMaxCacheInMB: minimumValue + (val * stepper));
-                    },
-                  ),
-                ),
-              ),
-            );
-          }(),
-
-          () {
-            const stepper = 8 * 32;
-            const minimumValue = stepper;
-            int getValue(int mb) => (mb - minimumValue) ~/ stepper;
-            return getItemWrapper(
-              key: _AdvancedSettingKeys.maxVideoCache,
-              child: CustomListTile(
-                bgColor: getBgColor(_AdvancedSettingKeys.maxVideoCache),
-                leading: const StackedIcon(
-                  baseIcon: Broken.video,
-                  secondaryIcon: Broken.cpu,
-                ),
-                title: lang.MAX_VIDEO_CACHE_SIZE,
-                trailing: Obx(
-                  () => NamidaWheelSlider(
-                    totalCount: getValue(10 * 1024), // 10 GB
-                    initValue: getValue(settings.videosMaxCacheInMB.value),
-
-                    text: (settings.videosMaxCacheInMB.value * 1024 * 1024).fileSizeFormatted,
-                    onValueChanged: (val) {
-                      settings.save(videosMaxCacheInMB: minimumValue + (val * stepper));
-                    },
-                  ),
-                ),
-              ),
-            );
-          }(),
-
-          getItemWrapper(
-            key: _AdvancedSettingKeys.clearImageCache,
-            child: _ClearImageCacheListTile(
-              bgColor: getBgColor(_AdvancedSettingKeys.clearImageCache),
-            ),
-          ),
-          getItemWrapper(
-            key: _AdvancedSettingKeys.clearAudioCache,
-            child: _ClearAudioCacheListTile(
-              bgColor: getBgColor(_AdvancedSettingKeys.clearImageCache),
-            ),
-          ),
-
-          getItemWrapper(
-            key: _AdvancedSettingKeys.clearVideoCache,
-            child: Obx(
-              () => CustomListTile(
-                bgColor: getBgColor(_AdvancedSettingKeys.clearVideoCache),
-                leading: const StackedIcon(
-                  baseIcon: Broken.video,
-                  secondaryIcon: Broken.close_circle,
-                ),
-                title: lang.CLEAR_VIDEO_CACHE,
-                trailingText: Indexer.inst.videosSizeInStorage.value.fileSizeFormatted,
+  void _onTap() {
+    NamidaNavigator.inst.navigateDialog(
+      dialog: CustomBlurryDialog(
+        normalTitleStyle: true,
+        title: lang.choose,
+        child: SmoothSingleChildScrollView(
+          child: Column(
+            children: [
+              CustomListTile(
+                title: lang.local,
+                subtitle: '',
+                icon: Broken.music_library_2,
                 onTap: () {
-                  final allvideos = VideoController.inst.getCurrentVideosInCache();
-                  const cacheManager = StorageCacheManager();
-                  cacheManager.promptCacheDeleteDialog(
-                    allItems: allvideos,
-                    deleteStatsNote: (items) => cacheManager.getDeleteSizeSubtitleText(items.length, Indexer.inst.videosSizeInStorage.value),
-                    chooseNote: lang.CLEAR_VIDEO_CACHE_NOTE,
-                    onChoosePrompt: () {
-                      cacheManager.showChooseToDeleteDialog(
-                        allItems: allvideos,
-                        itemToPath: (item) => item.path,
-                        itemToYtId: (item) => item.ytID,
-                        itemToSubtitle: (item, itemSize) => "${item.resolution}p • ${item.framerate}fps - ${itemSize.fileSizeFormatted}",
-                        confirmDialogText: cacheManager.getDeleteSizeSubtitleText,
-                        onConfirm: (itemsToDelete) async {
-                          await Indexer.inst.clearVideoCache(itemsToDelete);
-                        },
-                        includeLocalTracksListens: true,
-                        tempFilesSize: () async => await cacheManager.getTempVideosSize(),
-                        onDeleteTempFiles: () async => await cacheManager.deleteTempVideos(),
-                      );
-                    },
-                    onDeleteAll: () async => await Indexer.inst.clearVideoCache(),
-                  );
+                  NamidaNavigator.inst.closeDialog();
+                  _removeSourceFromHistory(HistoryController.inst);
                 },
               ),
+              CustomListTile(
+                title: lang.youtube,
+                subtitle: '',
+                icon: Broken.video_square,
+                onTap: () {
+                  NamidaNavigator.inst.closeDialog();
+                  _removeSourceFromHistory(YoutubeHistoryController.inst);
+                },
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _removeSourceFromHistory(HistoryManager manager) {
+    final RxList<TrackSource> sourcesToDelete = <TrackSource>[].obs;
+    bool isActive(TrackSource e) => sourcesToDelete.contains(e);
+
+    final RxMap<TrackSource, int> sourcesMap = <TrackSource, int>{}.obs;
+    void resetSourcesMap() {
+      sourcesMap.execute((map) {
+        for (var e in TrackSource.values) {
+          map[e] = 0;
+        }
+      });
+    }
+
+    final totalTracksToBeRemoved = 0.obs;
+
+    final totalTracksBetweenDates = 0.obs;
+
+    void calculateTotalTracks(DateTime? oldest, DateTime? newest) {
+      final sussyDays = manager.historyDays.toList();
+      final isBetweenDays = oldest != null && newest != null;
+      if (isBetweenDays) {
+        final oldestDay = oldest.toDaysSince1970();
+        final newestDay = newest.toDaysSince1970();
+
+        sussyDays.retainWhere((element) => element >= oldestDay && element <= newestDay);
+        printy(sussyDays);
+      }
+      resetSourcesMap();
+      for (var d in sussyDays) {
+        final tracks = manager.historyMap.value[d] ?? [];
+        for (var twd in tracks) {
+          sourcesMap.update(twd.source, (value) => value + 1, ifAbsent: () => 1);
+        }
+      }
+      if (isBetweenDays) {
+        totalTracksBetweenDates.value = sourcesMap.values.reduce((value, element) => value + element);
+      }
+      if (sourcesToDelete.isNotEmpty) {
+        totalTracksToBeRemoved.value = 0;
+        for (var e in sourcesToDelete.value) {
+          totalTracksToBeRemoved.value += sourcesMap[e] ?? 0;
+        }
+      }
+    }
+
+    // -- filling each source with its tracks number.
+    calculateTotalTracks(null, null);
+
+    DateTime? oldestDate;
+    DateTime? newestDate;
+
+    final isRemovingRx = false.obs;
+    final removeDuplicates = false.obs;
+
+    NamidaNavigator.inst.navigateDialog(
+      onDisposing: () {
+        sourcesToDelete.close();
+        sourcesMap.close();
+        totalTracksToBeRemoved.close();
+        totalTracksBetweenDates.close();
+        removeDuplicates.close();
+        isRemovingRx.close();
+      },
+      dialog: CustomBlurryDialog(
+        title: lang.choose,
+        actions: [
+          const CancelButton(),
+          ObxO(
+            rx: isRemovingRx,
+            builder: (context, isRemoving) => NamidaButton(
+              enabled: !isRemoving,
+              text: lang.remove,
+              onTap: () async {
+                isRemovingRx.value = true;
+                final removedNum = await manager.removeSourcesTracksFromHistory(
+                  sourcesToDelete.value,
+                  removeMultiSourceDuplicates: removeDuplicates.value,
+                  oldestDate: oldestDate,
+                  newestDate: newestDate,
+                );
+                isRemovingRx.value = false;
+                NamidaNavigator.inst.closeDialog();
+                snackyy(title: lang.note, message: "${lang.removed}: ${removedNum.displayTrackKeyword}");
+              },
             ),
           ),
         ],
+        child: Obx(
+          (context) => Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const SizedBox(height: 12.0),
+              Row(
+                children: [
+                  const SizedBox(width: 8.0),
+                  const Icon(Broken.danger),
+                  const SizedBox(width: 8.0),
+                  Obx(
+                    (context) => Text(
+                      '${lang.totalTracks}: ${totalTracksToBeRemoved.valueR}',
+                      style: context.textTheme.displayMedium,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12.0),
+              ...sourcesMap.entries.map(
+                (e) {
+                  final source = e.key;
+                  final count = e.value;
+                  return Padding(
+                    padding: const EdgeInsets.only(top: 8.0),
+                    child: Obx(
+                      (context) => ListTileWithCheckMark(
+                        active: isActive(source),
+                        title: '${source.name} (${count.formatDecimal()})',
+                        onTap: () {
+                          if (isActive(source)) {
+                            sourcesToDelete.remove(source);
+                            totalTracksToBeRemoved.value -= count;
+                          } else {
+                            sourcesToDelete.add(source);
+                            totalTracksToBeRemoved.value += count;
+                          }
+                        },
+                      ),
+                    ),
+                  );
+                },
+              ),
+              NamidaContainerDivider(
+                margin: EdgeInsets.symmetric(horizontal: 12.0, vertical: 6.0),
+              ),
+              Obx(
+                (context) => ListTileWithCheckMark(
+                  icon: Broken.broom,
+                  active: removeDuplicates.valueR,
+                  title: lang.removeDuplicates,
+                  onTap: () => removeDuplicates.toggle(),
+                ),
+              ),
+              const SizedBox(height: 12.0),
+              ObxO(
+                rx: totalTracksBetweenDates,
+                builder: (context, total) => BetweenDatesTextButton(
+                  useHistoryDates: true,
+                  onConfirm: (dates) {
+                    oldestDate = dates.firstOrNull;
+                    newestDate = dates.lastOrNull;
+                    calculateTotalTracks(oldestDate, newestDate);
+                    NamidaNavigator.inst.closeDialog();
+                  },
+                  tracksLength: total,
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return CustomListTile(
+      bgColor: bgColor,
+      leading: const StackedIcon(
+        baseIcon: Broken.trash,
+        secondaryIcon: Broken.refresh,
+      ),
+      title: lang.removeSourceFromHistory,
+      onTap: _onTap,
+    );
+  }
+}
+
+class _CacheLimitWheel extends StatelessWidget {
+  final SettingsKey<int> setting;
+  final int stepper;
+  final int maxGB;
+
+  const _CacheLimitWheel({
+    required this.setting,
+    required this.stepper,
+    required this.maxGB,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final maxValue = maxGB * 1024;
+    return ObxO(
+      rx: setting,
+      builder: (context, valInSettings) {
+        final valueText = valInSettings < 0 ? lang.unlimited : (valInSettings * 1024 * 1024).fileSizeFormatted;
+        return NamidaWheelSlider(
+          min: stepper,
+          max: maxValue,
+          stepper: stepper,
+          extraValue: true,
+          initValue: valInSettings,
+          text: valueText,
+          onValueChanged: setting.save,
+        );
+      },
+    );
+  }
+}
+
+class _ClearVideoCacheListTile extends StatefulWidget {
+  final Color? bgColor;
+  const _ClearVideoCacheListTile({this.bgColor});
+
+  @override
+  State<_ClearVideoCacheListTile> createState() => __ClearVideoCacheListTileState();
+}
+
+class __ClearVideoCacheListTileState extends State<_ClearVideoCacheListTile> {
+  int totalSize = -1;
+
+  @override
+  void initState() {
+    super.initState();
+    _fillSizes();
+  }
+
+  void _fillSizes() async {
+    final res = await _getSizeIsolate.thready([AppDirs.VIDEOS_CACHE, AppDirs.VIDEOS_CACHE_TEMP]);
+    if (mounted) setState(() => totalSize = res);
+  }
+
+  static int _getSizeIsolate(List<String> dirsPath) {
+    int size = 0;
+    for (var dirPath in dirsPath) {
+      final files = Directory(dirPath).listSyncSafe();
+      for (var e in files) {
+        if (e is File) {
+          size += e.fileSizeSync() ?? 0;
+        }
+      }
+    }
+    return size;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final usedText = totalSize.fileSizeFormatted;
+    return CustomListTile(
+      bgColor: widget.bgColor,
+      leading: const StackedIcon(
+        baseIcon: Broken.video,
+        secondaryIcon: Broken.close_circle,
+      ),
+      title: lang.clearVideoCache,
+      subtitle: '${lang.used}: $usedText',
+      trailing: _CacheLimitWheel(
+        setting: settings.videosMaxCacheInMB,
+        stepper: 8 * 32,
+        maxGB: 32,
+      ),
+      onTap: () async {
+        final allvideos = await VideoController.inst.getCurrentVideosInCache();
+        const cacheManager = StorageCacheManager();
+        cacheManager.promptCacheDeleteDialog(
+          allItems: allvideos,
+          deleteStatsNote: (items) => cacheManager.getDeleteSizeSubtitleText(items.length, totalSize),
+          chooseNote: lang.clearVideoCacheNote,
+          onChoosePrompt: () {
+            cacheManager.showChooseToDeleteDialog(
+              forVideos: true,
+              allItems: allvideos,
+              itemToPath: (item) => item.path,
+              itemToYtId: (item) {
+                if (item.ytID != null) return item.ytID;
+                var filename = item.path.getFilename;
+                if (filename.length >= 11) return filename.substring(0, 11);
+                return null;
+              },
+              itemToSubtitle: (item, itemSize) => "${item.resolution}p • ${item.framerate}fps - ${itemSize.fileSizeFormatted}",
+              confirmDialogText: cacheManager.getDeleteSizeSubtitleText,
+              onDeleteFiles: (itemsToDelete) async {
+                setState(() => totalSize = -1);
+                await itemsToDelete.loopConcurrent((video) async {
+                  await [
+                    File(video.path).tryDeleting(),
+                    File('${video.path}.metadata').tryDeleting(),
+                  ].wait;
+                  if (video.ytID != null) VideoController.inst.removeNVFromCacheMap(video.ytID!, video.path);
+                });
+                _fillSizes();
+              },
+              includeLocalTracksListens: true,
+              tempFilesSize: cacheManager.getTempVideosSize,
+              onDeleteTempFiles: () => cacheManager.deleteTempVideos().then((_) => _fillSizes()),
+            );
+          },
+          onDeleteEVERYTHING: () async {
+            await cacheManager.deleteAllVideos();
+            VideoController.inst.clearCachedVideosMap();
+            if (mounted) setState(() => totalSize = 0);
+          },
+        );
+      },
     );
   }
 }
@@ -475,15 +726,16 @@ class __ClearImageCacheListTileState extends State<_ClearImageCacheListTile> {
   final mainDirs = {
     AppDirs.ARTWORKS,
     AppDirs.THUMBNAILS,
+    AppDirs.ARTWORKS_ARTISTS,
+    AppDirs.ARTWORKS_ALBUMS,
     AppDirs.YT_THUMBNAILS,
     AppDirs.YT_THUMBNAILS_CHANNELS,
   };
 
-  final dirsMap = <String, int>{}.obs;
+  final dirsMapRx = <String, int>{}.obs;
+  final totalBytesRx = (-1).obs;
 
   final dirsChoosen = <String>[].obs;
-
-  int get totalBytes => dirsMap.values.fold(0, (previousValue, element) => previousValue + element);
 
   @override
   void initState() {
@@ -497,93 +749,115 @@ class __ClearImageCacheListTileState extends State<_ClearImageCacheListTile> {
 
   @override
   void dispose() {
-    dirsMap.close();
+    dirsMapRx.close();
     dirsChoosen.close();
     super.dispose();
   }
 
   void _fillSizes() async {
     final res = await _fillSizesIsolate.thready(mainDirs);
-    dirsMap.value = res;
+    dirsMapRx.value = res;
+    totalBytesRx.value = res.values.fold(0, (previousValue, element) => previousValue + element);
   }
 
   static Map<String, int> _fillSizesIsolate(Set<String> dirs) {
     final map = <String, int>{};
     for (final d in dirs) {
-      map[d] = Directory(d).listSyncSafe().fold(0, (previousValue, element) => previousValue + element.statSync().size);
+      map[d] = Directory(d).listSyncSafe().fold(0, (previousValue, element) => previousValue + (element is File ? element.fileSizeSync() ?? 0 : 0));
     }
     return map;
   }
 
   @override
   Widget build(BuildContext context) {
-    return Obx(
-      () => CustomListTile(
-        bgColor: widget.bgColor,
-        leading: const StackedIcon(
-          baseIcon: Broken.image,
-          secondaryIcon: Broken.close_circle,
-        ),
-        title: lang.CLEAR_IMAGE_CACHE,
-        trailingText: dirsMap.isEmpty ? '?' : totalBytes.fileSizeFormatted,
-        onTap: () {
-          NamidaNavigator.inst.navigateDialog(
-            dialog: CustomBlurryDialog(
-              title: lang.CONFIGURE,
-              normalTitleStyle: true,
-              actions: [
-                const CancelButton(),
-                Obx(
-                  () {
-                    final total = dirsChoosen.fold(0, (p, element) => p + (dirsMap[element] ?? 0));
-                    return NamidaButton(
-                      text: "${lang.CLEAR.toUpperCase()} (${total.fileSizeFormatted})",
-                      onPressed: () async {
-                        NamidaNavigator.inst.closeDialog();
+    return ObxO(
+      rx: totalBytesRx,
+      builder: (context, totalBytes) {
+        final usedText = totalBytes < 0 ? '?' : totalBytes.fileSizeFormatted;
+        return CustomListTile(
+          bgColor: widget.bgColor,
+          leading: const StackedIcon(
+            baseIcon: Broken.image,
+            secondaryIcon: Broken.close_circle,
+          ),
+          title: lang.clearImageCache,
+          subtitle: '${lang.used}: $usedText',
+          trailing: _CacheLimitWheel(
+            setting: settings.imagesMaxCacheInMB,
+            stepper: 8 * 4,
+            maxGB: 4,
+          ),
+          onTap: () {
+            NamidaNavigator.inst.navigateDialog(
+              dialog: CustomBlurryDialog(
+                title: lang.configure,
+                normalTitleStyle: true,
+                actions: [
+                  const CancelButton(),
+                  Obx(
+                    (context) {
+                      final total = dirsChoosen.valueR.fold(0, (p, element) => p + (dirsMapRx.valueR[element] ?? 0));
+                      return NamidaButton(
+                        colorScheme: Colors.red,
+                        text: "${lang.clear.toUpperCase()} (${total.fileSizeFormatted})",
+                        onTap: () async {
+                          NamidaNavigator.inst.closeDialog();
 
-                        for (final d in dirsChoosen) {
-                          await Directory(d).delete(recursive: true);
-                          await Directory(d).create();
-                        }
+                          for (final d in dirsChoosen.value) {
+                            await Directory(d).delete(recursive: true);
+                            await Directory(d).create();
+                          }
 
-                        if (dirsChoosen.contains(AppDirs.ARTWORKS)) {
-                          await Indexer.inst.clearImageCache();
-                        }
+                          if (dirsChoosen.contains(AppDirs.ARTWORKS)) {
+                            await Indexer.inst.clearImageCache();
+                          }
 
-                        _fillSizes();
-                      },
-                    );
-                  },
-                ),
-              ],
-              child: Column(
-                children: [
-                  ...mainDirs.map(
-                    (e) {
-                      final bytes = dirsMap[e] ?? 0;
-                      final warningText = e == AppDirs.ARTWORKS || e == AppDirs.THUMBNAILS ? lang.CLEAR_IMAGE_CACHE_WARNING : '';
-                      final subtitle = warningText == '' ? bytes.fileSizeFormatted : "${bytes.fileSizeFormatted}\n$warningText";
-                      return Padding(
-                        padding: const EdgeInsets.all(6.0),
-                        child: Obx(
-                          () => ListTileWithCheckMark(
-                            active: dirsChoosen.contains(e),
-                            dense: true,
-                            icon: Broken.cpu_setting,
-                            title: e.split(Platform.pathSeparator).lastWhereEff((e) => e != '') ?? e,
-                            subtitle: subtitle,
-                            onTap: () => dirsChoosen.addOrRemove(e),
-                          ),
-                        ),
+                          _fillSizes();
+                        },
                       );
                     },
                   ),
                 ],
+                child: ObxO(
+                  rx: dirsMapRx,
+                  builder: (context, dirsMap) => Column(
+                    children: [
+                      ...mainDirs.map(
+                        (e) {
+                          final bytes = dirsMap[e] ?? 0;
+                          final warningText = e == AppDirs.ARTWORKS || e == AppDirs.THUMBNAILS ? lang.clearImageCacheWarning : '';
+                          final subtitle = warningText == '' ? bytes.fileSizeFormatted : "${bytes.fileSizeFormatted}\n$warningText";
+                          return Padding(
+                            padding: const EdgeInsets.all(6.0),
+                            child: Obx(
+                              (context) => ListTileWithCheckMark(
+                                active: dirsChoosen.contains(e),
+                                dense: true,
+                                icon: Broken.cpu_setting,
+                                title:
+                                    e.splitLastM(
+                                      Platform.pathSeparator,
+                                      onMatch: (part) {
+                                        if (part.isNotEmpty) return part;
+                                        return null;
+                                      },
+                                    ) ??
+                                    e,
+                                subtitle: subtitle,
+                                onTap: () => dirsChoosen.addOrRemove(e),
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+                    ],
+                  ),
+                ),
               ),
-            ),
-          );
-        },
-      ),
+            );
+          },
+        );
+      },
     );
   }
 }
@@ -612,82 +886,198 @@ class __ClearAudioCacheListTileState extends State<_ClearAudioCacheListTile> {
 
   static int _fillSizeIsolate(String dirPath) {
     int size = 0;
-    Directory(dirPath).listSyncSafe().loop((e, _) {
-      size += e.statSync().size;
-    });
+    final files = Directory(dirPath).listSyncSafe();
+    for (var e in files) {
+      if (e is File) size += e.fileSizeSync() ?? 0;
+    }
     return size;
-  }
-
-  static int _tempFilesSizeIsolate(String dirPath) {
-    int size = 0;
-    Directory(dirPath).listSyncSafe().loop((e, _) {
-      if (e.path.endsWith('.part')) size += e.statSync().size;
-    });
-    return size;
-  }
-
-  static void _tempFilesDeleteIsolate(String dirPath) {
-    Directory(dirPath).listSyncSafe().loop((e, _) {
-      if (e.path.endsWith('.part')) {
-        if (e is File) {
-          try {
-            e.deleteSync();
-          } catch (_) {}
-        }
-      }
-    });
   }
 
   @override
   Widget build(BuildContext context) {
+    final usedText = totalSize == -1 ? '?' : totalSize.fileSizeFormatted;
     return CustomListTile(
       bgColor: widget.bgColor,
       leading: const StackedIcon(
         baseIcon: Broken.musicnote,
         secondaryIcon: Broken.close_circle,
       ),
-      title: lang.CLEAR_AUDIO_CACHE,
-      trailingText: totalSize == -1 ? '?' : totalSize.fileSizeFormatted,
+      title: lang.clearAudioCache,
+      subtitle: '${lang.used}: $usedText',
+      trailing: _CacheLimitWheel(
+        setting: settings.audiosMaxCacheInMB,
+        stepper: 8 * 4,
+        maxGB: 12,
+      ),
       onTap: () {
         final allaudios = <AudioCacheDetails>[];
-        for (final acFiles in Player.inst.audioCacheMap.values) {
-          acFiles.loop((e, index) => allaudios.add(e));
+        for (final acFiles in AudioCacheController.inst.audioCacheMap.values) {
+          for (var e in acFiles) {
+            allaudios.add(e);
+          }
         }
 
         const cacheManager = StorageCacheManager();
         cacheManager.promptCacheDeleteDialog(
           allItems: allaudios,
           deleteStatsNote: (items) => cacheManager.getDeleteSizeSubtitleText(items.length, totalSize),
-          chooseNote: lang.CLEAR_VIDEO_CACHE_NOTE,
+          chooseNote: lang.clearVideoCacheNote,
           onChoosePrompt: () {
             cacheManager.showChooseToDeleteDialog(
+              forVideos: false,
               allItems: allaudios,
               itemToPath: (item) => item.file.path,
-              itemToYtId: (item) => item.youtubeId,
+              itemToYtId: (item) {
+                if (item.youtubeId.isNotEmpty) return item.youtubeId;
+                var filename = item.file.path.getFilename;
+                if (filename.length >= 11) return filename.substring(0, 11);
+                return null;
+              },
               itemToSubtitle: (item, size) => "${(item.bitrate ?? 0) ~/ 1000}kb/s - ${size.fileSizeFormatted}",
               confirmDialogText: cacheManager.getDeleteSizeSubtitleText,
-              onConfirm: (itemsToDelete) async {
+              onDeleteFiles: (itemsToDelete) async {
                 setState(() => totalSize = -1);
-
-                for (final audio in itemsToDelete) {
-                  await audio.file.tryDeleting();
-                }
-
+                await itemsToDelete.loopConcurrent((audio) async {
+                  await [
+                    audio.file.tryDeleting(),
+                    File('${audio.file.path}.metadata').tryDeleting(),
+                  ].wait;
+                  AudioCacheController.inst.removeFromCacheMap(audio.youtubeId, audio.file.path);
+                });
                 _fillSizes();
               },
               includeLocalTracksListens: true,
-              tempFilesSize: () async => await _tempFilesSizeIsolate.thready(AppDirs.AUDIOS_CACHE),
-              onDeleteTempFiles: () async => await _tempFilesDeleteIsolate.thready(AppDirs.AUDIOS_CACHE),
+              tempFilesSize: cacheManager.getTempAudiosSize,
+              onDeleteTempFiles: () => cacheManager.deleteTempAudios().then((_) => _fillSizes()),
             );
           },
-          onDeleteAll: () async {
-            final dir = Directory(AppDirs.AUDIOS_CACHE);
-            await dir.delete(recursive: true);
-            await dir.create();
+          onDeleteEVERYTHING: () async {
+            await cacheManager.deleteAllAudios();
+            AudioCacheController.inst.clearAll();
             if (mounted) setState(() => totalSize = 0);
           },
         );
       },
+    );
+  }
+}
+
+class _ClearServerCacheListTile extends StatefulWidget {
+  final Color? bgColor;
+  const _ClearServerCacheListTile({this.bgColor});
+
+  @override
+  State<_ClearServerCacheListTile> createState() => _ClearServerCacheListTileState();
+}
+
+class _ClearServerCacheListTileState extends State<_ClearServerCacheListTile> {
+  ServerCacheStats? _stats;
+
+  @override
+  void initState() {
+    super.initState();
+    _fillStats();
+  }
+
+  void _fillStats() async {
+    final stats = await ServerCacheController.inst.getStats();
+    if (mounted) setState(() => _stats = stats);
+  }
+
+  Future<void> _clear({required bool deleteKept, required bool deleteOthers, required bool deleteTemp}) async {
+    setState(() => _stats = null);
+    await ServerCacheController.inst.clear(keepKept: !deleteKept, deleteOthers: deleteOthers, deleteTemp: deleteTemp);
+    _fillStats();
+  }
+
+  void _onTap(ServerCacheStats stats) {
+    final deleteKept = false.obs;
+    final deleteOthers = true.obs;
+    final deleteTemp = true.obs;
+
+    NamidaNavigator.inst.navigateDialog(
+      onDisposing: () {
+        deleteKept.close();
+        deleteOthers.close();
+        deleteTemp.close();
+      },
+      dialog: CustomBlurryDialog(
+        isWarning: true,
+        normalTitleStyle: true,
+        title: lang.clearServerCache,
+        actions: [
+          const CancelButton(),
+          Obx(
+            (context) {
+              final size = (deleteKept.valueR ? stats.keptSize : 0) + (deleteOthers.valueR ? stats.otherSize : 0) + (deleteTemp.valueR ? stats.tempSize : 0);
+              return NamidaButton(
+                colorScheme: Colors.red,
+                enabled: size > 0,
+                text: "${lang.delete.toUpperCase()} (${size.fileSizeFormatted})",
+                onTap: () {
+                  NamidaNavigator.inst.closeDialog();
+                  _clear(deleteKept: deleteKept.value, deleteOthers: deleteOthers.value, deleteTemp: deleteTemp.value);
+                },
+              );
+            },
+          ),
+        ],
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTileWithCheckMark(
+              activeRx: deleteKept,
+              icon: Broken.document_download,
+              title: "${lang.cache} (${stats.keptCount})",
+              subtitle: stats.keptSize.fileSizeFormatted,
+              onTap: deleteKept.toggle,
+            ),
+            const SizedBox(
+              height: 8.0,
+            ),
+            ListTileWithCheckMark(
+              activeRx: deleteOthers,
+              icon: Broken.cloud,
+              title: "${lang.others} (${stats.otherCount})",
+              subtitle: stats.otherSize.fileSizeFormatted,
+              onTap: deleteOthers.toggle,
+            ),
+            if (stats.tempSize > 0) ...[
+              const SizedBox(
+                height: 8.0,
+              ),
+              ListTileWithCheckMark(
+                activeRx: deleteTemp,
+                icon: Broken.broom,
+                title: lang.deleteTempFiles,
+                subtitle: stats.tempSize.fileSizeFormatted,
+                onTap: deleteTemp.toggle,
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final stats = _stats;
+    final usedText = stats == null ? '?' : stats.totalSize.fileSizeFormatted;
+    return CustomListTile(
+      bgColor: widget.bgColor,
+      leading: const StackedIcon(
+        baseIcon: Broken.cloud,
+        secondaryIcon: Broken.close_circle,
+      ),
+      title: lang.clearServerCache,
+      subtitle: '${lang.used}: $usedText',
+      trailing: _CacheLimitWheel(
+        setting: settings.serversMaxCacheInMB,
+        stepper: 8 * 32,
+        maxGB: 32,
+      ),
+      onTap: stats == null ? null : () => _onTap(stats),
     );
   }
 }
@@ -717,7 +1107,7 @@ class UpdateDirectoryPathListTile extends StatelessWidget {
         secondaryIconColor: colorScheme,
         delightenColors: true,
       ),
-      title: lang.UPDATE_DIRECTORY_PATH,
+      title: lang.updateDirectoryPath,
       subtitle: oldPath,
       onTap: () {
         final oldDirController = TextEditingController(text: oldPath);
@@ -725,58 +1115,69 @@ class UpdateDirectoryPathListTile extends StatelessWidget {
 
         final GlobalKey<FormState> formKey = GlobalKey<FormState>();
         final updateMissingOnly = true.obs;
+        final isUpdating = false.obs;
         NamidaNavigator.inst.navigateDialog(
           onDisposing: () {
             updateMissingOnly.close();
+            isUpdating.close();
             oldDirController.dispose();
             newDirController.dispose();
           },
+          tapToDismiss: () => !isUpdating.value,
           colorScheme: colorScheme,
           dialogBuilder: (theme) => Form(
             key: formKey,
             child: CustomBlurryDialog(
-              title: lang.UPDATE_DIRECTORY_PATH,
+              title: lang.updateDirectoryPath,
               actions: [
                 const CancelButton(),
-                NamidaButton(
-                  text: lang.UPDATE,
-                  onPressed: () async {
-                    Future<void> okUpdate() async {
-                      await EditDeleteController.inst.updateDirectoryInEveryPartOfNamida(
-                        oldDirController.text,
-                        newDirController.text,
-                        forThesePathsOnly: tracksPaths,
-                        ensureNewFileExists: updateMissingOnly.value,
-                      );
-                      NamidaNavigator.inst.closeDialog();
-                    }
-
-                    if (formKey.currentState?.validate() ?? false) {
-                      if (tracksPaths != null && tracksPaths!.any((element) => File(element).existsSync())) {
-                        NamidaNavigator.inst.navigateDialog(
-                          colorScheme: colorScheme,
-                          dialogBuilder: (theme) => CustomBlurryDialog(
-                            normalTitleStyle: true,
-                            isWarning: true,
-                            actions: [
-                              const CancelButton(),
-                              NamidaButton(
-                                text: lang.CONFIRM,
-                                onPressed: () async {
-                                  NamidaNavigator.inst.closeDialog();
-                                  await okUpdate();
-                                },
-                              )
-                            ],
-                            bodyText: lang.OLD_DIRECTORY_STILL_HAS_TRACKS,
-                          ),
+                ObxO(
+                  rx: isUpdating,
+                  builder: (context, updating) => NamidaButton(
+                    enabled: !updating,
+                    isLoading: updating,
+                    text: lang.update,
+                    onTap: () async {
+                      Future<void> okUpdate() async {
+                        isUpdating.value = true;
+                        await EditDeleteController.inst.updateDirectoryInEveryPartOfNamida(
+                          oldDirController.text,
+                          newDirController.text,
+                          null,
+                          forThesePathsOnly: tracksPaths,
+                          ensureNewFileExists: updateMissingOnly.value,
                         );
-                      } else {
-                        await okUpdate();
+                        isUpdating.value = false;
+                        NamidaNavigator.inst.closeDialog();
                       }
-                    }
-                  },
-                )
+
+                      if (formKey.currentState?.validate() ?? false) {
+                        if (tracksPaths != null && await tracksPaths!.anyAsync((element) => File(element).exists())) {
+                          NamidaNavigator.inst.navigateDialog(
+                            colorScheme: colorScheme,
+                            dialogBuilder: (theme) => CustomBlurryDialog(
+                              normalTitleStyle: true,
+                              isWarning: true,
+                              actions: [
+                                const CancelButton(),
+                                NamidaButton(
+                                  text: lang.confirm,
+                                  onTap: () async {
+                                    NamidaNavigator.inst.closeDialog();
+                                    await okUpdate();
+                                  },
+                                ),
+                              ],
+                              bodyText: lang.oldDirectoryStillHasTracks,
+                            ),
+                          );
+                        } else {
+                          await okUpdate();
+                        }
+                      }
+                    },
+                  ),
+                ),
               ],
               child: Column(
                 children: [
@@ -784,11 +1185,11 @@ class UpdateDirectoryPathListTile extends StatelessWidget {
                   CustomTagTextField(
                     controller: oldDirController,
                     hintText: '',
-                    labelText: lang.OLD_DIRECTORY,
+                    labelText: lang.oldDirectory,
                     validator: (value) {
                       value ??= '';
                       if (value.isEmpty) {
-                        return lang.PLEASE_ENTER_A_NAME;
+                        return lang.pleaseEnterAName;
                       }
 
                       return null;
@@ -801,14 +1202,18 @@ class UpdateDirectoryPathListTile extends StatelessWidget {
                         child: CustomTagTextField(
                           controller: newDirController,
                           hintText: '',
-                          labelText: lang.NEW_DIRECTORY,
+                          labelText: lang.newDirectory,
                           validator: (value) {
                             value ??= '';
                             if (value.isEmpty) {
-                              return lang.PLEASE_ENTER_A_NAME;
+                              return lang.pleaseEnterAName;
                             }
-                            if (!Directory(value).existsSync()) {
-                              return lang.DIRECTORY_DOESNT_EXIST;
+                            try {
+                              if (!DirectoryIndex.guess(value, null).existsSync()) {
+                                return lang.directoryDoesntExist;
+                              }
+                            } catch (e) {
+                              return e.toString();
                             }
                             return null;
                           },
@@ -817,20 +1222,20 @@ class UpdateDirectoryPathListTile extends StatelessWidget {
                       const SizedBox(width: 12.0),
                       NamidaIconButton(
                         onPressed: () async {
-                          final dir = await NamidaFileBrowser.getDirectory(note: lang.NEW_DIRECTORY);
+                          final dir = await NamidaFileBrowser.getDirectory(note: lang.newDirectory);
                           if (dir != null) newDirController.text = dir;
                         },
                         icon: Broken.folder,
-                      )
+                      ),
                     ],
                   ),
                   const SizedBox(height: 12.0),
                   Obx(
-                    () => CustomSwitchListTile(
+                    (context) => CustomSwitchListTile(
                       passedColor: colorScheme,
-                      title: lang.UPDATE_MISSING_TRACKS_ONLY,
-                      value: updateMissingOnly.value,
-                      onChanged: (isTrue) => updateMissingOnly.value = !updateMissingOnly.value,
+                      title: lang.updateMissingTracksOnly,
+                      value: updateMissingOnly.valueR,
+                      onChanged: (isTrue) => updateMissingOnly.toggle(),
                     ),
                   ),
                 ],
@@ -851,7 +1256,7 @@ class _FixYTDLPThumbnailSizeListTile extends StatelessWidget {
   Future<void> _onFixYTDLPPress() async {
     if (!await requestManageStoragePermission()) return;
 
-    final dirs = await NamidaFileBrowser.getDirectories(note: lang.FIX_YTDLP_BIG_THUMBNAIL_SIZE);
+    final dirs = await NamidaFileBrowser.getDirectories(note: lang.fixYtdlpBigThumbnailSize);
     if (dirs.isEmpty) return;
     await NamidaFFMPEG.inst.fixYTDLPBigThumbnailSize(directoriesPaths: dirs);
   }
@@ -859,20 +1264,20 @@ class _FixYTDLPThumbnailSizeListTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Obx(
-      () {
-        final p = NamidaFFMPEG.inst.currentOperations[OperationType.ytdlpThumbnailFix]?.value;
+      (context) {
+        final p = NamidaFFMPEG.inst.currentOperations[OperationType.ytdlpThumbnailFix]?.valueR;
         final currentAudioPath = p?.currentFilePath;
         final currentProgress = p?.progress ?? 0;
         final totalAudiosToFix = p?.totalFiles ?? 0;
         final totalFailed = p?.totalFailed ?? 0;
-        final failedSubtitle = totalFailed > 0 ? "${lang.FAILED}: $totalFailed" : null;
+        final failedSubtitle = totalFailed > 0 ? "${lang.failed}: $totalFailed" : null;
         return CustomListTile(
           bgColor: bgColor,
           leading: const StackedIcon(
             baseIcon: Broken.document_code_2,
             secondaryIcon: Broken.video_square,
           ),
-          title: lang.FIX_YTDLP_BIG_THUMBNAIL_SIZE,
+          title: lang.fixYtdlpBigThumbnailSize,
           subtitle: currentAudioPath?.getFilename ?? failedSubtitle,
           trailingText: totalAudiosToFix > 0 ? "$currentProgress/$totalAudiosToFix" : null,
           onTap: _onFixYTDLPPress,
@@ -891,7 +1296,7 @@ class _CompressImagesListTile extends StatelessWidget {
     if (NamidaFFMPEG.inst.currentOperations[OperationType.imageCompress]?.value.currentFilePath != null) return; // return if currently compressing.
     final compPerc = 50.obs;
     final keepOriginalFileDates = true.obs;
-    final initialDirectories = [AppDirs.ARTWORKS, AppDirs.THUMBNAILS, AppDirs.YT_THUMBNAILS].obs;
+    final initialDirectories = [AppDirs.ARTWORKS, AppDirs.THUMBNAILS, AppDirs.ARTWORKS_ARTISTS, AppDirs.ARTWORKS_ALBUMS, AppDirs.YT_THUMBNAILS].obs;
     final dirsToCompress = <String>[].obs;
 
     NamidaNavigator.inst.navigateDialog(
@@ -902,34 +1307,34 @@ class _CompressImagesListTile extends StatelessWidget {
         dirsToCompress.close();
       },
       dialog: CustomBlurryDialog(
-        title: lang.CONFIGURE,
+        title: lang.configure,
         actions: [
           const CancelButton(),
           NamidaButton(
-            text: lang.COMPRESS,
-            onPressed: () {
+            text: lang.compress,
+            onTap: () {
               NamidaNavigator.inst.closeDialog();
-              _startCompressing(dirsToCompress, compPerc.value, keepOriginalFileDates.value);
+              _startCompressing(dirsToCompress.value, compPerc.value, keepOriginalFileDates.value);
             },
           ),
         ],
         child: Column(
           children: [
             Obx(
-              () => ListView(
+              (context) => SuperSmoothListView(
                 padding: EdgeInsets.zero,
                 shrinkWrap: true,
                 children: [
-                  ...initialDirectories.map(
+                  ...initialDirectories.valueR.map(
                     (e) => Obx(
-                      () {
+                      (context) {
                         final dirPath = e.split(Platform.pathSeparator)..removeWhere((element) => element == '');
                         return Padding(
                           padding: const EdgeInsets.symmetric(vertical: 4.0),
                           child: ListTileWithCheckMark(
                             icon: Broken.folder,
                             title: dirPath.last,
-                            subtitle: e.overflow,
+                            subtitle: e,
                             active: dirsToCompress.contains(e),
                             onTap: () => dirsToCompress.addOrRemove(e),
                           ),
@@ -942,33 +1347,31 @@ class _CompressImagesListTile extends StatelessWidget {
             ),
             const SizedBox(height: 12.0),
             CustomListTile(
-              title: lang.COMPRESSION_PERCENTAGE,
+              title: lang.compressionPercentage,
               trailing: Obx(
-                () => NamidaWheelSlider(
-                  totalCount: 100,
+                (context) => NamidaWheelSlider(
+                  max: 100,
                   initValue: 50,
-                  text: "${compPerc.value}%",
-                  onValueChanged: (val) {
-                    compPerc.value = val;
-                  },
+                  text: "${compPerc.valueR}%",
+                  onValueChanged: (val) => compPerc.value = val,
                 ),
               ),
             ),
             CustomListTile(
               icon: Broken.folder_add,
-              title: lang.PICK_FROM_STORAGE,
+              title: lang.pickFromStorage,
               onTap: () async {
-                final dirsPath = await NamidaFileBrowser.getDirectories(note: lang.COMPRESS_IMAGES);
+                final dirsPath = await NamidaFileBrowser.getDirectories(note: lang.compressImages);
                 if (dirsPath.isEmpty) return;
                 initialDirectories.addAll(dirsPath);
                 dirsToCompress.addAll(dirsPath);
               },
             ),
             Obx(
-              () => CustomSwitchListTile(
+              (context) => CustomSwitchListTile(
                 icon: Broken.document_code_2,
-                title: lang.KEEP_FILE_DATES,
-                value: keepOriginalFileDates.value,
+                title: lang.keepFileDates,
+                value: keepOriginalFileDates.valueR,
                 onChanged: (isTrue) => keepOriginalFileDates.value = !isTrue,
               ),
             ),
@@ -989,8 +1392,8 @@ class _CompressImagesListTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Obx(
-      () {
-        final p = NamidaFFMPEG.inst.currentOperations[OperationType.imageCompress]?.value;
+      (context) {
+        final p = NamidaFFMPEG.inst.currentOperations[OperationType.imageCompress]?.valueR;
         final currentImagePath = p?.currentFilePath;
         final currentProgress = p?.progress ?? 0;
         final totalImagesToCompress = p?.totalFiles ?? 0;
@@ -1001,12 +1404,427 @@ class _CompressImagesListTile extends StatelessWidget {
             baseIcon: Broken.gallery,
             secondaryIcon: Broken.magicpen,
           ),
-          title: lang.COMPRESS_IMAGES,
-          subtitle: currentImagePath?.getFilename ?? (totalFailed > 0 ? "${lang.FAILED}: $totalFailed" : null),
+          title: lang.compressImages,
+          subtitle: currentImagePath?.getFilename ?? (totalFailed > 0 ? "${lang.failed}: $totalFailed" : null),
           trailingText: totalImagesToCompress > 0 ? "$currentProgress/$totalImagesToCompress" : null,
           onTap: _onCompressImagePress,
         );
       },
+    );
+  }
+}
+
+class _AdvancedFlagsOptions extends StatelessWidget {
+  const _AdvancedFlagsOptions();
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: context.width,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (NamidaFeaturesVisibility.showAndroidIntegrations) ...[
+            ObxO(
+              rx: settings.mediaBrowserQueue,
+              builder: (context, enabled) => CustomSwitchListTile(
+                icon: Broken.car,
+                title: 'android_auto_and_wear'.toUpperCase(),
+                value: enabled,
+                onChanged: (isTrue) => settings.mediaBrowserQueue.save(!isTrue),
+              ),
+            ),
+            ObxO(
+              rx: settings.nowPlayingBroadcast,
+              builder: (context, enabled) => CustomSwitchListTile(
+                icon: Broken.radar_2,
+                title: 'now_playing_broadcast'.toUpperCase(),
+                subtitle: 'Intents for Tasker & automation apps',
+                value: enabled,
+                onChanged: (isTrue) => settings.nowPlayingBroadcast.save(!isTrue),
+              ),
+            ),
+            const _LyricsIntegrationsListTile(),
+          ],
+          const _WebhookListTile(),
+          ObxO(
+            rx: settings.reportPlaybackToServers,
+            builder: (context, enabled) => CustomSwitchListTile(
+              icon: Broken.cloud_change,
+              title: 'server_playback_reports'.toUpperCase(),
+              subtitle: 'Subsonic & Jellyfin: now playing, play counts',
+              value: enabled,
+              onChanged: (isTrue) => settings.reportPlaybackToServers.save(!isTrue),
+            ),
+          ),
+          if (RhythmController.inst.isSupported) const _RhythmScanListTile(),
+          if (LosslessCheckController.inst.isSupported) const _LosslessCheckListTile(),
+        ],
+      ),
+    );
+  }
+}
+
+class _LyricsIntegrationsListTile extends StatelessWidget {
+  const _LyricsIntegrationsListTile();
+
+  void _toggle(LyricsIntegration integration) {
+    settings.lyricsIntegrations.update((value) {
+      if (!value.remove(integration)) value.add(integration);
+    });
+  }
+
+  List<NamidaPopupItem> _items() {
+    final enabled = settings.lyricsIntegrations.value;
+    return LyricsIntegration.values
+        .map(
+          (e) => NamidaPopupItem(
+            selected: enabled.contains(e),
+            icon: e.toIcon(),
+            title: e.toText(),
+            subtitle: e.sendsPerLine ? lang.performanceNote : '',
+            onTap: () => _toggle(e),
+          ),
+        )
+        .toFixedList();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return NamidaPopupWrapper(
+      childrenDefault: _items,
+      refreshListenable: settings.lyricsIntegrations,
+      child: ObxO(
+        rx: settings.lyricsIntegrations,
+        builder: (context, enabled) => CustomListTile(
+          icon: Broken.message_text,
+          title: 'status_bar_lyrics'.toUpperCase(),
+          trailing: Text(
+            '${enabled.length}/${LyricsIntegration.values.length}',
+            style: context.textTheme.displayMedium,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _WebhookListTile extends StatelessWidget {
+  const _WebhookListTile();
+
+  void _openDialog() {
+    final urlController = TextEditingController(text: settings.webhookUrl.value);
+    final formKey = GlobalKey<FormState>();
+    final savedEvents = settings.webhookEvents.value;
+    final draftEvents = {for (final e in WebhookEvent.values) e: savedEvents.contains(e).obs};
+
+    void onSave() {
+      final isValid = formKey.currentState?.validate() ?? false;
+      if (!isValid) return;
+      final url = urlController.text.trim();
+      final events = <WebhookEvent>{
+        for (final e in WebhookEvent.values)
+          if (draftEvents[e]!.value) e,
+      };
+      settings.transaction(() {
+        settings.webhookUrl.save(url);
+        settings.webhookEvents.replace(events);
+      });
+      NamidaNavigator.inst.closeDialog();
+    }
+
+    final eventsListenable = Listenable.merge(draftEvents.values.toList());
+
+    List<NamidaPopupItem> eventItems() {
+      return WebhookEvent.values.map(
+        (e) {
+          final rx = draftEvents[e]!;
+          return NamidaPopupItem(
+            selected: rx.value,
+            icon: e.toIcon(),
+            title: e.toText(),
+            onTap: () => rx.value = !rx.value,
+          );
+        },
+      ).toFixedList();
+    }
+
+    String? validateUrl(String? value) {
+      value ??= '';
+      if (value.trim().isEmpty) return null;
+      final uri = NowPlayingBroadcaster.parseWebhookUrl(value);
+      return uri == null ? 'Invalid URL' : null;
+    }
+
+    NamidaNavigator.inst.navigateDialog(
+      onDisposing: () {
+        urlController.dispose();
+        for (final rx in draftEvents.values) {
+          rx.close();
+        }
+      },
+      dialog: Form(
+        key: formKey,
+        child: CustomBlurryDialog(
+          title: 'webhook'.toUpperCase(),
+          normalTitleStyle: true,
+          icon: Broken.link_2,
+          actions: [
+            const CancelButton(),
+            NamidaButton(
+              text: lang.save,
+              onTap: onSave,
+            ),
+          ],
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const SizedBox(height: 12.0),
+              CustomTagTextField(
+                controller: urlController,
+                hintText: 'https://',
+                labelText: 'URL',
+                keyboardType: TextInputType.url,
+                validator: validateUrl,
+              ),
+              const SizedBox(height: 12.0),
+              NamidaPopupWrapper(
+                childrenDefault: eventItems,
+                refreshListenable: eventsListenable,
+                child: CustomListTile(
+                  icon: Broken.notification_status,
+                  title: 'Events',
+                  trailing: Obx(
+                    (context) {
+                      int activeCount = 0;
+                      for (final rx in draftEvents.values) {
+                        if (rx.valueR) activeCount++;
+                      }
+                      return Text(
+                        '$activeCount/${WebhookEvent.values.length}',
+                        style: context.textTheme.displayMedium,
+                      );
+                    },
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ObxO(
+      rx: settings.webhookUrl,
+      builder: (context, url) => CustomListTile(
+        icon: Broken.link_2,
+        title: 'webhook'.toUpperCase(),
+        subtitle: url.isEmpty ? null : url,
+        onTap: _openDialog,
+      ),
+    );
+  }
+}
+
+class _RhythmScanListTile extends StatelessWidget {
+  const _RhythmScanListTile();
+
+  Future<void> _openTagsWriteDialog() async {
+    final plan = await RhythmController.inst.planBpmTagsWrite();
+    NamidaNavigator.inst.navigateDialog(
+      dialog: _RhythmTagsWriteDialog(plan: plan),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final rhythm = RhythmController.inst;
+    return Obx(
+      (context) {
+        final isScanning = rhythm.isScanning.valueR;
+        final isWritingTags = rhythm.isWritingTags.valueR;
+        final isBusy = isScanning || isWritingTags;
+        final progress = isBusy ? '${rhythm.progressDone.valueR}/${rhythm.progressTotal.valueR}' : null;
+        final subtitle = isWritingTags ? 'Writing BPM to tags $progress' : progress;
+        final VoidCallback onMainAction = isWritingTags ? rhythm.stopWritingTags : rhythm.toggleLibraryScan;
+        return CustomListTile(
+          icon: Broken.buy_crypto,
+          title: 'analyze_rhythm'.toUpperCase(),
+          subtitle: subtitle,
+          onTap: onMainAction,
+          trailing: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (!isBusy)
+                NamidaIconButton(
+                  tooltip: () => 'Write analyzed BPM to tags',
+                  icon: Broken.tag_2,
+                  onPressed: _openTagsWriteDialog,
+                ),
+              NamidaIconButton(
+                icon: isBusy ? Broken.stop_circle : Broken.play_circle,
+                onPressed: onMainAction,
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _RhythmTagsWriteDialog extends StatelessWidget {
+  final RhythmTagsWritePlan plan;
+
+  const _RhythmTagsWriteDialog({required this.plan});
+
+  void _onConfirm() {
+    NamidaNavigator.inst.closeDialog();
+    RhythmController.inst.writeBpmTags(plan.tagsPerTrack);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final textTheme = context.textTheme;
+    final tracksCount = plan.tagsPerTrack.length;
+    final notAnalyzedCount = plan.notAnalyzedCount;
+    return CustomBlurryDialog(
+      isWarning: true,
+      normalTitleStyle: true,
+      title: lang.warning,
+      actions: [
+        const CancelButton(),
+        NamidaButton(
+          colorScheme: Colors.red,
+          enabled: tracksCount > 0,
+          text: lang.confirm,
+          onTap: _onConfirm,
+        ),
+      ],
+      child: Padding(
+        padding: const EdgeInsets.all(12.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              'Analyzed BPM will be written into $tracksCount files. Tracks that already have a BPM tag or no steady beat are skipped.',
+              style: textTheme.displayMedium,
+            ),
+            if (notAnalyzedCount > 0) ...[
+              const SizedBox(height: 8.0),
+              Text(
+                '$notAnalyzedCount tracks are not analyzed yet, analyze first to include them.',
+                style: textTheme.displaySmall,
+              ),
+            ],
+            const SizedBox(height: 12.0),
+            Text(
+              'This edits files across your whole library, back up your music files first.',
+              style: textTheme.displayMedium?.copyWith(color: Colors.red),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _LosslessCheckListTile extends StatelessWidget {
+  const _LosslessCheckListTile();
+
+  Future<void> _toggleScan() async {
+    final controller = LosslessCheckController.inst;
+    if (controller.isScanning.value) return controller.stop();
+    final findings = await controller.scan();
+    if (findings != null) _showFindings(findings);
+  }
+
+  void _showFindings(List<LosslessFinding> findings) {
+    NamidaNavigator.inst.navigateDialog(
+      dialog: _LosslessFindingsDialog(findings: findings),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final controller = LosslessCheckController.inst;
+    return Obx(
+      (context) {
+        final isScanning = controller.isScanning.valueR;
+        final findings = controller.findings.valueR;
+        final progress = isScanning ? '${controller.scanDone.valueR}/${controller.scanTotal.valueR}' : null;
+        final latestResult = findings == null ? null : '${findings.length} found';
+        return CustomListTile(
+          icon: Broken.sound,
+          title: 'detect_fake_lossless_files'.toUpperCase(),
+          subtitle: progress ?? latestResult,
+          onTap: _toggleScan,
+          trailing: isScanning || findings == null
+              ? NamidaIconButton(
+                  icon: isScanning ? Broken.stop_circle : Broken.play_circle,
+                  onPressed: _toggleScan,
+                )
+              : NamidaIconButton(
+                  icon: Broken.document_text,
+                  onPressed: () => _showFindings(findings),
+                ),
+        );
+      },
+    );
+  }
+}
+
+class _LosslessFindingsDialog extends StatelessWidget {
+  final List<LosslessFinding> findings;
+
+  const _LosslessFindingsDialog({required this.findings});
+
+  void _saveAsPlaylist() {
+    LosslessCheckController.inst.saveAsPlaylist(findings);
+    NamidaNavigator.inst.closeDialog();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final textTheme = context.textTheme;
+    final hasFindings = findings.isNotEmpty;
+    final listWidget = ConstrainedBox(
+      constraints: BoxConstraints(maxHeight: context.height * 0.5),
+      child: SuperSmoothListView.builder(
+        shrinkWrap: true,
+        itemCount: findings.length,
+        itemBuilder: (context, index) {
+          final finding = findings[index];
+          return CustomListTile(
+            title: finding.track.title,
+            subtitle: finding.issuesText(),
+            maxSubtitleLines: 3,
+          );
+        },
+      ),
+    );
+    return CustomBlurryDialog(
+      icon: Broken.sound,
+      title: 'likely_not_lossless'.toUpperCase(),
+      normalTitleStyle: true,
+      actions: [
+        if (hasFindings)
+          NamidaButton(
+            text: lang.addAsANewPlaylist,
+            onTap: _saveAsPlaylist,
+          ),
+        const DoneButton(),
+      ],
+      child: hasFindings
+          ? listWidget
+          : Text(
+              lang.noTracksFound,
+              style: textTheme.displayMedium,
+            ),
     );
   }
 }

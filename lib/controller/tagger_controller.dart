@@ -1,428 +1,331 @@
 import 'dart:async';
 import 'dart:io';
 
-import 'package:flutter/services.dart';
-import 'package:get/get_rx/src/rx_types/rx_types.dart';
-import 'package:queue/queue.dart';
-
 import 'package:namida/class/faudiomodel.dart';
+import 'package:namida/class/split_config.dart';
+import 'package:namida/class/taglib_res.dart';
 import 'package:namida/class/track.dart';
-import 'package:namida/controller/ffmpeg_controller.dart';
+import 'package:namida/class/video.dart';
 import 'package:namida/controller/indexer_controller.dart';
+import 'package:namida/controller/platform/tags_extractor/tags_extractor.dart';
 import 'package:namida/controller/settings_controller.dart';
 import 'package:namida/core/constants.dart';
 import 'package:namida/core/enums.dart';
 import 'package:namida/core/extensions.dart';
-import 'package:namida/core/namida_converter_ext.dart';
 
-class FAudioTaggerController {
-  static final FAudioTaggerController inst = FAudioTaggerController._internal();
-  FAudioTaggerController._internal();
+class NamidaTaggerController {
+  static final NamidaTaggerController inst = NamidaTaggerController._internal();
+  NamidaTaggerController._internal();
 
-  Timer? _logsSetTimer;
-  int _logsSetRetries = 5;
-  Future<void> updateLogsPath() async {
-    _logsSetTimer?.cancel();
-    _logsSetRetries = 5;
-    _logsSetTimer = Timer.periodic(const Duration(seconds: 1), (timer) async {
-      try {
-        await _channel.invokeMethod("setLogFile", {"path": AppPaths.LOGS_TAGGER});
-        timer.cancel();
-      } catch (e) {
-        _logsSetRetries--;
-      }
-      if (_logsSetRetries <= 0) timer.cancel();
-    });
-  }
+  final _extractor = TagsExtractor.platform();
 
-  late final MethodChannel _channel = const MethodChannel('faudiotagger');
-
-  bool get _defaultGroupArtworksByAlbum => settings.groupArtworksByAlbum.value;
-  List<AlbumIdentifier> get _defaultAlbumIdentifier => settings.albumIdentifiers;
   bool get _defaultKeepFileDates => settings.editTagsKeepFileDates.value;
 
-  Future<FAudioModel> _readAllData({
-    required String path,
-    String? artworkDirectory,
-    bool extractArtwork = true,
-    bool overrideArtwork = false,
-  }) async {
-    final map = await _channel.invokeMethod<Map<Object?, Object?>?>("readAllData", {
-      "path": path,
-      "artworkDirectory": artworkDirectory,
-      "extractArtwork": extractArtwork,
-      "overrideArtwork": overrideArtwork,
-      "artworkIdentifiers": _defaultGroupArtworksByAlbum ? _defaultAlbumIdentifier.map((e) => e.index).toList() : null,
-    });
-    try {
-      return FAudioModel.fromMap(map!.cast());
-    } catch (e) {
-      return FAudioModel.dummy(map?["path"] as String?);
-    }
-  }
+  // RxDMap<int, String> get currentPathsBeingExtracted => _extractor.currentPathsBeingExtracted;
 
-  Future<Stream<Map<String, dynamic>>> _readAllDataAsStream({
-    required int streamKey,
-    required List<String> paths,
-    String? artworkDirectory,
-    bool extractArtwork = true,
-    bool overrideArtwork = false,
-  }) async {
-    await _channel.invokeMethod("readAllDataAsStream", {
-      "streamKey": streamKey,
-      "paths": paths,
-      "artworkDirectory": artworkDirectory,
-      "extractArtwork": extractArtwork,
-      "overrideArtwork": overrideArtwork,
-      "artworkIdentifiers": _defaultGroupArtworksByAlbum ? _defaultAlbumIdentifier.map((e) => e.index).toList() : null,
-    });
-    final channelEvent = EventChannel('faudiotagger/stream/$streamKey');
-    final stream = channelEvent.receiveBroadcastStream().map((event) {
-      final message = event as Map<Object?, Object?>;
-      final map = message.cast<String, dynamic>();
-      return map;
-    });
-    _channel.invokeMethod("streamReady", {"streamKey": streamKey, "count": paths.length});
-    return stream;
-  }
-
-  Future<String?> writeTags({
-    required String path,
-    required FTags tags,
-  }) async {
-    try {
-      return await _channel.invokeMethod<String?>("writeTags", {
-        "path": path,
-        "tags": tags.toMap(),
-      });
-    } catch (e) {
-      return e.toString();
-    }
-  }
-
-  final _streamControllers = <int, StreamController<FAudioModel>>{};
-
-  final currentPathsBeingExtracted = <int, String>{}.obs;
+  Future<void> updateLogsPath() => _extractor.updateLogsPath();
 
   Future<Stream<FAudioModel>> extractMetadataAsStream({
     required List<String> paths,
-    bool extractArtwork = true,
-    bool saveArtworkToCache = true,
-    bool fallbackToFFMPEG = true,
+    required ExtractingPathKey keyWrapper,
+    required bool? extractArtwork,
+    bool? saveArtworkToCache,
     bool overrideArtwork = false,
+    required bool isNetwork,
   }) async {
-    final streamKey = DateTime.now().microsecondsSinceEpoch;
-    final identifiersMap = _getIdentifiersMap();
-    final artworkDirectory = saveArtworkToCache ? AppDirs.ARTWORKS : null;
-    final initialStream = await _readAllDataAsStream(
-      streamKey: streamKey,
+    extractArtwork ??= settings.cacheArtworks.value; // no need to extract artwork while indexing if caching is disabled
+    saveArtworkToCache ??= settings.cacheArtworks.value;
+    return _extractor.extractMetadataAsStream(
       paths: paths,
+      keyWrapper: keyWrapper,
       extractArtwork: extractArtwork,
-      artworkDirectory: artworkDirectory,
+      audioArtworkDirectory: saveArtworkToCache ? AppDirs.ARTWORKS : null,
+      videoArtworkDirectory: saveArtworkToCache ? AppDirs.THUMBNAILS : null,
       overrideArtwork: overrideArtwork,
+      isNetwork: isNetwork,
     );
-    StreamSubscription<dynamic>? streamSub;
-    final usingStream = Completer<void>();
-    int toExtract = paths.length;
-
-    _streamControllers[streamKey] = StreamController<FAudioModel>();
-    final streamController = _streamControllers[streamKey]!;
-
-    Future<void> closeStreams() async {
-      await usingStream.future;
-      streamController.close();
-      streamSub?.cancel();
-      _streamControllers.remove(streamKey);
-      currentPathsBeingExtracted.remove(streamKey);
-    }
-
-    int extractingCount = 0;
-    void incrementCurrentExtracting() {
-      if (paths.isEmpty) return;
-      try {
-        extractingCount++;
-        currentPathsBeingExtracted[streamKey] = paths[extractingCount];
-      } catch (_) {}
-    }
-
-    void onExtract(FAudioModel info) {
-      streamController.add(info);
-      toExtract--;
-      incrementCurrentExtracting();
-      if (toExtract <= 0) usingStream.completeIfWasnt();
-    }
-
-    currentPathsBeingExtracted[streamKey] = paths[0];
-
-    streamSub = initialStream.listen(
-      (map) {
-        final path = map['path'] as String;
-        if (map["ERROR_FAULTY"] == true) {
-          extractMetadata(
-            trackPath: path,
-            tagger: false,
-            ffmpeg: fallbackToFFMPEG,
-            saveArtworkToCache: saveArtworkToCache,
-            identifiers: identifiersMap,
-            extractArtwork: extractArtwork,
-            overrideArtwork: overrideArtwork,
-          ).then(onExtract);
-        } else {
-          try {
-            onExtract(FAudioModel.fromMap(map));
-          } catch (e) {
-            onExtract(FAudioModel.dummy(path));
-          }
-        }
-      },
-      onDone: closeStreams,
-      onError: (e) => closeStreams(),
-    );
-    return streamController.stream;
   }
-
-  final _ffmpegQueue = Queue(timeout: const Duration(seconds: 5)); // concurrent execution can result in being stuck
 
   Future<FAudioModel> extractMetadata({
     required String trackPath,
-    bool tagger = true,
-    bool ffmpeg = true,
-    bool extractArtwork = true,
-    bool saveArtworkToCache = true,
+    required bool? extractArtwork,
+    bool? saveArtworkToCache,
     String? cacheDirectoryPath,
-    Map<AlbumIdentifier, bool>? identifiers,
+    Set<AlbumIdentifier>? identifiers,
     bool overrideArtwork = false,
+    required bool isVideo,
+    required bool isNetwork,
+    String? networkId,
+    Map<String, String>? httpHeaders,
   }) async {
-    final artworkDirectory = saveArtworkToCache ? cacheDirectoryPath ?? AppDirs.ARTWORKS : null;
-
-    FAudioModel? trackInfo;
-
-    if (tagger) {
-      trackInfo = await _readAllData(
-        path: trackPath,
-        artworkDirectory: artworkDirectory,
-        extractArtwork: extractArtwork,
-        overrideArtwork: overrideArtwork,
-      );
-    }
-
-    if (ffmpeg) {
-      if (trackInfo == null || trackInfo.hasError) {
-        // final ffmpegInfo = await NamidaFFMPEG.inst.extractMetadata(trackPath);
-        final ffmpegInfo = await _ffmpegQueue.add(() => NamidaFFMPEG.inst.extractMetadata(trackPath));
-        if (ffmpegInfo != null) trackInfo = ffmpegInfo.toFAudioModel();
-      }
-      if (extractArtwork && trackInfo != null && !trackInfo.hasError) {
-        if (artworkDirectory != null) {
-          // specified directory to save in, the file is expected to exist here.
-          File? artworkFile = trackInfo.tags.artwork.file;
-          if (artworkFile == null || !await artworkFile.exists()) {
-            final identifiersMap = identifiers ?? _getIdentifiersMap();
-            final filename = _defaultGroupArtworksByAlbum ? getArtworkIdentifierFromInfo(trackInfo, identifiersMap) : trackPath.getFilename;
-            final res = await NamidaFFMPEG.inst.extractAudioThumbnail(
-              audioPath: trackPath,
-              thumbnailSavePath: "$artworkDirectory/$filename.png",
-            );
-            trackInfo.tags.artwork.file = res;
-          }
-        } else {
-          // -- otherwise the artwork should be within info as bytes.
-          Uint8List? artworkBytes = trackInfo.tags.artwork.bytes;
-          if (artworkBytes == null || artworkBytes.isEmpty) {
-            final tempFile = await NamidaFFMPEG.inst.extractAudioThumbnail(
-              audioPath: trackPath,
-              thumbnailSavePath: "${AppDirs.APP_CACHE}/${trackPath.hashCode}.png",
-            );
-            trackInfo.tags.artwork.bytes = await tempFile?.readAsBytes();
-            tempFile?.tryDeleting();
-          }
-        }
-      }
-    }
-
-    return trackInfo ?? FAudioModel.dummy(trackPath);
+    extractArtwork ??= settings.cacheArtworks.value;
+    saveArtworkToCache ??= settings.cacheArtworks.value;
+    final artworkDirectory = saveArtworkToCache ? cacheDirectoryPath ?? (isVideo ? AppDirs.THUMBNAILS : AppDirs.ARTWORKS) : null;
+    return _extractor.extractMetadata(
+      trackPath: trackPath,
+      extractArtwork: extractArtwork,
+      artworkDirectory: artworkDirectory,
+      identifiers: identifiers,
+      overrideArtwork: overrideArtwork,
+      isVideo: isVideo,
+      isNetwork: isNetwork,
+      networkId: networkId,
+      httpHeaders: httpHeaders,
+    );
   }
 
-  Future<File?> copyArtworkToCache({
+  Future<FArtwork?> extractArtwork({
     required String trackPath,
-    required TrackExtended trackExtended,
-    required File artworkFile,
+    required bool isVideo,
+    Map<String, String>? httpHeaders,
   }) async {
-    final filename = _defaultGroupArtworksByAlbum
-        ? getArtworkIdentifier(
-            albumName: trackExtended.album,
-            albumArtist: trackExtended.albumArtist,
-            year: trackExtended.year.toString(),
-            identifiers: _getIdentifiersMap(),
-          )
-        : trackPath.getFilename;
-    try {
-      return await artworkFile.copy("${AppDirs.ARTWORKS}$filename.png");
-    } catch (e) {
-      printy(e, isError: true);
-      return null;
-    }
+    return _extractor.extractArtwork(
+      trackPath: trackPath,
+      isVideo: isVideo,
+      httpHeaders: httpHeaders,
+    );
   }
 
-  /// [commentToInsert] is applicable for first track only
+  Future<String?> writeTagsRaw({
+    required String path,
+    required FTags newTags,
+  }) async {
+    return _extractor.writeTags(
+      path: path,
+      newTags: newTags,
+      commentToInsert: null,
+      oldComment: null,
+      displayFFmpegFallbackWarning: false,
+    );
+  }
+
+  /// [commentToInsert] is applicable for first track only.
+  /// [editedTagsPerTrack] are merged over [editedTags] for their track.
   Future<void> updateTracksMetadata({
     required List<Track> tracks,
     required Map<TagField, String> editedTags,
-    required bool trimWhiteSpaces,
+    Map<Track, Map<TagField, String>>? editedTagsPerTrack,
     String imagePath = '',
     String commentToInsert = '',
     void Function(bool didUpdate, String? error, Track track)? onEdit,
     void Function()? onUpdatingTracksStart,
     bool? keepFileDates,
+    void Function(TrackStats newStats)? onStatsEdit,
+    bool displayFFmpegFallbackWarning = true,
   }) async {
-    if (trimWhiteSpaces) {
-      editedTags.updateAll((key, value) => value.trimAll());
-    }
-
-    final imageFile = imagePath != '' ? File(imagePath) : null;
+    final imageFile = imagePath.isNotEmpty ? File(imagePath) : null;
 
     String oldComment = '';
-    if (commentToInsert != '') {
-      oldComment = await FAudioTaggerController.inst.extractMetadata(trackPath: tracks.first.path).then((value) => value.tags.comment ?? '');
+    if (commentToInsert.isNotEmpty) {
+      final tr = tracks.first;
+      if (tr.isPhysical) {
+        // -- tho its almost always physical, but just in case since this fn can be used to update stats
+        oldComment = await NamidaTaggerController.inst
+            .extractMetadata(
+              trackPath: tr.path,
+              isVideo: tr is Video,
+              extractArtwork: false,
+              isNetwork: false,
+            )
+            .then((value) => value.tags.comment ?? '');
+      }
     }
-    final newTags = commentToInsert != ''
-        ? FTags(
+
+    final newTags = commentToInsert.isNotEmpty
+        ? FTags.edit(
             path: '',
-            comment: oldComment == '' ? commentToInsert : '$commentToInsert\n$oldComment',
+            comment: oldComment.isEmpty ? commentToInsert : '$commentToInsert\n$oldComment',
             artwork: FArtwork(),
           )
-        : FTags(
-            path: '',
-            artwork: FArtwork(file: imageFile),
-            title: editedTags[TagField.title],
-            album: editedTags[TagField.album],
-            artist: editedTags[TagField.artist],
-            albumArtist: editedTags[TagField.albumArtist],
-            composer: editedTags[TagField.composer],
-            genre: editedTags[TagField.genre],
-            mood: editedTags[TagField.mood],
-            trackNumber: editedTags[TagField.trackNumber],
-            discNumber: editedTags[TagField.discNumber],
-            year: editedTags[TagField.year],
-            comment: editedTags[TagField.comment],
-            lyrics: editedTags[TagField.lyrics],
-            remixer: editedTags[TagField.remixer],
-            trackTotal: editedTags[TagField.trackTotal],
-            discTotal: editedTags[TagField.discTotal],
-            lyricist: editedTags[TagField.lyricist],
-            language: editedTags[TagField.language],
-            recordLabel: editedTags[TagField.recordLabel],
-            country: editedTags[TagField.country],
-          );
+        : _editedTagsToFTags(editedTags, imageFile);
 
+    const kStatsFields = {TagField.mood, TagField.tags, TagField.rating};
+
+    await _extractor.initializeForWrite();
+    final splittersConfigs = SplitArtistGenreConfigsWrapper.settings();
     final tracksMap = <Track, TrackExtended>{};
     for (final track in tracks) {
-      final file = File(track.path);
-      bool fileExists = false;
       String? error;
 
-      try {
-        fileExists = await file.exists();
-        if (!fileExists) error = 'file not found';
-      } catch (e) {
-        error = e.toString();
-      }
+      final trackOnlyEditedTags = editedTagsPerTrack?[track];
+      final trackEditedTags = trackOnlyEditedTags == null ? editedTags : {...editedTags, ...trackOnlyEditedTags};
+      final trackNewTags = trackOnlyEditedTags == null ? newTags : _editedTagsToFTags(trackEditedTags, imageFile);
+      final shouldEditStats = kStatsFields.any((f) => trackEditedTags[f] != null);
 
-      if (error != null) {
-        printo('Did Update Metadata: false', isError: true);
-        if (onEdit != null) onEdit(false, error, track);
-        continue;
-      }
+      if (shouldEditStats && track.isNetwork) {
+        final newStats = await Indexer.inst.updateTrackStats(
+          track,
+          ratingString: trackEditedTags[TagField.rating],
+          moodsString: trackEditedTags[TagField.mood],
+          tagsString: trackEditedTags[TagField.tags],
+        );
+        onStatsEdit?.call(newStats);
 
-      await file.executeAndKeepStats(
-        () async {
-          // -- 1. try tagger
-          error = await FAudioTaggerController.inst.writeTags(
-            path: track.path,
-            tags: newTags,
-          );
+        if (onEdit != null) {
+          final wantedToEditNonStatsTags = trackEditedTags.keys.any((et) => !kStatsFields.contains(et));
+          if (wantedToEditNonStatsTags) {
+            error = 'Not Supported for network files';
+            onEdit(false, error, track);
+          } else {
+            onEdit(true, error, track);
+          }
+        }
+      } else {
+        final file = File(track.path);
+        bool fileExists = false;
+        try {
+          fileExists = await file.exists();
+          if (!fileExists) error = 'file not found';
+        } catch (e) {
+          error = e.toString();
+        }
 
-          bool didUpdate = error == null || error == '';
+        if (error != null) {
+          printo('Did Update Metadata: false', isError: true);
+          if (onEdit != null) onEdit(false, error, track);
+          continue;
+        }
 
-          if (!didUpdate) {
-            // -- 2. try with ffmpeg
-            final ffmpegTagsMap = commentToInsert != ''
-                ? <String, String?>{
-                    FFMPEGTagField.comment: oldComment == '' ? commentToInsert : '$commentToInsert\n$oldComment',
-                  }
-                : <String, String?>{
-                    FFMPEGTagField.title: editedTags[TagField.title],
-                    FFMPEGTagField.artist: editedTags[TagField.artist],
-                    FFMPEGTagField.album: editedTags[TagField.album],
-                    FFMPEGTagField.albumArtist: editedTags[TagField.albumArtist],
-                    FFMPEGTagField.composer: editedTags[TagField.composer],
-                    FFMPEGTagField.genre: editedTags[TagField.genre],
-                    FFMPEGTagField.mood: editedTags[TagField.mood],
-                    FFMPEGTagField.year: editedTags[TagField.year],
-                    FFMPEGTagField.trackNumber: editedTags[TagField.trackNumber],
-                    FFMPEGTagField.discNumber: editedTags[TagField.discNumber],
-                    FFMPEGTagField.trackTotal: editedTags[TagField.trackTotal],
-                    FFMPEGTagField.discTotal: editedTags[TagField.discTotal],
-                    FFMPEGTagField.comment: editedTags[TagField.comment],
-                    FFMPEGTagField.lyrics: editedTags[TagField.lyrics],
-                    FFMPEGTagField.remixer: editedTags[TagField.remixer],
-                    FFMPEGTagField.lyricist: editedTags[TagField.lyricist],
-                    FFMPEGTagField.language: editedTags[TagField.language],
-                    FFMPEGTagField.recordLabel: editedTags[TagField.recordLabel],
-                    FFMPEGTagField.country: editedTags[TagField.country],
-                  };
-            didUpdate = await NamidaFFMPEG.inst.editMetadata(
+        await file.executeAndKeepStats(
+          () async {
+            // -- 1. try tagger
+            error = await _extractor.writeTags(
               path: track.path,
-              tagsMap: ffmpegTagsMap,
+              newTags: trackNewTags,
+              commentToInsert: commentToInsert,
+              oldComment: oldComment,
+              displayFFmpegFallbackWarning: displayFFmpegFallbackWarning,
             );
-          }
-          if (didUpdate) {
-            final trExt = track.toTrackExt();
-            final newTrExt = trExt.copyWithTag(tag: newTags);
-            tracksMap[track] = newTrExt;
-            if (imageFile != null) await imageFile.copy(newTrExt.pathToImage);
-          }
-          printo('Did Update Metadata: $didUpdate', isError: !didUpdate);
-          if (onEdit != null) onEdit(didUpdate, error, track);
-        },
-        keepStats: keepFileDates ?? _defaultKeepFileDates,
-      );
+
+            if (error == null) {
+              final trExt = track.toTrackExt();
+              final newTrExt = trExt.copyWithTag(tag: trackNewTags, splittersConfigs: splittersConfigs, generatePathHash: TagsExtractor.defaultUniqueArtworkHash);
+              tracksMap[track] = newTrExt;
+              if (imageFile != null) await imageFile.copy(newTrExt.pathToImage);
+            }
+            printo('Did Update Metadata: $error', isError: error != null);
+            if (onEdit != null) onEdit(error == null, error, track);
+
+            // -- update app-related stats even if tags editing failed.
+            if (shouldEditStats) {
+              final newStats = await Indexer.inst.updateTrackStats(
+                track,
+                ratingString: trackEditedTags[TagField.rating],
+                moodsString: trackEditedTags[TagField.mood],
+                tagsString: trackEditedTags[TagField.tags],
+              );
+              onStatsEdit?.call(newStats);
+            }
+          },
+          keepStats: keepFileDates ?? _defaultKeepFileDates,
+        );
+
+        final newTrExt = tracksMap[track];
+        if (newTrExt != null) {
+          // -- otherwise refreshing the library sees the file as modified
+          final newStat = await file.stat();
+          final newDateModified = newStat.modified.millisecondsSinceEpoch;
+          tracksMap[track] = newTrExt.copyWith(size: newStat.size, dateModified: newDateModified, generatePathHash: TagsExtractor.defaultUniqueArtworkHash);
+        }
+      }
     }
+
+    await _extractor.disposeForWrite();
 
     if (onUpdatingTracksStart != null) onUpdatingTracksStart();
 
     if (tracksMap.isNotEmpty) {
       await Indexer.inst.updateTrackMetadata(
         tracksMap: tracksMap,
-        newArtworkPath: imagePath,
+        artworkWasEdited: imageFile != null,
       );
     }
   }
 
-  String getArtworkIdentifierFromInfo(FAudioModel? data, Map<AlbumIdentifier, bool> identifiers) {
-    return getArtworkIdentifier(
-      albumName: data?.tags.album,
-      albumArtist: data?.tags.albumArtist,
-      year: data?.tags.year,
-      identifiers: identifiers,
+  /// writes each [FTags] only into a file holding none of its fields yet, file dates are kept.
+  Future<void> writeTagsIfMissing({
+    required Map<Track, FTags> tagsPerTrack,
+    required void Function(Track track, WriteIfMissingResult result) onTrack,
+  }) async {
+    await _extractor.initializeForWrite();
+    final splittersConfigs = SplitArtistGenreConfigsWrapper.settings();
+    final tracksMap = <Track, TrackExtended>{};
+    for (final e in tagsPerTrack.entries) {
+      final track = e.key;
+      final newTags = e.value;
+      final file = File(track.path);
+      final res = await file.executeAndKeepStats(
+        () => _extractor.writeTagsIfMissing(path: track.path, newTags: newTags),
+        keepStats: true,
+      );
+      onTrack(track, res);
+      if (!res.didWrite || res.error != null) continue;
+
+      final newStat = await file.stat();
+      final newDateModified = newStat.modified.millisecondsSinceEpoch;
+      final trExt = track.toTrackExt();
+      final newTrExt = trExt.copyWithTag(tag: newTags, splittersConfigs: splittersConfigs, generatePathHash: TagsExtractor.defaultUniqueArtworkHash);
+      tracksMap[track] = newTrExt.copyWith(size: newStat.size, dateModified: newDateModified, generatePathHash: TagsExtractor.defaultUniqueArtworkHash);
+    }
+    await _extractor.disposeForWrite();
+
+    if (tracksMap.isNotEmpty) {
+      await Indexer.inst.updateTrackMetadata(
+        tracksMap: tracksMap,
+        artworkWasEdited: false,
+      );
+    }
+  }
+
+  FTags _editedTagsToFTags(Map<TagField, String> editedTags, File? imageFile) {
+    return FTags.edit(
+      path: '',
+      artwork: FArtwork(file: imageFile),
+      title: editedTags[TagField.title],
+      album: editedTags[TagField.album],
+      artist: editedTags[TagField.artist],
+      albumArtist: editedTags[TagField.albumArtist],
+      composer: editedTags[TagField.composer],
+      genre: editedTags[TagField.genre],
+      style: editedTags[TagField.style],
+      mood: editedTags[TagField.mood],
+      trackNumber: editedTags[TagField.trackNumber],
+      discNumber: editedTags[TagField.discNumber],
+      year: editedTags[TagField.year],
+      comment: editedTags[TagField.comment],
+      description: editedTags[TagField.description],
+      synopsis: editedTags[TagField.synopsis],
+      lyrics: editedTags[TagField.lyrics],
+      remixer: editedTags[TagField.remixer],
+      trackTotal: editedTags[TagField.trackTotal],
+      discTotal: editedTags[TagField.discTotal],
+      lyricist: editedTags[TagField.lyricist],
+      language: editedTags[TagField.language],
+      recordLabel: editedTags[TagField.recordLabel],
+      releaseType: editedTags[TagField.releaseType],
+      country: editedTags[TagField.country],
+      tags: editedTags[TagField.tags],
+      ratingPercentage: () {
+        final ratingString = editedTags[TagField.rating];
+        if (ratingString != null) {
+          return _ratingStringToPercentage(ratingString);
+        }
+        return null;
+      }(),
+      sortInfo: FTagsSortInfo.orNull(
+        title: editedTags[TagField.titleSort],
+        album: editedTags[TagField.albumSort],
+        albumArtist: editedTags[TagField.albumArtistSort],
+        artist: editedTags[TagField.artistSort],
+        composer: editedTags[TagField.composerSort],
+      ),
     );
   }
 
-  String getArtworkIdentifier({
-    required String? albumName,
-    required String? albumArtist,
-    required String? year,
-    required Map<AlbumIdentifier, bool> identifiers,
-  }) {
-    final n = identifiers[AlbumIdentifier.albumName] == true ? albumName ?? '' : '';
-    final aa = identifiers[AlbumIdentifier.albumArtist] == true ? albumArtist ?? '' : '';
-    final y = identifiers[AlbumIdentifier.year] == true ? year ?? '' : '';
-    return "$n$aa$y";
-  }
-
-  Map<AlbumIdentifier, bool> _getIdentifiersMap() {
-    final map = <AlbumIdentifier, bool>{};
-    _defaultAlbumIdentifier.loop((e, _) => map[e] = true);
-    return map;
+  double? _ratingStringToPercentage(String ratingString) {
+    if (ratingString.isEmpty) return 0.0;
+    final intval = int.tryParse(ratingString);
+    if (intval == null) return null;
+    return intval / 100;
   }
 }

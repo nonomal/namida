@@ -1,0 +1,173 @@
+# Flatpak manifest for Namida.
+#
+# The app itself is taken as a PREBUILT flutter bundle (namida-linux.tar.gz, produced by
+# `flutter build linux --release` in the release workflow and copied next to this file).
+# libmpv is not part of any runtime, so libass / libplacebo / ffmpeg / mpv are built here.
+# The same ffmpeg build also provides the ffmpeg + ffprobe binaries the app shells out to
+# (the ones bundled in the tarball are replaced - they are built against a newer glibc than the runtime).
+#
+# Local build (needs flatpak-builder + org.gnome.Sdk//49):
+#   cp <namida tarball> linux/packaging/flatpak/namida-linux.tar.gz
+#   flatpak-builder --user --install-deps-from=flathub --force-clean --repo=repo build-dir linux/packaging/flatpak/app.namida.Namida.yml
+#   flatpak build-bundle repo Namida-x86_64.flatpak app.namida.Namida
+#   flatpak install --user Namida-x86_64.flatpak
+#
+# This file is copied as-is to Flathub, only `namida-source.json` differs there (release url + sha256).
+
+app-id: app.namida.Namida
+# gnome's runtime is the freedesktop one plus webkit2gtk-4.1, which the sign-in
+# window and the poToken webview need.
+runtime: org.gnome.Platform
+runtime-version: '49'
+sdk: org.gnome.Sdk
+command: namida
+# the bundle keeps the com.msob7y.namida names the other linux packages use
+rename-desktop-file: com.msob7y.namida.desktop
+rename-appdata-file: com.msob7y.namida.metainfo.xml
+rename-icon: namida
+
+finish-args:
+  - --share=ipc
+  - --socket=fallback-x11
+  - --socket=wayland
+  - --device=dri
+  - --share=network
+  - --socket=pulseaudio
+  - --filesystem=xdg-run/pipewire-0:ro
+  # music/video libraries can live anywhere and folders are picked with a GTK (non-portal) chooser
+  - --filesystem=host
+  # notifications (flutter_local_notifications talks to the bus directly, not through the portal)
+  - --talk-name=org.freedesktop.Notifications
+  # keep-awake while playing (wakelock_plus)
+  - --talk-name=org.freedesktop.ScreenSaver
+  # tray icon (dart_xdg_status_notifier_item)
+  - --talk-name=org.kde.StatusNotifierWatcher
+  # MPRIS (anni_mpris_service registers org.mpris.MediaPlayer2.namida)
+  - --own-name=org.mpris.MediaPlayer2.namida
+  # connectivity_plus queries NetworkManager on the system bus, without it the app stays offline
+  - --system-talk-name=org.freedesktop.NetworkManager
+  # mpv needs the C locale for number parsing
+  - --env=LC_NUMERIC=C
+
+cleanup:
+  - /include
+  - /lib/pkgconfig
+  - /lib/cmake
+  - /lib/*.a
+  - /lib/*.la
+  - /share/doc
+  - /share/man
+  - /share/ffmpeg/examples
+
+modules:
+  # ------------------------------------------------------------------ media stack
+  - name: libass
+    config-opts:
+      - --disable-static
+    sources:
+      - type: archive
+        url: https://github.com/libass/libass/releases/download/0.17.5/libass-0.17.5.tar.xz
+        sha256: 2dca25c0e0c837ddf00b52011b3f82cac1e4ddd3ad018227806b0c2288864acc
+        x-checker-data:
+          type: anitya
+          project-id: 1560
+          stable-only: true
+          url-template: https://github.com/libass/libass/releases/download/$version/libass-$version.tar.xz
+
+  - name: libplacebo
+    buildsystem: meson
+    config-opts:
+      - -Ddemos=false
+      - -Dtests=false
+    sources:
+      - type: git
+        url: https://github.com/haasn/libplacebo.git
+        tag: v7.360.1
+        commit: cee9b076f2c63104ccfd497fa79c39a867293ec4
+        x-checker-data:
+          type: git
+          tag-pattern: ^v([\d.]+)$
+
+  # LGPL build (no --enable-gpl): shared libs for libmpv + the ffmpeg/ffprobe CLIs used by the app.
+  # The external codec libs below all ship in org.freedesktop.Sdk 25.08 (io.mpv.Mpv relies on the same).
+  - name: ffmpeg
+    config-opts:
+      - --enable-shared
+      - --disable-static
+      - --disable-debug
+      - --disable-doc
+      - --disable-ffplay
+      - --enable-pic
+      - --enable-network
+      - --enable-gnutls
+      - --enable-libxml2
+      - --enable-libdav1d
+      - --enable-libaom
+      - --enable-libvpx
+      - --enable-libopus
+      - --enable-libvorbis
+      - --enable-libmp3lame
+      - --enable-libwebp
+    sources:
+      - type: archive
+        url: https://ffmpeg.org/releases/ffmpeg-9.0.1.tar.xz
+        sha256: cf38e0e28c7e5605942c4a77755349b0145804a397af37eb1fb4c77cb237f635
+        x-checker-data:
+          type: anitya
+          project-id: 5405
+          stable-only: true
+          url-template: https://ffmpeg.org/releases/ffmpeg-$version.tar.xz
+
+  - name: libmpv
+    buildsystem: meson
+    config-opts:
+      - -Dlibmpv=true
+      - -Dcplayer=false
+      - -Dbuild-date=false
+      - -Dmanpage-build=disabled
+      - -Dlua=disabled
+      - -Djavascript=disabled
+      - -Dalsa=disabled
+      - -Dcdda=disabled
+      - -Ddvdnav=disabled
+      - -Dlibbluray=disabled
+      - -Dlibarchive=disabled
+      - -Dvapoursynth=disabled
+    cleanup:
+      - /share/applications
+      - /share/bash-completion
+      - /share/icons
+      - /share/zsh
+    sources:
+      - type: archive
+        url: https://github.com/mpv-player/mpv/archive/v0.41.0.tar.gz
+        sha256: ee21092a5ee427353392360929dc64645c54479aefdb5babc5cfbb5fad626209
+        x-checker-data:
+          type: anitya
+          project-id: 5348
+          stable-only: true
+          url-template: https://github.com/mpv-player/mpv/archive/v$version.tar.gz
+
+  # ------------------------------------------------------------------ the app
+  - name: namida
+    buildsystem: simple
+    build-commands:
+      - tar --no-same-owner -xzf namida-linux.tar.gz
+      # the flutter bundle keeps its own layout under /app/namida (namida, lib/, data/, bin/)
+      - mkdir -p /app/namida
+      - cp -a namida lib data /app/namida/
+      - mkdir -p /app/namida/bin
+      # ffmpeg/ffprobe: use the ones built above (the tarball's need a newer glibc than the runtime)
+      - ln -sf /app/bin/ffmpeg /app/namida/bin/ffmpeg
+      - ln -sf /app/bin/ffprobe /app/namida/bin/ffprobe
+      - install -Dm755 namida-launcher /app/bin/namida
+      - cp -a share /app/
+      # the window takes its app id from FLATPAK_ID, the bundle's StartupWMClass would point at the old one
+      - desktop-file-edit --remove-key=TryExec --remove-key=StartupWMClass /app/share/applications/com.msob7y.namida.desktop
+    sources:
+      # local: the tarball from the release workflow, Flathub: the release asset (url + sha256 + x-checker-data)
+      - namida-source.json
+      - type: script
+        dest-filename: namida-launcher
+        commands:
+          - exec /app/namida/namida "$@"

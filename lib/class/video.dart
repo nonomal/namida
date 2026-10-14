@@ -1,7 +1,5 @@
-import 'dart:io';
-
-import 'package:namida/controller/thumbnail_manager.dart';
-import 'package:namida/core/constants.dart';
+import 'package:namida/class/folder.dart';
+import 'package:namida/class/track.dart';
 import 'package:namida/core/extensions.dart';
 
 /// used for stats.
@@ -20,66 +18,81 @@ class YoutubeVideoHistory {
     required this.watches,
   });
 
+  static YoutubeVideoHistory merge({
+    required YoutubeVideoHistory? current,
+    required YoutubeVideoHistory newRes,
+  }) {
+    if (current == null) return newRes;
+
+    return YoutubeVideoHistory(
+      id: current.id.isNotEmpty ? current.id : newRes.id,
+      title: current.title.isNotEmpty && !current.title.startsWith('https://') ? current.title : newRes.title,
+      channel: current.channel.isNotEmpty ? current.channel : newRes.channel,
+      channelUrl: current.channelUrl.isNotEmpty ? current.channelUrl : newRes.channelUrl,
+      watches: current.watches.isNotEmpty ? current.watches : newRes.watches,
+    );
+  }
+
   factory YoutubeVideoHistory.fromJson(Map<String, dynamic> json) {
     return YoutubeVideoHistory(
       id: json['id'] ?? '',
       title: json['title'] ?? '',
       channel: json['channel'] ?? '',
       channelUrl: json['channelUrl'] ?? '',
-      watches: List<YTWatch>.from((json['watches'] as List? ?? []).map((e) => YTWatch.fromJson(e))),
+      watches: (json['watches'] as List?)?.map((e) => YTWatch.fromJson(e)).toList() ?? [],
     );
   }
 
   Map<String, dynamic> toJson() {
-    final Map<String, dynamic> data = <String, dynamic>{};
-    data['id'] = id;
-    data['title'] = title;
-    data['channel'] = channel;
-    data['channelUrl'] = channelUrl;
-    data['watches'] = watches;
-    return data;
+    return <String, dynamic>{
+      'id': id,
+      'title': title,
+      'channel': channel,
+      'channelUrl': channelUrl,
+      'watches': watches.map((e) => e.toJson()).toFixedList(),
+    };
   }
 }
 
 class YTWatch {
-  final DateTime? dateNull;
+  final int? dateMSNull;
   final bool isYTMusic;
 
-  DateTime get date => _date;
-  DateTime get _date => dateNull ?? DateTime.now();
+  int get dateMS => dateMSNull ?? 0;
 
   const YTWatch({
-    required this.dateNull,
+    required this.dateMSNull,
     required this.isYTMusic,
   });
 
+  static final _millis1970 = DateTime(1970).millisecondsSinceEpoch;
+
   factory YTWatch.fromJson(Map<String, dynamic>? json) {
     if (json == null) {
-      return YTWatch(dateNull: DateTime(1970), isYTMusic: false);
+      return YTWatch(dateMSNull: _millis1970, isYTMusic: false);
     }
     return YTWatch(
-      dateNull: DateTime.fromMillisecondsSinceEpoch(json['date'] ?? 0),
+      dateMSNull: json['date'] ?? 0,
       isYTMusic: json['isYTMusic'] ?? false,
     );
   }
 
   Map<String, dynamic> toJson() {
     return {
-      'date': _date.millisecondsSinceEpoch,
-      'isYTMusic': isYTMusic,
+      'date': dateMS,
+      if (isYTMusic == true) 'isYTMusic': isYTMusic,
     };
   }
 
   @override
   bool operator ==(other) {
-    if (other is YTWatch) {
-      return _date == other._date && isYTMusic == other.isYTMusic;
-    }
-    return false;
+    if (other is! YTWatch) return false;
+    if (identical(this, other)) return true;
+    return other.dateMSNull == dateMSNull && other.isYTMusic == isYTMusic;
   }
 
   @override
-  int get hashCode => "${_date}_$isYTMusic".hashCode;
+  int get hashCode => Object.hash(dateMSNull, isYTMusic);
 }
 
 class NamidaVideo {
@@ -142,20 +155,21 @@ class NamidaVideo {
 
   @override
   bool operator ==(other) {
-    if (other is NamidaVideo) {
-      return path == other.path &&
-          ytID == other.ytID &&
-          height == other.height &&
-          width == other.width &&
-          sizeInBytes == other.sizeInBytes &&
-          frameratePrecise == other.frameratePrecise &&
-          creationTimeMS == other.creationTimeMS;
-    }
-    return false;
+    if (other is! NamidaVideo) return false;
+    if (identical(this, other)) return true;
+    return other.path == path &&
+        other.ytID == ytID &&
+        other.height == height &&
+        other.width == width &&
+        other.sizeInBytes == sizeInBytes &&
+        other.frameratePrecise == frameratePrecise &&
+        other.creationTimeMS == creationTimeMS;
   }
 
   @override
-  int get hashCode => "$path$ytID$height$width$sizeInBytes$frameratePrecise$creationTimeMS".hashCode;
+  int get hashCode {
+    return Object.hash(path, ytID, height, width, sizeInBytes, frameratePrecise, creationTimeMS);
+  }
 
   @override
   String toString() {
@@ -164,34 +178,51 @@ class NamidaVideo {
 }
 
 extension NamidaVideoUtils on NamidaVideo {
+  /// ffprobe can report a stream timebase (ex: 90000) instead of an actual framerate.
+  static const maxSaneFramerate = 480;
+
+  bool get hasSaneFramerate => framerate <= maxSaneFramerate;
+
   String framerateText([int displayAbove = 30]) {
     final videoFramerate = framerate;
-    return videoFramerate > displayAbove ? videoFramerate.toString() : '';
+    return videoFramerate > displayAbove && videoFramerate <= maxSaneFramerate ? videoFramerate.toString() : '';
   }
 
   int get framerate => frameratePrecise.round();
 
-  String get pathToImage {
-    final isLocal = ytID == null;
-    final dir = isLocal ? AppDirs.THUMBNAILS : AppDirs.YT_THUMBNAILS;
-    final idOrFileNameWOExt = ytID ?? path.getFilenameWOExt;
+  // Future<String> pathToImage() async {
+  //   final isLocal = ytID == null;
+  //   final dir = isLocal ? AppDirs.THUMBNAILS : AppDirs.YT_THUMBNAILS;
+  //   final idOrFileNameWOExt = ytID ?? path.getFilenameWOExt;
 
-    String getPath(String prefix) => "$dir$prefix$idOrFileNameWOExt.png";
+  //   String getPath(String prefix) => "$dir$prefix$idOrFileNameWOExt.png";
 
-    if (!isLocal) {
-      final path = getPath('');
-      if (File(path).existsSync()) {
-        return path;
-      }
-    }
-    return getPath('EXT_');
-  }
+  //   if (!isLocal) {
+  //     final path = getPath('');
+  //     if (await File(path).exists()) {
+  //       return path;
+  //     }
+  //   }
+  //   return getPath('EXT_');
+  // }
+}
 
-  String get pathToLocalImage {
-    final name = path.getFilenameWOExt;
-    const prefix = 'EXT_';
-    return "${AppDirs.THUMBNAILS}$prefix$name.png";
-  }
+class Video extends Track {
+  @override
+  VideoFolder get folder => VideoFolder.explicit(folderPath);
 
-  String get pathToYTImage => ThumbnailManager.getPathToYTImage(ytID);
+  @override
+  Video get track => this;
+
+  @override
+  PlayableType get playableType => PlayableType.video;
+
+  Video.explicit(super.path) : super.explicit();
+
+  @override
+  String toString() => "Video($path)";
+}
+
+extension VideoUtils on Video {
+  VideoFolder get folder => VideoFolder.explicit(folderPath);
 }

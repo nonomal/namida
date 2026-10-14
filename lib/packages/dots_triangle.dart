@@ -1,16 +1,18 @@
 /// source: https://github.com/watery-desert/loading_animation_widget
+library;
+
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
-import 'dart:math' as math;
 
 class DotsTriangle extends StatefulWidget {
   final double size;
   final Color color;
   const DotsTriangle({
-    Key? key,
+    super.key,
     required this.color,
     required this.size,
-  }) : super(key: key);
+  });
 
   @override
   State<DotsTriangle> createState() => _DotsTriangleState();
@@ -39,7 +41,7 @@ class _DotsTriangleState extends State<DotsTriangle> with SingleTickerProviderSt
 
     return AnimatedBuilder(
       animation: _animationController,
-      builder: (_, __) => SizedBox(
+      builder: (_, _) => SizedBox(
         width: size,
         height: size,
         child: Center(
@@ -112,8 +114,9 @@ class BuildSides extends StatelessWidget {
   final double rotationAngle;
   final Offset rotationOrigin;
   final bool forward;
+
   const BuildSides.forward({
-    Key? key,
+    super.key,
     required this.maxLength,
     required this.depth,
     required this.color,
@@ -121,11 +124,10 @@ class BuildSides extends StatelessWidget {
     required this.interval,
     this.rotationAngle = 0,
     this.rotationOrigin = Offset.zero,
-  })  : forward = true,
-        super(key: key);
+  }) : forward = true;
 
   const BuildSides.reverse({
-    Key? key,
+    super.key,
     required this.maxLength,
     required this.depth,
     required this.color,
@@ -133,8 +135,7 @@ class BuildSides extends StatelessWidget {
     required this.interval,
     this.rotationAngle = 0,
     this.rotationOrigin = Offset.zero,
-  })  : forward = false,
-        super(key: key);
+  }) : forward = false;
 
   @override
   Widget build(BuildContext context) {
@@ -163,14 +164,15 @@ class BuildSides extends StatelessWidget {
     final Widget firstChild = Visibility(
       visible: forward ? controller.value <= middleInterval : controller.value >= middleInterval,
       child: Transform.translate(
-        offset: Tween<Offset>(
-          begin: forward ? Offset.zero : Offset(offset, 0),
-          end: forward ? Offset(offset, 0) : Offset.zero,
-        )
-            .animate(
-              forward ? leftCurvedAnimation : rightCurvedAnimation,
-            )
-            .value,
+        offset:
+            Tween<Offset>(
+                  begin: forward ? Offset.zero : Offset(offset, 0),
+                  end: forward ? Offset(offset, 0) : Offset.zero,
+                )
+                .animate(
+                  forward ? leftCurvedAnimation : rightCurvedAnimation,
+                )
+                .value,
         child: RoundedRectangle.horizontal(
           width: Tween<double>(begin: forward ? depth : maxLength, end: forward ? maxLength : depth)
               .animate(
@@ -186,14 +188,15 @@ class BuildSides extends StatelessWidget {
     final Widget secondChild = Visibility(
       visible: forward ? controller.value >= middleInterval : controller.value <= middleInterval,
       child: Transform.translate(
-        offset: Tween<Offset>(
-          begin: forward ? Offset(-offset, 0) : Offset.zero,
-          end: forward ? Offset.zero : Offset(-offset, 0),
-        )
-            .animate(
-              forward ? rightCurvedAnimation : leftCurvedAnimation,
-            )
-            .value,
+        offset:
+            Tween<Offset>(
+                  begin: forward ? Offset(-offset, 0) : Offset.zero,
+                  end: forward ? Offset.zero : Offset(-offset, 0),
+                )
+                .animate(
+                  forward ? rightCurvedAnimation : leftCurvedAnimation,
+                )
+                .value,
         child: RoundedRectangle.horizontal(
           width: Tween<double>(begin: forward ? maxLength : depth, end: forward ? depth : maxLength)
               .animate(
@@ -225,20 +228,18 @@ class RoundedRectangle extends StatelessWidget {
   final Color color;
   final bool vertical;
   const RoundedRectangle.vertical({
-    Key? key,
+    super.key,
     required this.width,
     required this.height,
     required this.color,
-  })  : vertical = true,
-        super(key: key);
+  }) : vertical = true;
 
   const RoundedRectangle.horizontal({
-    Key? key,
+    super.key,
     required this.width,
     required this.height,
     required this.color,
-  })  : vertical = false,
-        super(key: key);
+  }) : vertical = false;
 
   @override
   Widget build(BuildContext context) {

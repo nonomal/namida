@@ -1,0 +1,510 @@
+// ignore_for_file: unused_element_parameter
+
+part of 'shortcuts_manager.dart';
+
+class _ShortcutsManagerDesktop extends ShortcutsManager {
+  @override
+  List<ShortcutKeyActivator> get _keysToRegister => __keysToRegister;
+
+  late final __keysToRegister = <ShortcutKeyActivator>[
+    // ------------------- playback -------------------
+    ShortcutKeyActivator(
+      action: HotkeyAction.play_pause,
+      key: LogicalKeyboardKey.space,
+      skipInTextFields: true,
+      callback: Player.inst.togglePlayPause,
+      title: () => "${lang.play}/${lang.pause}",
+    ),
+    ShortcutKeyActivator(
+      action: HotkeyAction.seek_backwards,
+      key: LogicalKeyboardKey.arrowLeft,
+      callback: Player.inst.seekSecondsBackward,
+      title: () => "<- ${lang.seekbar}",
+    ),
+    ShortcutKeyActivator(
+      action: HotkeyAction.seek_forwards,
+      key: LogicalKeyboardKey.arrowRight,
+      callback: Player.inst.seekSecondsForward,
+      title: () => "${lang.seekbar} ->",
+    ),
+    ShortcutKeyActivator(
+      action: HotkeyAction.volume_up,
+      key: LogicalKeyboardKey.arrowUp,
+      control: true,
+      includeRepeats: true,
+      callback: () {
+        final newVol = Player.inst.volumeUp();
+        _showSnack(message: "${lang.volume} ↑: ${newVol.roundDecimals(2)}");
+      },
+      title: () => "${lang.volume} ↑",
+    ),
+    ShortcutKeyActivator(
+      action: HotkeyAction.volume_down,
+      key: LogicalKeyboardKey.arrowDown,
+      control: true,
+      includeRepeats: true,
+      callback: () {
+        final newVol = Player.inst.volumeDown();
+        _showSnack(message: "${lang.volume} ↓: ${newVol.roundDecimals(2)}");
+      },
+      title: () => "${lang.volume} ↓",
+    ),
+    ShortcutKeyActivator(
+      action: HotkeyAction.previous,
+      key: LogicalKeyboardKey.arrowLeft,
+      control: true,
+      callback: Player.inst.previous,
+      title: () => lang.previous,
+    ),
+    ShortcutKeyActivator(
+      action: HotkeyAction.next,
+      key: LogicalKeyboardKey.arrowRight,
+      control: true,
+      callback: Player.inst.next,
+      title: () => lang.next,
+    ),
+    ShortcutKeyActivator(
+      action: HotkeyAction.stop_after_current,
+      key: LogicalKeyboardKey.space,
+      control: true,
+      callback: () {
+        final isStopping = Player.inst.toggleStopAfterCurrent();
+        _showSnack(message: "${lang.stopAfterThisTrack}: ${isStopping ? '✓' : '✗'}");
+      },
+      title: () => lang.stopAfterThisTrack,
+    ),
+    ShortcutKeyActivator(
+      key: LogicalKeyboardKey.arrowLeft,
+      shift: true,
+      callback: () => ChaptersController.inst.seekToAdjacent(forward: false),
+      title: () => lang.previousChapter,
+    ),
+    ShortcutKeyActivator(
+      key: LogicalKeyboardKey.arrowRight,
+      shift: true,
+      callback: () => ChaptersController.inst.seekToAdjacent(forward: true),
+      title: () => lang.nextChapter,
+    ),
+
+    // -------------------
+    ShortcutKeyActivator(
+      key: LogicalKeyboardKey.keyH,
+      control: true,
+      callback: () async {
+        final currentItem = Player.inst.currentItem.value;
+        if (currentItem is YoutubeID && Player.inst.displayFavouriteButtonAsLike) {
+          final newIsLiked = await YtVideoLikeManager.current.toggleLikeWithoutConfirmation(currentItem.id);
+          if (newIsLiked != null) {
+            newIsLiked
+                ? snackyy(
+                    message: lang.liked,
+                    icon: Broken.like_filled,
+                    leftBarIndicatorColor: Colors.green,
+                  )
+                : snackyy(
+                    message: "${lang.like}: ${lang.removed}",
+                    icon: Broken.like_1,
+                    leftBarIndicatorColor: Colors.red,
+                  );
+          }
+          return;
+        }
+        final bool? newIsFav = currentItem?.execute(
+          selectable: (finalItem) => PlaylistController.inst.favouriteButtonOnPressed(
+            finalItem.track,
+            refreshNotification: false,
+          ),
+          youtubeID: (finalItem) => YoutubePlaylistController.inst.favouriteButtonOnPressed(
+            finalItem.id,
+            refreshNotification: false,
+          ),
+        );
+        if (newIsFav != null) {
+          Player.inst.refreshNotification();
+          newIsFav == true
+              ? snackyy(
+                  message: "${lang.favourites}: ${lang.added}",
+                  icon: Broken.heart_filled,
+                  leftBarIndicatorColor: Colors.green,
+                )
+              : snackyy(
+                  message: "${lang.favourites}: ${lang.removed}",
+                  icon: Broken.heart_slash,
+                  leftBarIndicatorColor: Colors.red,
+                );
+        }
+      },
+      title: () => "${lang.favourites}/${lang.like}: ${lang.add}/${lang.remove}",
+    ),
+    ShortcutKeyActivator(
+      key: LogicalKeyboardKey.keyB,
+      control: true,
+      callback: BookmarksController.inst.addAtCurrentPosition,
+      title: () => lang.addBookmark,
+    ),
+    ShortcutKeyActivator(
+      key: LogicalKeyboardKey.keyF,
+      control: true,
+      callback: () {
+        if (_isInSettingsPage()) {
+          NamidaSettingSearchBar.toggle();
+        } else {
+          ScrollSearchController.inst.toggleSearch(
+            forceOpen: ScrollSearchController.inst.searchBarKey.currentState?.focusNode.hasPrimaryFocus != true,
+            instant: true,
+          );
+        }
+      },
+      title: () => lang.search,
+    ),
+    ShortcutKeyActivator(
+      key: LogicalKeyboardKey.keyR,
+      control: true,
+      callback: Indexer.inst.refreshLibraryAndCheckForDiff,
+      title: () => lang.refreshLibrary,
+    ),
+    ShortcutKeyActivator(
+      key: LogicalKeyboardKey.keyE,
+      control: true,
+      callback: () {
+        _executeMiniPlayers(
+          (localPlayer, ytPlayer, ytQueueChip) {
+            if (ytPlayer != null) {
+              if (ytPlayer.isExpanded) {
+                ytPlayer.animateToState(false);
+              } else {
+                ytPlayer.animateToState(true);
+              }
+            } else {
+              if (localPlayer.isMinimized) {
+                localPlayer.snapToExpanded();
+              } else {
+                localPlayer.snapToMini();
+              }
+            }
+          },
+        );
+      },
+      title: () => lang.openMiniplayer,
+    ),
+    ShortcutKeyActivator(
+      key: LogicalKeyboardKey.keyQ,
+      control: true,
+      callback: openPlayerQueue,
+      title: () => lang.openQueue,
+    ),
+    ShortcutKeyActivator(
+      key: LogicalKeyboardKey.keyL,
+      control: true,
+      callback: () {
+        settings.enableLyrics.save(!settings.enableLyrics.value);
+        final currentItem = Player.inst.currentItem.value;
+        if (currentItem != null) {
+          Lyrics.inst.updateLyrics(currentItem);
+        }
+      },
+      title: () => lang.lyrics,
+    ),
+    ShortcutKeyActivator(
+      key: LogicalKeyboardKey.keyL,
+      control: true,
+      shift: true,
+      callback: () {
+        final fullscreenState = Lyrics.inst.lrcViewKeyFullscreen.currentState;
+        if (fullscreenState != null) {
+          fullscreenState.exitFullScreen();
+        } else {
+          Lyrics.inst.lrcViewKey.currentState?.enterFullScreen();
+        }
+      },
+      title: () => "${lang.lyrics} (${lang.fullscreen})",
+    ),
+    ShortcutKeyActivator(
+      key: LogicalKeyboardKey.keyP,
+      control: true,
+      shift: true,
+      callback: () {
+        if (!_isInSettingsPage()) {
+          const SettingsPage().navigate();
+        }
+
+        Timer(
+          Duration(milliseconds: 100),
+          NamidaSettingSearchBar.open,
+        );
+      },
+      title: () => lang.settings,
+    ),
+    ShortcutKeyActivator(
+      key: LogicalKeyboardKey.keyS,
+      control: true,
+      shift: true,
+      callback: () {
+        // final shuffleAll = settings.player.shuffleAllTracks.value;
+        // Player.inst.shuffleTracks(shuffleAll);
+        // _showSnack(
+        //   message: "${shuffleAll ? lang.shuffleAll : lang.shuffleNext}: ${lang.done}",
+        // );
+        final shuffleQueue = !settings.player.shuffleQueue.value;
+        settings.player.shuffleQueue.save(shuffleQueue);
+        _showSnack(
+          message: "${lang.shuffle}: ${shuffleQueue ? '✓' : '✗'}",
+        );
+      },
+      title: () => lang.shuffle,
+    ),
+    ShortcutKeyActivator(
+      key: LogicalKeyboardKey.tab,
+      control: true,
+      callback: () {
+        final e = Player.inst.cycleRepeatMode();
+        _showSnack(
+          message: "${lang.repeatMode}: ${e.buildText()}",
+        );
+      },
+      title: () => lang.repeatMode,
+    ),
+    // -----------------
+    for (final key in const [LogicalKeyboardKey.equal, LogicalKeyboardKey.numpadAdd])
+      ShortcutKeyActivator(
+        key: key,
+        control: true,
+        includeRepeats: true,
+        callback: () => ScaleDetectorState.topmost?.scaleBy(1.1),
+        title: () => lang.zoom,
+      ),
+    for (final key in const [LogicalKeyboardKey.minus, LogicalKeyboardKey.numpadSubtract])
+      ShortcutKeyActivator(
+        key: key,
+        control: true,
+        includeRepeats: true,
+        callback: () => ScaleDetectorState.topmost?.scaleBy(1 / 1.1),
+        title: () => lang.zoom,
+      ),
+    ShortcutKeyActivator(
+      key: LogicalKeyboardKey.digit0,
+      control: true,
+      callback: () => ScaleDetectorState.topmost?.reset(),
+      title: () => lang.zoom,
+    ),
+    // -----------------
+    for (int i = 1; i <= 9; i++)
+      ShortcutKeyActivator(
+        key: LogicalKeyboardKey(0x00000000030 + i),
+        control: true,
+        alt: true,
+        callback: () async {
+          final currentItem = Player.inst.currentItem.value;
+          if (currentItem is Selectable) {
+            final newRating = i * 10;
+            snackyy(title: lang.rating, message: '$newRating%');
+
+            try {
+              final track = currentItem.track;
+              await NamidaTaggerController.inst.updateTracksMetadata(
+                tracks: [track],
+                editedTags: {
+                  TagField.rating: newRating.toString(),
+                },
+                onStatsEdit: null,
+                onEdit: (didUpdate, error, _) {
+                  if (!didUpdate) {
+                    var msg = lang.metadataEditFailed;
+                    if (error != null) msg += '\n$error';
+                    snackyy(title: lang.warning, message: msg, isError: true);
+                  }
+                },
+                keepFileDates: true,
+                displayFFmpegFallbackWarning: false,
+              );
+            } catch (e) {
+              snackyy(title: lang.warning, message: e.toString(), isError: true);
+            }
+          }
+        },
+        title: () => lang.setRating,
+      ),
+    // -----------------
+    for (int i = 1; i <= 9; i++)
+      ShortcutKeyActivator(
+        key: LogicalKeyboardKey(0x00000000030 + i),
+        control: true,
+        callback: () {
+          try {
+            final tab = settings.libraryTabs.value[i - 1].activeVariant();
+            ScrollSearchController.inst.animatePageController(tab);
+          } catch (_) {
+            // -- index larger than tabs length
+          }
+        },
+        title: () => lang.libraryTabs,
+      ),
+
+    // ================
+    ShortcutKeyActivator(
+      key: LogicalKeyboardKey.f11,
+      callback: () async {
+        final isFullscreen = await windowManager.isFullScreen();
+        windowManager.setFullScreen(!isFullscreen);
+      },
+      title: () => lang.fullscreen,
+    ),
+    ShortcutKeyActivator(
+      key: LogicalKeyboardKey.keyL,
+      control: true,
+      alt: true,
+      callback: () => WindowController.instance?.toggleMiniLyricsMode(),
+      title: () => lang.miniLyricsWindow,
+    ),
+    ShortcutKeyActivator(
+      key: LogicalKeyboardKey.escape,
+      callback: () {
+        if (NamidaWindowManager.isMiniLyricsMode.value) {
+          WindowController.instance?.exitMiniLyricsMode();
+        } else {
+          NamidaNavigator.inst.back();
+        }
+      },
+      title: () => lang.exit,
+    ),
+  ];
+
+  FocusAttachment? _attachment;
+
+  /// arrow keys are mapped to [DirectionalFocusIntent]/[ScrollIntent] by [WidgetsApp.defaultShortcuts],
+  /// and since those are dispatched from the focused node upwards, they get consumed before ever
+  /// reaching our root scope handler. text fields are unaffected, they consume arrows earlier
+  /// through [DefaultTextEditingShortcuts].
+  static bool _isStrippedDefault(ShortcutActivator activator, Intent intent) {
+    if (activator is! SingleActivator) return false;
+
+    final trigger = activator.trigger;
+    final isArrow =
+        trigger == LogicalKeyboardKey.arrowLeft || //
+        trigger == LogicalKeyboardKey.arrowRight ||
+        trigger == LogicalKeyboardKey.arrowUp ||
+        trigger == LogicalKeyboardKey.arrowDown;
+    if (!isArrow) return false;
+
+    return intent is DirectionalFocusIntent || (intent is ScrollIntent && activator.control);
+  }
+
+  @override
+  late final Map<ShortcutActivator, Intent> appShortcuts = Map<ShortcutActivator, Intent>.fromEntries(
+    WidgetsApp.defaultShortcuts.entries.where(
+      (e) => !_isStrippedDefault(e.key, e.value),
+    ),
+  );
+
+  @override
+  void init() {
+    _attachment = FocusManager.instance.rootScope.attach(
+      null,
+      onKeyEvent: (node, event) {
+        if (event is! KeyDownEvent && event is! KeyRepeatEvent) return KeyEventResult.ignored;
+
+        final candidates = triggersIndex[event.logicalKey];
+        if (candidates == null) return KeyEventResult.ignored;
+
+        final keyboard = HardwareKeyboard.instance;
+        for (int i = 0; i < candidates.length; i++) {
+          final activator = candidates[i];
+          if (activator.acceptsMatchedTrigger(event, keyboard)) {
+            if (activator.skipInTextFields && ShortcutsManager.isTextFieldFocused()) return KeyEventResult.ignored;
+            activator.callback();
+            return KeyEventResult.handled;
+          }
+        }
+        return KeyEventResult.ignored;
+      },
+    );
+  }
+
+  @override
+  void initUserShortcutsFromSettings() async {
+    for (final s in settings.shortcuts.shortcuts.value.entries) {
+      final data = s.value;
+      data?.createHotkey(s.key.toSimpleCallback());
+    }
+  }
+
+  @override
+  void setUserShortcut({required HotkeyAction action, required ShortcutKeyData? data}) {
+    final oldShortcut = settings.shortcuts.shortcuts.value[action];
+    oldShortcut?.disposeHotkey();
+
+    data?.createHotkey(action.toSimpleCallback());
+    settings.shortcuts.shortcuts.update((shortcuts) => shortcuts[action] = data);
+  }
+
+  @override
+  void dispose() {
+    _attachment?.detach();
+  }
+
+  @override
+  void openPlayerQueue() {
+    _executeMiniPlayers(
+      (localPlayer, ytPlayer, ytQueueChip) {
+        if (ytPlayer != null) {
+          if (!ytPlayer.isExpanded) ytPlayer.animateToState(true);
+          _executeYtQueueSheet(ytQueueChip, (chip) => chip.toggleSheet());
+        } else {
+          if (localPlayer.isInQueue) {
+            localPlayer.snapToExpanded();
+          } else {
+            localPlayer.snapToQueue();
+          }
+        }
+      },
+    );
+  }
+
+  void _executeMiniPlayers(
+    void Function(
+      MiniPlayerController localPlayer,
+      NamidaYTMiniplayerState? ytPlayer,
+      YTMiniplayerQueueChipState? ytQueueChip,
+    )
+    callback,
+  ) {
+    callback(
+      MiniPlayerController.inst,
+      MiniPlayerController.inst.ytMiniplayerKey.currentState,
+      NamidaNavigator.inst.ytQueueSheetKey.currentState,
+    );
+  }
+
+  void _executeYtQueueSheet(YTMiniplayerQueueChipState? ytQueueChip, void Function(YTMiniplayerQueueChipState ytQueueChip) callback) {
+    final ytQueue = NamidaNavigator.inst.ytQueueSheetKey.currentState;
+    if (ytQueue != null) {
+      callback(ytQueue);
+      return;
+    }
+
+    Timer(
+      const Duration(milliseconds: 100),
+      () {
+        final ytQueue = NamidaNavigator.inst.ytQueueSheetKey.currentState;
+        if (ytQueue != null) callback(ytQueue);
+      },
+    );
+  }
+
+  void _showSnack({required String message}) {
+    snackyy(
+      icon: Broken.flash_1,
+      title: lang.shortcuts,
+      message: message,
+      borderColor: Colors.green.withOpacityExt(0.6),
+      top: false,
+      type: SnackbarType.playerInfo,
+    );
+  }
+
+  bool _isInSettingsPage() {
+    final currentRouteType = NamidaNavigator.inst.currentRoute?.route;
+    final isInSettings = currentRouteType == RouteType.SETTINGS_page || currentRouteType == RouteType.SETTINGS_subpage;
+    return isInSettings;
+  }
+}

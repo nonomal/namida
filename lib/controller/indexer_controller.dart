@@ -1,392 +1,539 @@
-// ignore_for_file: depend_on_referenced_packages
-
 import 'dart:async';
 import 'dart:io';
 
-import 'package:audio_service/audio_service.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:get/get.dart';
+
+import 'package:audio_service/audio_service.dart';
+import 'package:intl/intl.dart';
+import 'package:namico_db_wrapper/namico_db_wrapper.dart';
 import 'package:on_audio_query/on_audio_query.dart';
 
 import 'package:namida/class/faudiomodel.dart';
 import 'package:namida/class/folder.dart';
+import 'package:namida/class/library_group.dart';
 import 'package:namida/class/library_item_map.dart';
+import 'package:namida/class/progress_percentage.dart';
+import 'package:namida/class/sort_chain.dart';
 import 'package:namida/class/split_config.dart';
 import 'package:namida/class/track.dart';
 import 'package:namida/class/video.dart';
 import 'package:namida/controller/current_color.dart';
+import 'package:namida/controller/directory_index.dart';
+import 'package:namida/controller/folders_controller.dart';
+import 'package:namida/controller/history_controller.dart';
+import 'package:namida/controller/music_web_server/music_web_server_base.dart';
 import 'package:namida/controller/navigator_controller.dart';
+import 'package:namida/controller/platform/namida_channel/namida_channel.dart';
+import 'package:namida/controller/platform/tags_extractor/tags_extractor.dart';
 import 'package:namida/controller/player_controller.dart';
+import 'package:namida/controller/playlist_controller.dart';
+import 'package:namida/controller/queue_controller.dart';
 import 'package:namida/controller/scroll_search_controller.dart';
 import 'package:namida/controller/search_sort_controller.dart';
 import 'package:namida/controller/settings_controller.dart';
+import 'package:namida/controller/settings_search_controller.dart';
+import 'package:namida/controller/sync_manager/sync_manager.dart';
 import 'package:namida/controller/tagger_controller.dart';
 import 'package:namida/core/constants.dart';
+import 'package:namida/core/dirs_file_filter.dart';
 import 'package:namida/core/enums.dart';
 import 'package:namida/core/extensions.dart';
 import 'package:namida/core/functions.dart';
+import 'package:namida/core/namida_converter_ext.dart';
 import 'package:namida/core/translations/language.dart';
+import 'package:namida/core/utils.dart';
+import 'package:namida/ui/widgets/artwork.dart';
 import 'package:namida/ui/widgets/library/track_tile.dart';
+import 'package:namida/ui/widgets/settings/indexer_settings.dart';
 
-class Indexer {
+part 'indexer_artwork_extract_strategies.dart';
+part 'indexer_favourites_sorting.dart';
+
+class Indexer<T extends Track> {
   static Indexer get inst => _instance;
   static final Indexer _instance = Indexer._internal();
   Indexer._internal();
 
-  bool get _defaultUseMediaStore => settings.useMediaStore.value;
+  bool get _defaultUseMediaStore => NamidaFeaturesVisibility.onAudioQueryAvailable && settings.useMediaStore.value;
+  bool get _includeVideosAsTracks => settings.includeVideos.value;
+  bool get _isArtworkCachingEnabled => settings.cacheArtworks.value;
+  bool get isNetworkArtworkCachingEnabled => true;
 
-  final RxBool isIndexing = false.obs;
+  Future<void> _clearTracksDBAndReOpen() async {
+    await _tracksDBManager.deleteEverything();
+  }
 
-  final currentTracksPathsBeingExtracted = <String>[].obs;
-  final RxSet<String> allAudioFiles = <String>{}.obs;
-  final RxInt filteredForSizeDurationTracks = 0.obs;
-  final RxInt duplicatedTracksLength = 0.obs;
-  final RxInt tracksExcludedByNoMedia = 0.obs;
+  late final _tracksDBManager = DBWrapper.openFromInfo(
+    fileInfo: AppPaths.TRACKS_DB_INFO,
+    config: const DBConfig(
+      createIfNotExist: true,
+    ),
+  );
+  late final _externalTracksDBManager = DBWrapper.openFromInfo(
+    fileInfo: AppPaths.TRACKS_EXTERNAL_DB_INFO,
+    config: const DBConfig(
+      createIfNotExist: true,
+    ),
+  );
+  late final _trackStatsDBManager = DBWrapper.openFromInfo(
+    fileInfo: AppPaths.TRACKS_STATS_DB_INFO,
+    config: const DBConfig(
+      createIfNotExist: true,
+      // -- somehow the only db having issues with being closed in the important times
+      autoDisposeTimerDuration: null,
+    ),
+  );
 
-  final RxInt artworksInStorage = 0.obs;
-  final RxInt colorPalettesInStorage = 0.obs;
-  final RxInt videosInStorage = 0.obs;
+  final isIndexing = false.obs;
 
-  final RxInt artworksSizeInStorage = 0.obs;
-  final RxInt videosSizeInStorage = 0.obs;
+  late final indexingProgress = ProgressPercentage(_indexingDoneCount, _indexingTotalCount);
+  final _indexingDoneCount = 0.obs;
+  final _indexingTotalCount = 0.obs;
 
-  final mainMapAlbums = LibraryItemMap();
-  final mainMapArtists = LibraryItemMap();
-  final mainMapAlbumArtists = LibraryItemMap();
-  final mainMapComposer = LibraryItemMap();
-  final mainMapGenres = LibraryItemMap();
-  final RxMap<Folder, List<Track>> mainMapFolders = <Folder, List<Track>>{}.obs;
+  final allAudioFiles = <String>{}.obs;
+  final networkTracksCount = 0.obs;
+  final filteredForSizeDurationTracks = 0.obs;
+  final duplicatedTracksLength = 0.obs;
+  final tracksExcludedByNoMedia = 0.obs;
 
-  final RxList<Track> tracksInfoList = <Track>[].obs;
+  final artworksInStorage = 0.obs;
+  // final colorPalettesInStorage = 0.obs;
+
+  final artworksSizeInStorage = 0.obs;
+
+  final mainMapsGroup = LibraryGroup<T>();
+  LibraryItemMapRaw<AlbumIdentifierWrapper> get mainMapAlbums => mainMapsGroup.mainMapAlbums;
+  LibraryItemMap get mainMapArtists => mainMapsGroup.mainMapArtists;
+  LibraryItemMap get mainMapAlbumArtists => mainMapsGroup.mainMapAlbumArtists;
+  LibraryItemMap get mainMapComposer => mainMapsGroup.mainMapComposer;
+  LibraryItemMap get mainMapGenres => mainMapsGroup.mainMapGenres;
+  LibraryItemMap get mainMapStyles => mainMapsGroup.mainMapStyles;
+  LibraryItemMap get mainMapLanguages => mainMapsGroup.mainMapLanguages;
+  RxMap<Folder, List<T>> get mainMapFoldersTracksAndVideos => mainMapsGroup.mainMapFoldersTracksAndVideos;
+  RxMap<Folder, List<T>> get mainMapFoldersTracks => mainMapsGroup.mainMapFoldersTracks;
+  RxMap<VideoFolder, List<Video>> get mainMapFoldersVideos => mainMapsGroup.mainMapFoldersVideos;
+
+  LibraryItemMap getArtistMapFor(MediaType type) {
+    return switch (type) {
+      MediaType.artist => Indexer.inst.mainMapArtists,
+      MediaType.albumArtist => Indexer.inst.mainMapAlbumArtists,
+      MediaType.composer => Indexer.inst.mainMapComposer,
+      _ => Indexer.inst.mainMapArtists,
+    };
+  }
+
+  LibraryItemMap getGenreMapFor(MediaType type) {
+    return switch (type) {
+      MediaType.genre => Indexer.inst.mainMapGenres,
+      MediaType.style => Indexer.inst.mainMapStyles,
+      MediaType.language => Indexer.inst.mainMapLanguages,
+      _ => Indexer.inst.mainMapGenres,
+    };
+  }
+
+  final tracksInfoList = <T>[].obs;
 
   /// tracks map used for lookup
-  final allTracksMappedByPath = <Track, TrackExtended>{}.obs;
+  var allTracksMappedByPath = <String, TrackExtended>{};
+  var externalTracksMappedByPath = <String, TrackExtended>{};
   final trackStatsMap = <Track, TrackStats>{}.obs;
 
-  var allFolderCovers = <String, String>{}; // {directoryPath, imagePath}
-  var allTracksMappedByYTID = <String, List<Track>>{};
+  var allFolderCovers = <Folder, String>{}; // {directoryPath, imagePath}
+  var allTracksMappedByYTID = <String, List<T>>{};
 
   /// Used to prevent duplicated track (by filename).
   final Map<String, bool> _currentFileNamesMap = {};
 
   late final _audioQuery = OnAudioQuery();
 
-  List<Track> get recentlyAddedTracks {
-    final alltracks = List<Track>.from(tracksInfoList);
-    alltracks.sortByReverseAlt((e) => e.dateModified, (e) => e.dateAdded);
+  List<T> recentlyAddedTracksSorted() {
+    final alltracks = tracksInfoList.value.toList();
+    alltracks.sortByAltsPrecomputed(
+      [
+        (tr) => tr.toTrackExt().dateModified,
+        (tr) => tr.toTrackExt().dateAdded,
+      ],
+      reverse: true,
+    );
     return alltracks;
   }
 
-  Map<String, (Track, int)> get backupMediaStoreIDS => _backupMediaStoreIDS;
+  String? getFallbackFolderArtworkPath({required Folder folder}) {
+    return this.allFolderCovers[folder]; // folder hash already resolves extra/removed path separator
+  }
 
-  bool imageObtainedBefore(String imagePath) => _artworksMap[imagePath] != null || _artworksMapFullRes[imagePath] != null;
+  bool imageObtainedBefore(String imagePath) => _pendingArtworksCompressed[imagePath] != null || _pendingArtworksFullRes[imagePath] != null;
 
   /// {imagePath: (TrackExtended, id)};
   final _backupMediaStoreIDS = <String, (Track, int)>{};
-  final artworksMap = <String, Uint8List?>{};
-  final _artworksMap = <String, Completer<void>>{};
-  final _artworksMapFullRes = <String, Completer<void>>{};
-  Future<(File?, Uint8List?)> getArtwork({
-    required String imagePath,
+  static const _kArtworksBytesMapMaxEntries = 60;
+  final artworksBytesMap = <String, Uint8List?>{};
+  final artworksFilesMap = <String, File?>{};
+
+  void _putArtworkBytes(String key, Uint8List? bytes) {
+    final map = artworksBytesMap;
+    if (map.length >= _kArtworksBytesMapMaxEntries) map.remove(map.keys.first);
+    map[key] = bytes;
+  }
+
+  final _pendingArtworksCompressed = <String, Completer<void>>{};
+  final _pendingArtworksFullRes = <String, Completer<void>>{};
+
+  Future<FArtwork> getArtwork({
+    required String? imagePath,
+    Track? track,
     bool checkFileFirst = true,
     required bool compressed,
     int? size,
   }) async {
-    if (compressed && _artworksMap[imagePath] != null) {
-      await _artworksMap[imagePath]!.future;
-      return (null, artworksMap[imagePath]);
-    }
+    if (imagePath == null && track == null) return FArtwork.dummy();
 
-    if (checkFileFirst && await File(imagePath).exists()) {
-      return (File(imagePath), null);
-    } else {
-      final info = _backupMediaStoreIDS[imagePath];
-      if (info != null) {
-        final id = info.$2;
-        Uint8List? artwork;
-        if (compressed) {
-          _artworksMap[imagePath] = Completer<Uint8List?>();
+    final strategy = _getArtworkStrategy(
+      imagePath: imagePath,
+      track: track,
+    );
 
-          artwork = await _audioQuery.queryArtwork(
-            id,
-            ArtworkType.AUDIO,
-            format: ArtworkFormat.JPEG,
-            quality: null,
-            size: size?.clamp(48, 360) ?? 360,
-          );
-          artworksMap[imagePath] = artwork;
-          _artworksMap[imagePath]!.completeIfWasnt();
-          await _artworksMap[imagePath]?.future;
-          return (null, artworksMap[imagePath]);
-        } else {
-          _artworksMapFullRes[imagePath] = Completer<void>();
-          // -- try extracting full res using taggers
-          File? file;
-          final res = await FAudioTaggerController.inst.extractMetadata(trackPath: info.$1.path);
-          file = res.tags.artwork.file;
-          if (file == null) {
-            artwork = await _audioQuery.queryArtwork(
-              id,
-              ArtworkType.AUDIO,
-              format: ArtworkFormat.PNG,
-              quality: 100,
-              size: 720,
-            );
-            if (artwork != null) {
-              final f = File(imagePath);
-              await FileImage(f).evict();
-              await f.writeAsBytes(artwork);
-              file = f;
-            }
-          }
-
-          _artworksMapFullRes[imagePath]!.completeIfWasnt(); // to notify that the process was done, but we dont store full res bytes
-          await _artworksMapFullRes[imagePath]?.future;
-          return (file, null);
-        }
-      }
-    }
-
-    return (null, null);
+    return await strategy.getArtwork(
+      imagePath: imagePath,
+      track: track,
+      checkFileFirst: checkFileFirst,
+      size: size,
+      compressed: compressed,
+    );
   }
 
-  Future<void> prepareTracksFile() async {
-    _fetchMediaStoreTracks(); // to fill ids map
-
-    /// Only awaits if the track file exists, otherwise it will get into normally and start indexing.
-    if (await File(AppPaths.TRACKS).existsAndValid()) {
-      await readTrackData();
-      _afterIndexing();
+  _ArtworkExtractStrategy _getArtworkStrategy({
+    required String? imagePath,
+    required Track? track,
+  }) {
+    // -- network tracks
+    if (track != null && track.isNetwork) {
+      return _NetworkBasedArtworkExtractStrategy(this);
     }
 
-    /// doesnt exists
-    else {
-      await File(AppPaths.TRACKS).create();
+    // -- media store available
+    if (_defaultUseMediaStore && imagePath != null) {
+      return _MediaStoreArtworkExtractStrategy(this);
+    }
+
+    // -- file based
+    return _FileBasedArtworkExtractStrategy(this);
+  }
+
+  Future<void> prepareTracksFile({bool startupBoost = false}) async {
+    if (startupBoost) {
+      final completer = Completer<void>();
+      unawaited(_prepareTracksFile(completer));
+      return await completer.future;
+    } else {
+      return await _prepareTracksFile();
+    }
+  }
+
+  Future<void> _prepareTracksFile([Completer<void>? completer]) async {
+    _fetchMediaStoreTracks(); // to fill ids map
+
+    final tracksDBPath = AppPaths.TRACKS_DB_INFO.file.path;
+    if (await File(tracksDBPath).exists() || await File(AppPaths.TRACKS_OLD).existsAndValid()) {
+      isIndexing.value = true;
+      // -- only block load if the track file exists..
+      await _readTrackData(completer);
+      await sortMediaTracksAndSubListsAfterHistoryPrepared();
+      await _sortAll();
+      isIndexing.value = false;
+
+      if (tracksInfoList.value.isEmpty) {
+        refreshLibraryAndCheckForDiff(forceReIndex: true);
+      } else if (settings.refreshOnStartup.value) {
+        this.refreshLibraryAndCheckForDiff(allowDeletion: false, showFinishedSnackbar: false);
+      } else {
+        // main reason is to refresh fallback cover
+        this.getAudioFiles();
+      }
+    } else {
+      // -- otherwise it get into normally and start indexing.
+      await File(tracksDBPath).create();
+      completer?.completeIfWasnt();
       refreshLibraryAndCheckForDiff(forceReIndex: true, useMediaStore: _defaultUseMediaStore);
     }
   }
 
+  void rebuildTracksAfterSplitConfigChanges() => _rederiveAllTracks();
+
+  void rebuildTracksAfterExtractFeatArtistChanges() => _rederiveAllTracks();
+
+  Future<void> _rederiveAllTracks() async {
+    final splitConfig = _createSplitConfig();
+    allTracksMappedByPath.updateAll((_, trExt) => trExt.rederive(splitConfig));
+    externalTracksMappedByPath.updateAll((_, trExt) => trExt.rederive(splitConfig));
+    await _afterIndexing();
+    tracksInfoList.refresh();
+  }
+
+  void resortAllAfterSortKeysChange() async {
+    SearchSortController.inst.disposeMediaResources(MediaType.track);
+    await _afterIndexing();
+    tracksInfoList.refresh();
+  }
+
   Future<void> refreshLibraryAndCheckForDiff({
-    Set<String>? currentFiles,
+    DirsFileFilterResult? currentFiles,
     bool forceReIndex = false,
     bool? useMediaStore,
     bool allowDeletion = true,
     bool showFinishedSnackbar = true,
   }) async {
-    if (isIndexing.value) return snackyy(title: lang.NOTE, message: lang.ANOTHER_PROCESS_IS_RUNNING);
+    if (isIndexing.value) {
+      snackyy(title: lang.note, message: lang.anotherProcessIsRunning);
+      return;
+    }
 
+    _indexingDoneCount.value = 0;
+    _indexingTotalCount.value = 0;
     isIndexing.value = true;
     useMediaStore ??= _defaultUseMediaStore;
 
+    IndexerFilesDiff? differenceStats;
+
     if (forceReIndex || tracksInfoList.isEmpty) {
       await _fetchAllSongsAndWriteToFile(
-        audioFiles: {},
-        deletedPaths: {},
+        filesDiff: null,
         forceReIndex: true,
         useMediaStore: useMediaStore,
       );
     } else {
-      currentFiles ??= await getAudioFiles();
+      currentFiles ??= await getAudioFilesForRefresh();
+      final difference = getPathsDifference(currentFiles);
+      differenceStats = allowDeletion ? difference : difference.withoutDeletedPaths();
+
       await _fetchAllSongsAndWriteToFile(
-        audioFiles: getNewFoundPaths(currentFiles),
-        deletedPaths: allowDeletion ? getDeletedPaths(currentFiles) : {},
+        filesDiff: differenceStats,
         forceReIndex: false,
         useMediaStore: useMediaStore,
       );
     }
 
-    _afterIndexing();
+    await _afterIndexing();
+    await _tracksDBManager.checkpoint().ignoreError();
     isIndexing.value = false;
-    if (showFinishedSnackbar) snackyy(title: lang.DONE, message: lang.FINISHED_UPDATING_LIBRARY);
+
+    final isEmpty = tracksInfoList.value.isEmpty;
+    if (showFinishedSnackbar || isEmpty) {
+      if (isEmpty) {
+        snackyy(
+          title: lang.done,
+          message: lang.noTracksFound,
+          button: SnackbarButton(
+            text: lang.addFolder,
+            function: () {
+              SettingsSearchController.inst
+                  .onResultTap(
+                    settingPage: SettingSubpageEnum.indexer,
+                    key: IndexerSettings.addFolder,
+                    context: namida.context!,
+                  )
+                  .ignoreError();
+              const IndexerSettings().promptAddFolderType();
+            },
+          ),
+        );
+      } else {
+        final msgParts = [lang.finishedUpdatingLibrary];
+        if (differenceStats != null) {
+          int newFilesLength = 0;
+          int deletedFilesLength = 0;
+          // -- only show actual stats since filtering can apply to new paths
+          // -- eg: there could be 10 new files, but were filtered so it's false to say 10 new files were added
+
+          for (final n in differenceStats.newPaths) {
+            if (allTracksMappedByPath.containsKey(n)) {
+              newFilesLength++;
+            }
+          }
+          for (final n in differenceStats.deletedPaths) {
+            if (!allTracksMappedByPath.containsKey(n)) {
+              deletedFilesLength++;
+            }
+          }
+          final modifiedFilesLength = differenceStats.modifiedPaths.length;
+
+          if (newFilesLength == 0 && deletedFilesLength == 0 && modifiedFilesLength == 0) {
+            msgParts.add('${lang.local}: ${lang.noChangesFound}');
+          } else {
+            msgParts.add('${lang.newLabel}: ${newFilesLength.displayFilesKeyword}');
+            msgParts.add('${lang.changed}: ${modifiedFilesLength.displayFilesKeyword}');
+            msgParts.add('${lang.deleted}/${lang.filtered}: ${deletedFilesLength.displayFilesKeyword}');
+          }
+          void addIfNonZero(String text, int value) {
+            if (value > 0) {
+              msgParts.add('$text: $value');
+            }
+          }
+
+          addIfNonZero(lang.duplicatedTracks, this.duplicatedTracksLength.value);
+          addIfNonZero(lang.tracksExcludedByNomedia, this.tracksExcludedByNoMedia.value);
+          addIfNonZero(lang.filteredBySizeAndDuration, this.filteredForSizeDurationTracks.value);
+        }
+        snackyy(title: lang.done, message: msgParts.join('\n'));
+      }
+    }
   }
 
   /// Adds all tracks inside [tracksInfoList] to their respective album, artist, etc..
   /// & sorts all media.
-  void _afterIndexing() {
-    mainMapAlbums.value.clear();
-    mainMapArtists.value.clear();
-    mainMapAlbumArtists.value.clear();
-    mainMapComposer.value.clear();
-    mainMapGenres.value.clear();
-    mainMapFolders.clear();
+  Future<void> _afterIndexing() async {
+    final mediaSorters = {for (final e in MediaType.values) e: SearchSortController.inst.getMediaTracksSortingComparables(e)};
+    this.mainMapsGroup.fillAll(tracksInfoList.value, (tr) => tr.toTrackExt(), settings.albumIdentifiers.value);
+    QueueController.latestPlayedForSourceManager.migrateLegacyAlbumSources();
+    this.mainMapsGroup.sortAllSync(mediaSorters, tracksInfoList.value);
+    this.mainMapsGroup.refreshAll();
+    FoldersController.tracksAndVideos.onMapChanged(mainMapFoldersTracksAndVideos.value);
+    FoldersController.tracks.onMapChanged(mainMapFoldersTracks.value);
+    FoldersController.videos.onMapChanged(mainMapFoldersVideos.value);
+    _refreshMediaTracksSubListsAfterSort(mediaSorters.keys);
 
-    // --- Sorting All Sublists ---
-    tracksInfoList.loop((tr, i) {
-      final trExt = tr.toTrackExt();
-
-      // -- Assigning Albums
-      mainMapAlbums.value.addForce(trExt.albumIdentifier, tr);
-
-      // -- Assigning Artists
-      trExt.artistsList.loop((artist, i) {
-        mainMapArtists.value.addForce(artist, tr);
-      });
-
-      // -- Assigning Album Artist
-      mainMapAlbumArtists.value.addForce(trExt.albumArtist, tr);
-
-      // -- Assigning Composer
-      mainMapComposer.value.addForce(trExt.composer, tr);
-
-      // -- Assigning Genres
-      trExt.genresList.loop((genre, i) {
-        mainMapGenres.value.addForce(genre, tr);
-      });
-
-      // -- Assigning Folders
-      mainMapFolders.addForce(tr.folder, tr);
-    });
-
-    _sortAll();
-    sortMediaTracksSubLists(MediaType.values);
+    await _sortAll();
   }
 
-  void sortMediaTracksSubLists(List<MediaType> medias) {
-    medias.loop((e, index) {
-      final sorters = SearchSortController.inst.getMediaTracksSortingComparables(e);
-      void sortPls(Iterable<List<Track>> trs, MediaType type) {
-        final reverse = settings.mediaItemsTrackSortingReverse[type] ?? false;
-        if (reverse) {
-          for (final e in trs) {
-            e.sortByReverseAlts(sorters);
-          }
-        } else {
-          for (final e in trs) {
-            e.sortByAlts(sorters);
-          }
+  Future<void> sortMediaTracksSubLists(List<MediaType> medias) async {
+    final sorters = {for (final e in medias) e: SearchSortController.inst.getMediaTracksSortingComparables(e)};
+    this.mainMapsGroup.sortAllSync(sorters, tracksInfoList.value);
+    _refreshMediaTracksSubListsAfterSort(sorters.keys); // -- vip vro
+    this.mainMapsGroup.refreshAll(); // to refresh sublists as well
+  }
+
+  void _refreshMediaTracksSubListsAfterSort(Iterable<MediaType> sortedMedias) {
+    for (final e in sortedMedias) {
+      final fn = switch (e) {
+        MediaType.track => SearchSortController.inst.refreshTrackSearchList,
+        MediaType.album ||
+        MediaType.artist ||
+        MediaType.albumArtist ||
+        MediaType.composer ||
+        MediaType.genre ||
+        MediaType.style ||
+        MediaType.language => () => SearchSortController.inst.searchMedia(e.toLibraryTab().textSearchController?.text ?? '', e),
+        MediaType.folder => FoldersController.tracksAndVideos.refreshAfterSorting,
+        MediaType.folderMusic => FoldersController.tracks.refreshAfterSorting,
+        MediaType.folderVideo => FoldersController.videos.refreshAfterSorting,
+        _ => null,
+      };
+      fn?.call();
+    }
+  }
+
+  List<MediaType> _getMediaTypeSortThatDependOnHistory() {
+    final requiredToSort = <MediaType>[];
+    for (final e in settings.mediaItemsTrackSorting.value.entries) {
+      for (final sort in e.value.types()) {
+        if (sort.requiresHistory) {
+          requiredToSort.add(e.key);
+          break;
         }
       }
-
-      switch (e) {
-        case MediaType.album:
-          sortPls(mainMapAlbums.value.values, MediaType.album);
-          mainMapAlbums.refresh();
-          break;
-        case MediaType.artist:
-          sortPls(mainMapArtists.value.values, MediaType.artist);
-          mainMapArtists.refresh();
-          break;
-        case MediaType.albumArtist:
-          sortPls(mainMapAlbumArtists.value.values, MediaType.albumArtist);
-          mainMapAlbumArtists.refresh();
-          break;
-        case MediaType.composer:
-          sortPls(mainMapComposer.value.values, MediaType.composer);
-          mainMapComposer.refresh();
-          break;
-        case MediaType.genre:
-          sortPls(mainMapGenres.value.values, MediaType.genre);
-          mainMapGenres.refresh();
-          break;
-        case MediaType.folder:
-          sortPls(mainMapFolders.values, MediaType.folder);
-          mainMapFolders.refresh();
-          break;
-        default:
-          null;
-      }
-    });
+    }
+    return requiredToSort;
   }
 
-  void _sortAll() => SearchSortController.inst.sortAll();
+  late final _favouritesSorting = _FavouritesSorting<T>(this);
+
+  /// null [tracks] means the favourites were replaced as a whole.
+  void onFavouritesChanged(Iterable<T>? tracks) => _favouritesSorting.onChanged(tracks);
+
+  /// [track] keeps its position in lists sorted by favourites until the current page changes.
+  void deferFavouriteSorting(T track) => _favouritesSorting.defer(track);
+
+  /// re-sorts media subtracks that depend on history.
+  Future<void> sortMediaTracksAndSubListsAfterHistoryPrepared() async {
+    if (HistoryController.inst.isHistoryLoaded && this.mainMapsGroup.didFill) {
+      final requiredToSort = _getMediaTypeSortThatDependOnHistory();
+      await sortMediaTracksSubLists(requiredToSort);
+
+      for (final e in MediaType.values) {
+        final sortRequiresHistory = switch (e) {
+          MediaType.track => settings.mediaItemsTrackSorting.value[MediaType.track]?.firstType?.requiresHistory ?? false,
+          MediaType.album ||
+          MediaType.artist ||
+          MediaType.albumArtist ||
+          MediaType.composer ||
+          MediaType.genre ||
+          MediaType.style ||
+          MediaType.language ||
+          MediaType.playlist => settings.groupSortingOf(e).types().any((sort) => sort.requiresHistory),
+          MediaType.folder => settings.mediaItemsTrackSorting.value[MediaType.folder]?.firstType?.requiresHistory ?? false,
+          MediaType.folderMusic => settings.mediaItemsTrackSorting.value[MediaType.folderMusic]?.firstType?.requiresHistory ?? false,
+          MediaType.folderVideo => settings.mediaItemsTrackSorting.value[MediaType.folderVideo]?.firstType?.requiresHistory ?? false,
+          MediaType.mood => false,
+          MediaType.tag => false,
+          MediaType.rating => false,
+        };
+        if (sortRequiresHistory) SearchSortController.inst.sortMedia(e);
+      }
+    }
+  }
+
+  Future<void> _sortAll() => SearchSortController.inst.sortAll();
 
   /// Removes Specific tracks from their corresponding media, useful when updating track metadata or reindexing a track.
   void _removeThisTrackFromAlbumGenreArtistEtc(Track tr) {
     final trExt = tr.toTrackExt();
-    mainMapAlbums.value[trExt.albumIdentifier]?.remove(tr);
+    void removeAndDeleteEmpty<K>(Map<K, List<Track>> map, K key) {
+      final list = map[key];
+      if (list != null) {
+        list.remove(tr);
+        if (list.isEmpty) {
+          map.remove(key);
+        }
+      }
+    }
 
-    trExt.artistsList.loop((artist, i) {
-      mainMapArtists.value[artist]?.remove(tr);
-    });
-    mainMapAlbumArtists.value[trExt.albumArtist]?.remove(tr);
-    mainMapComposer.value[trExt.composer]?.remove(tr);
-    trExt.genresList.loop((genre, i) {
-      mainMapGenres.value[genre]?.remove(tr);
-    });
-    mainMapFolders[tr.folder]?.remove(tr);
+    for (var identifier in trExt.albumsIdentifiersModified) {
+      removeAndDeleteEmpty(mainMapAlbums.value, identifier);
+    }
+    for (var artist in trExt.artistsList) {
+      removeAndDeleteEmpty(mainMapArtists.value, artist);
+    }
+    for (var albumArtist in trExt.albumArtistsList) {
+      removeAndDeleteEmpty(mainMapAlbumArtists.value, albumArtist);
+    }
+    for (var composer in trExt.composersList) {
+      removeAndDeleteEmpty(mainMapComposer.value, composer);
+    }
+    for (var genre in trExt.genresList) {
+      removeAndDeleteEmpty(mainMapGenres.value, genre);
+    }
+    for (var style in trExt.stylesList) {
+      removeAndDeleteEmpty(mainMapStyles.value, style);
+    }
+    for (var language in trExt.languagesList) {
+      removeAndDeleteEmpty(mainMapLanguages.value, language);
+    }
+
+    tr is Video ? removeAndDeleteEmpty(mainMapFoldersVideos.value, tr.folder) : removeAndDeleteEmpty(mainMapFoldersTracks.value, tr.folder);
+    removeAndDeleteEmpty(mainMapFoldersTracksAndVideos.value, tr.folder);
 
     _currentFileNamesMap.remove(tr.filename);
   }
 
-  void _addTheseTracksToAlbumGenreArtistEtc(List<Track> tracks) {
-    final List<String> addedAlbums = [];
-    final List<String> addedArtists = [];
-    final List<String> addedAlbumArtists = [];
-    final List<String> addedComposers = [];
-    final List<String> addedGenres = [];
-    final List<Folder> addedFolders = [];
+  void _addTheseTracksToAlbumGenreArtistEtc(Map<TrackExtended, TrackExtended?> tracksMap) {
+    final changes = mainMapsGroup.updateTracksSync(tracksMap, settings.albumIdentifiers.value);
+    final changedMedias = changes.changedMedias;
+    final mediaSorters = {for (final e in changedMedias) e: SearchSortController.inst.getMediaTracksSortingComparables(e)};
+    mainMapsGroup.sortChangedSync(changes, mediaSorters);
+    for (final e in changedMedias) {
+      SearchSortController.inst.sortMedia(e); // main list sorting
+    }
 
-    tracks.loop((tr, _) {
-      final trExt = tr.toTrackExt();
-
-      // -- Assigning Albums
-      mainMapAlbums.value.addNoDuplicatesForce(trExt.albumIdentifier, tr);
-
-      // -- Assigning Artists
-      trExt.artistsList.loop((artist, i) {
-        mainMapArtists.value.addNoDuplicatesForce(artist, tr);
-      });
-      mainMapAlbumArtists.value.addNoDuplicatesForce(trExt.albumArtist, tr);
-      mainMapComposer.value.addNoDuplicatesForce(trExt.composer, tr);
-
-      // -- Assigning Genres
-      trExt.genresList.loop((genre, i) {
-        mainMapGenres.value.addNoDuplicatesForce(genre, tr);
-      });
-
-      // -- Assigning Folders
-      mainMapFolders.addNoDuplicatesForce(tr.folder, tr);
-
-      // --- Adding media that was affected
-      addedAlbums.add(trExt.albumIdentifier);
-      addedArtists.addAll(trExt.artistsList);
-      addedAlbumArtists.add(trExt.albumArtist);
-      addedComposers.add(trExt.composer);
-      addedGenres.addAll(trExt.artistsList);
-      addedFolders.add(tr.folder);
-    });
-
-    final albumSorters = SearchSortController.inst.getMediaTracksSortingComparables(MediaType.album);
-    final artistSorters = SearchSortController.inst.getMediaTracksSortingComparables(MediaType.artist);
-    final genreSorters = SearchSortController.inst.getMediaTracksSortingComparables(MediaType.genre);
-    final folderSorters = SearchSortController.inst.getMediaTracksSortingComparables(MediaType.folder);
-    addedAlbums
-      ..removeDuplicates()
-      ..loop((e, index) {
-        mainMapAlbums.value[e]?.sortByAlts(albumSorters);
-      });
-    addedArtists
-      ..removeDuplicates()
-      ..loop((e, index) {
-        mainMapArtists.value[e]?.sortByAlts(artistSorters);
-      });
-    addedAlbumArtists
-      ..removeDuplicates()
-      ..loop((e, index) {
-        mainMapAlbumArtists.value[e]?.sortByAlts(artistSorters);
-      });
-    addedComposers
-      ..removeDuplicates()
-      ..loop((e, index) {
-        mainMapComposer.value[e]?.sortByAlts(artistSorters);
-      });
-    addedGenres
-      ..removeDuplicates()
-      ..loop((e, index) {
-        mainMapGenres.value[e]?.sortByAlts(genreSorters);
-      });
-    addedFolders
-      ..removeDuplicates()
-      ..loop((e, index) {
-        mainMapFolders[e]?.sortByAlts(folderSorters);
-      });
-
-    _sortAll();
+    if (changes.hasNewKeys(MediaType.folder)) FoldersController.tracksAndVideos.onMapChanged(mainMapFoldersTracksAndVideos.value);
+    if (changes.hasNewKeys(MediaType.folderMusic)) FoldersController.tracks.onMapChanged(mainMapFoldersTracks.value);
+    if (changes.hasNewKeys(MediaType.folderVideo)) FoldersController.videos.onMapChanged(mainMapFoldersVideos.value);
   }
 
-  TrackExtended? _convertTagToTrack({
-    required String trackPath,
+  static Future<TrackExtended?> convertServerTagToTrack({
+    required String path,
+    required String server,
+    required FileStatsAdv stats,
     required FAudioModel trackInfo,
     required bool tryExtractingFromFilename,
     int minDur = 0,
@@ -394,153 +541,156 @@ class Indexer {
     required TrackExtended? Function() onMinDurTrigger,
     required TrackExtended? Function() onMinSizeTrigger,
     required TrackExtended? Function(String err) onError,
+    SplitArtistGenreConfigsWrapper? splittersConfigs,
   }) {
+    return Indexer.convertTagToTrack(
+      trackPath: path,
+      server: server,
+      stats: stats,
+      trackInfo: trackInfo,
+      didExtractArtwork: false,
+      tryExtractingFromFilename: tryExtractingFromFilename,
+      minDur: minDur,
+      minSize: minSize,
+      onMinDurTrigger: onMinDurTrigger,
+      onMinSizeTrigger: onMinSizeTrigger,
+      onError: onError,
+      splittersConfigs: splittersConfigs,
+    );
+  }
+
+  static Future<TrackExtended?> convertTagToTrack({
+    required String trackPath,
+    String? server,
+    FileStatsAdv? stats,
+    required FAudioModel trackInfo,
+    required bool didExtractArtwork,
+    required bool tryExtractingFromFilename,
+    int minDur = 0,
+    int minSize = 0,
+    required TrackExtended? Function() onMinDurTrigger,
+    required TrackExtended? Function() onMinSizeTrigger,
+    required TrackExtended? Function(String err) onError,
+    SplitArtistGenreConfigsWrapper? splittersConfigs,
+  }) async {
     // -- most methods dont throw, except for timeout
     try {
       // -- returns null early depending on size [byte] or duration [seconds]
-      FileStat? fileStat;
+      FileStatsAdv? fileStat;
       try {
-        fileStat = File(trackPath).statSync();
-        if (minSize > 0 && fileStat.size < minSize) {
+        fileStat = stats ?? FileStatsAdv.fromFileStat(await File(trackPath).stat());
+        if (minSize > 0 && (fileStat.size ?? 0) < minSize) {
           return onMinSizeTrigger();
         }
       } catch (_) {}
 
-      late TrackExtended finalTrackExtended;
-
       if (trackInfo.hasError && !tryExtractingFromFilename) return null;
+
+      final info = trackInfo.hasError ? null : trackInfo;
+      final durationInMS = info?.durationMS ?? 0;
+      if (minDur != 0 && durationInMS != 0 && durationInMS < minDur * 1000) {
+        return onMinDurTrigger();
+      }
+
+      final isVideo = trackPath.isVideo();
+      final hasNoEmbeddedArtwork = didExtractArtwork && !isVideo && info != null && !info.tags.artwork.hasArtwork;
 
       final initialTrack = TrackExtended(
         title: UnknownTags.TITLE,
         originalArtist: UnknownTags.ARTIST,
-        artistsList: [UnknownTags.ARTIST],
-        album: UnknownTags.ALBUM,
+        artistsList: const [],
+        originalAlbum: UnknownTags.ALBUM,
+        albumsList: const [],
         albumArtist: UnknownTags.ALBUMARTIST,
+        albumArtistsList: const [],
         originalGenre: UnknownTags.GENRE,
-        genresList: [UnknownTags.GENRE],
+        genresList: const [],
+        originalStyle: UnknownTags.STYLE,
+        stylesList: const [],
         composer: UnknownTags.COMPOSER,
+        composersList: const [],
         originalMood: UnknownTags.MOOD,
-        moodList: [UnknownTags.MOOD],
+        moodList: const [],
         trackNo: 0,
-        duration: 0,
+        trackTo: 0,
+        durationMS: durationInMS,
+        chapters: null,
         year: 0,
+        yearText: '',
         size: fileStat?.size ?? 0,
-        dateAdded: fileStat?.creationDate.millisecondsSinceEpoch ?? 0,
-        dateModified: fileStat?.modified.millisecondsSinceEpoch ?? 0,
+        dateAdded: fileStat?.creationDateMS ?? 0,
+        dateModified: fileStat?.modifiedMS ?? 0,
         path: trackPath,
         comment: '',
-        bitrate: 0,
-        sampleRate: 0,
-        format: '',
-        channels: '',
+        description: '',
+        synopsis: '',
+        bitrate: info?.bitRate ?? 0,
+        sampleRate: info?.sampleRate ?? 0,
+        bits: info?.bits ?? 0,
+        isLossless: info?.isLossless,
+        format: info?.format ?? '',
+        channels: info?.channels ?? '',
         discNo: 0,
+        discTo: 0,
         language: '',
+        languagesList: const [],
         lyrics: '',
+        label: '',
+        releaseType: '',
+        bpm: 0,
+        musicalKey: '',
+        rating: 0.0,
+        originalTags: null,
+        tagsList: const [],
+        gainData: null,
+        sortInfo: null,
+        multiValues: null,
+        extraTags: null,
+        albumsIdentifiersWrappers: const [],
+        isVideo: isVideo,
+        hashKey: null,
+        server: server,
+        serverFolder: null,
+        hasNoEmbeddedArtwork: hasNoEmbeddedArtwork,
       );
-      if (!trackInfo.hasError) {
-        int durationInSeconds = trackInfo.length ?? 0;
-        if (minDur != 0 && durationInSeconds != 0 && durationInSeconds < minDur) {
-          return onMinDurTrigger();
-        }
 
-        final tags = trackInfo.tags;
-
-        // -- Split Artists
-        final artists = splitArtist(
-          title: tags.title,
-          originalArtist: tags.artist,
-          config: ArtistsSplitConfig.settings(),
-        );
-
-        // -- Split Genres
-        final genres = splitGenre(
-          tags.genre,
-          config: GenresSplitConfig.settings(),
-        );
-
-        // -- Split Moods (using same genre splitters)
-        final moods = splitGenre(
-          tags.mood,
-          config: GenresSplitConfig.settings(),
-        );
-
-        String? trimOrNull(String? value) => value == null ? value : value.trimAll();
-        String? nullifyEmpty(String? value) => value == '' ? null : value;
-        String? doMagic(String? value) => nullifyEmpty(trimOrNull(value));
-
-        finalTrackExtended = initialTrack.copyWith(
-          title: doMagic(tags.title),
-          originalArtist: doMagic(tags.artist),
-          artistsList: artists,
-          album: doMagic(tags.album),
-          albumArtist: doMagic(tags.albumArtist),
-          originalGenre: doMagic(tags.genre),
-          genresList: genres,
-          originalMood: doMagic(tags.mood),
-          moodList: moods,
-          composer: doMagic(tags.composer),
-          trackNo: trackInfo.tags.trackNumber.getIntValue(),
-          duration: durationInSeconds,
-          year: tags.year.getIntValue(),
-          comment: tags.comment,
-          bitrate: trackInfo.bitRate,
-          sampleRate: trackInfo.sampleRate,
-          format: trackInfo.format,
-          channels: trackInfo.channels,
-          discNo: tags.discNumber.getIntValue(),
-          language: tags.language,
-          lyrics: tags.lyrics,
-        );
-
-        // ----- if the title || artist weren't found in the tag fields
-        final isTitleEmpty = finalTrackExtended.title == UnknownTags.TITLE;
-        final isArtistEmpty = finalTrackExtended.originalArtist == UnknownTags.ARTIST;
-        if (isTitleEmpty || isArtistEmpty) {
-          final extractedName = getTitleAndArtistFromFilename(trackPath.getFilenameWOExt);
-          final newTitle = isTitleEmpty ? extractedName.$1 : null;
-          final newArtists = isArtistEmpty ? [extractedName.$2] : null;
-          finalTrackExtended = finalTrackExtended.copyWith(
-            title: newTitle,
-            originalArtist: newArtists?.first,
-            artistsList: newArtists,
-          );
-        }
-      } else {
-        // --- Adding dummy track with info extracted from filename.
-        final titleAndArtist = getTitleAndArtistFromFilename(trackPath.getFilenameWOExt);
-        final title = titleAndArtist.$1;
-        final artist = titleAndArtist.$2;
-        finalTrackExtended = initialTrack.copyWith(
-          title: title,
-          originalArtist: artist,
-          artistsList: [artist],
-        );
-      }
-
-      return finalTrackExtended;
+      final tags = info?.tags ?? _emptyTags;
+      final splitConfig = splittersConfigs ?? _createSplitConfig();
+      return initialTrack.copyWithTag(
+        tag: tags,
+        splittersConfigs: splitConfig,
+        generatePathHash: TagsExtractor.defaultUniqueArtworkHash,
+      );
     } catch (e) {
       return onError(e.toString());
     }
   }
 
-  Future<TrackExtended?> extractTrackInfo({
+  static final _emptyTags = FTags.edit(path: '', artwork: FArtwork.dummy());
+
+  Future<TrackExtended?> getTrackInfo({
     required String trackPath,
     int minDur = 0,
     int minSize = 0,
     required TrackExtended? Function() onMinDurTrigger,
     required TrackExtended? Function() onMinSizeTrigger,
-    bool deleteOldArtwork = false,
-    bool checkForDuplicates = true,
     bool tryExtractingFromFilename = true,
+    required bool isNetwork,
+    String? networkId,
   }) async {
-    final res = await FAudioTaggerController.inst.extractMetadata(
+    final res = await NamidaTaggerController.inst.extractMetadata(
       trackPath: trackPath,
-      overrideArtwork: deleteOldArtwork,
+      extractArtwork: false,
+      overrideArtwork: false,
+      isVideo: trackPath.isVideo(),
+      isNetwork: isNetwork,
+      networkId: networkId,
     );
     if (res.hasError) return null;
-    return _convertTagToTrack(
+    return convertTagToTrack(
       trackPath: trackPath,
       trackInfo: res,
+      didExtractArtwork: false,
       tryExtractingFromFilename: tryExtractingFromFilename,
       minDur: minDur,
       minSize: minSize,
@@ -550,58 +700,102 @@ class Indexer {
     );
   }
 
-  Future<void> extractTracksInfo({
-    required List<String> tracksPath,
-    int minDur = 0,
-    int minSize = 0,
-    required TrackExtended? Function() onMinDurTrigger,
-    required TrackExtended? Function() onMinSizeTrigger,
-    bool deleteOldArtwork = false,
-    bool checkForDuplicates = true,
-    bool tryExtractingFromFilename = true,
-  }) async {
-    TrackExtended? extractFunction(FAudioModel item) => _convertTagToTrack(
-          trackPath: item.tags.path,
-          trackInfo: item,
-          tryExtractingFromFilename: tryExtractingFromFilename,
-          minDur: minDur,
-          minSize: minSize,
-          onMinDurTrigger: onMinDurTrigger,
-          onMinSizeTrigger: onMinSizeTrigger,
-          onError: (_) => null,
-        );
+  void _addTrackToLists(TrackExtended trackExt, FArtwork? artwork) {
+    final tr = trackExt.asTrack() as T;
+    final alreadyExists = allTracksMappedByPath.containsKey(tr.path);
+    allTracksMappedByPath[tr.path] = trackExt;
+    unawaited(_tracksDBManager.put(tr.path, trackExt.toJsonWithoutPath()));
+    _currentFileNamesMap[trackExt.path.getFilename] = true;
 
-    final stream = await FAudioTaggerController.inst.extractMetadataAsStream(
-      paths: tracksPath,
-      overrideArtwork: deleteOldArtwork,
-    );
-
-    await for (final item in stream) {
-      final trext = extractFunction(item);
-      if (trext != null) _addTrackToLists(trext, checkForDuplicates, item.tags.artwork);
+    if (!alreadyExists) {
+      tracksInfoList.value.add(tr);
+      if (tr.isNetwork) networkTracksCount.value++;
+      SearchSortController.inst.onTrackIndexed(tr);
+      allTracksMappedByYTID.addForce(trackExt.youtubeID, tr);
+      _scheduleTracksListsRefresh();
+      final wasExternal = externalTracksMappedByPath.remove(tr.path) != null;
+      if (wasExternal) unawaited(_externalTracksDBManager.delete(tr.path));
+    } else {
+      final list = allTracksMappedByYTID[trackExt.youtubeID] ??= [];
+      if (!list.contains(tr)) {
+        list.add(tr);
+      }
     }
+
+    _countCachedArtwork(artwork);
   }
 
-  void _addTrackToLists(TrackExtended trackExt, bool checkForDuplicates, FArtwork? artwork) {
-    final tr = trackExt.toTrack();
-    allTracksMappedByPath[tr] = trackExt;
-    allTracksMappedByYTID.addForce(trackExt.youtubeID, tr);
-    _currentFileNamesMap[trackExt.path.getFilename] = true;
-    if (checkForDuplicates) {
-      tracksInfoList.addNoDuplicates(tr);
-      SearchSortController.inst.trackSearchList.addNoDuplicates(tr);
-    } else {
-      tracksInfoList.add(tr);
-      SearchSortController.inst.trackSearchList.add(tr);
-    }
-    if (artwork != null && artwork.hasArtwork) {
+  void _addExternalTrack(TrackExtended trackExt, FArtwork? artwork) {
+    final path = trackExt.path;
+    if (allTracksMappedByPath.containsKey(path)) return;
+    externalTracksMappedByPath[path] = trackExt;
+    unawaited(_externalTracksDBManager.put(path, trackExt.toJsonWithoutPath()));
+    _countCachedArtwork(artwork);
+  }
+
+  void _countCachedArtwork(FArtwork? artwork) {
+    if (artwork != null && artwork.file != null) {
       artworksInStorage.value++;
       if (artwork.size != null) artworksSizeInStorage.value += artwork.size!;
     }
   }
 
+  Timer? _tracksListsRefreshTimer;
+
+  // -- each refresh rebuilds every visible tracks list, so rapid adds (indexing) share one
+  void _scheduleTracksListsRefresh() {
+    _tracksListsRefreshTimer ??= Timer(
+      const Duration(milliseconds: 300),
+      () {
+        _tracksListsRefreshTimer = null;
+        tracksInfoList.refresh();
+        SearchSortController.inst.trackSearchList.refresh();
+      },
+    );
+  }
+
+  /// Removes track entries from related lists, this doesNOT delete tracks from system or remove stats entries
+  Future<void> removeTracksFromLibrary(Iterable<Selectable> tracksToRemove, {required bool isFromDelete}) async {
+    if (tracksToRemove.isEmpty) return;
+    IOSink? recentlyDeletedFileWrite;
+    if (isFromDelete) {
+      final recentlyDeletedFile = File("${AppDirs.RECENTLY_DELETED}${DateFormat('yyyy_MM_dd HH_mm_ss').format(DateTime.now())} - (${tracksToRemove.length}).txt");
+      recentlyDeletedFileWrite = recentlyDeletedFile.openWrite(mode: FileMode.writeOnlyAppend);
+    }
+    final tracksToRemoveCopy = tracksToRemove.toFixedList();
+    int networkTracksRemoved = 0;
+    for (final trS in tracksToRemoveCopy) {
+      final tr = trS.track;
+      recentlyDeletedFileWrite?.writeln(tr.path);
+      _removeThisTrackFromAlbumGenreArtistEtc(tr);
+      allTracksMappedByYTID.remove(tr.youtubeID);
+      final didRemove = tracksInfoList.value.remove(tr);
+      if (didRemove && tr.isNetwork) networkTracksRemoved++;
+      SearchSortController.inst.trackSearchList.value.remove(tr);
+      SearchSortController.inst.trackSearchTemp.value.remove(tr);
+      SearchSortController.inst.trackSearchTempLessRelevant.value.remove(tr);
+      allTracksMappedByPath.remove(tr.path);
+      unawaited(_tracksDBManager.delete(tr.path));
+      TrackTileManager.rebuildTrackInfo(tr);
+      if (tr.isPhysical) this.scanMediaStore(tr.path);
+    }
+
+    this.networkTracksCount.value -= networkTracksRemoved;
+    this.tracksInfoList.refresh();
+    this.mainMapsGroup.refreshAll();
+    SearchSortController.inst.trackSearchList.refresh();
+    SearchSortController.inst.trackSearchTemp.refresh();
+    SearchSortController.inst.trackSearchTempLessRelevant.refresh();
+    FoldersController.tracksAndVideos.currentFolder.refresh();
+    FoldersController.tracks.currentFolder.refresh();
+    FoldersController.videos.currentFolder.refresh();
+    recentlyDeletedFileWrite?.flush().then((_) => recentlyDeletedFileWrite?.close());
+
+    SearchSortController.inst.refreshPortsIfNecessary();
+  }
+
   Future<void> reindexTracks({
-    required List<Track> tracks,
+    required List<PhysicalMedia> tracks,
     bool updateArtwork = false,
     required void Function(bool didExtract) onProgress,
     required void Function(int tracksLength) onFinish,
@@ -610,159 +804,273 @@ class Indexer {
     final tracksReal = <Track>[];
     final tracksRealPaths = <String>[];
     final tracksMissing = <Track>[];
-    await tracks.loopFuture((tr, index) async {
-      bool exists = false;
+    final finalNewOldTracks = <TrackExtended, TrackExtended?>{};
+    final tracksExistence = await tracks.mapConcurrent((s) async {
       try {
-        exists = await File(tr.path).exists();
-      } catch (_) {}
-      if (exists) {
+        return await s.track.exists();
+      } catch (_) {
+        return false;
+      }
+    });
+    for (int i = 0; i < tracks.length; i++) {
+      final tr = tracks[i].track;
+      if (tracksExistence[i]) {
         tracksReal.add(tr);
         tracksRealPaths.add(tr.path);
       } else {
         tracksMissing.add(tr);
       }
-    });
-
-    if (updateArtwork) {
-      imageCache.clear();
-      imageCache.clearLiveImages();
+      TrackTileManager.rebuildTrackInfo(tr);
     }
 
-    tracksMissing.loop((e, _) => onProgress(false));
+    if (updateArtwork) {
+      Indexer.clearMemoryImageCache();
+    }
 
-    final stream = await FAudioTaggerController.inst.extractMetadataAsStream(
+    for (var _ in tracksMissing) {
+      onProgress(false);
+    }
+
+    final keyWrapper = ExtractingPathKey.create();
+    final stream = await NamidaTaggerController.inst.extractMetadataAsStream(
       paths: tracksRealPaths,
+      keyWrapper: keyWrapper,
+      extractArtwork: updateArtwork,
       overrideArtwork: updateArtwork,
+      isNetwork: false,
     );
+    final splitConfigs = _createSplitConfig();
+    final extracted = <(TrackExtended, FArtwork)>[];
     await for (final item in stream) {
-      final path = item.tags.path;
-      final trext = _convertTagToTrack(
-        trackPath: path,
+      if (item.hasError) {
+        onProgress(false);
+        continue;
+      }
+      final trext = await convertTagToTrack(
+        trackPath: item.tags.path,
         trackInfo: item,
+        didExtractArtwork: updateArtwork,
         tryExtractingFromFilename: tryExtractingFromFilename,
         onMinDurTrigger: () => null,
         onMinSizeTrigger: () => null,
         onError: (_) => null,
+        splittersConfigs: splitConfigs,
       );
-      if (item.hasError) {
-        onProgress(false);
-      } else {
-        final tr = Track(path);
-        allTracksMappedByYTID.remove(tr.youtubeID);
-        _currentFileNamesMap.remove(path.getFilename);
-        _removeThisTrackFromAlbumGenreArtistEtc(tr);
-        if (trext != null) _addTrackToLists(trext, true, item.tags.artwork);
-        onProgress(true);
-      }
+      if (trext != null) extracted.add((trext, item.tags.artwork));
+      onProgress(true);
+    }
+    // -- after the last await, so a track listed meanwhile by a library refresh updates as an edit
+    for (final (trext, artwork) in extracted) {
+      final oldTr = allTracksMappedByPath[trext.path];
+      if (oldTr != null) allTracksMappedByYTID.remove(oldTr.youtubeID);
+      // _removeThisTrackFromAlbumGenreArtistEtc(tr);
+      finalNewOldTracks[trext] = oldTr;
+      _addTrackToLists(trext, artwork);
     }
 
-    final finalTrack = <Track>[];
-    tracksReal.loop((p, index) {
-      final tr = p.path.toTrackOrNull();
-      if (tr != null) finalTrack.add(tr);
-    });
-    _addTheseTracksToAlbumGenreArtistEtc(finalTrack);
+    _addTheseTracksToAlbumGenreArtistEtc(finalNewOldTracks);
     Player.inst.refreshNotification();
-    await _sortAndSaveTracks();
-    onFinish(finalTrack.length);
+    _sortAndRefreshTracks();
+    onFinish(finalNewOldTracks.length);
+
+    SearchSortController.inst.refreshPortsIfNecessary();
   }
 
   Future<void> updateTrackMetadata({
-    required Map<Track, TrackExtended> tracksMap,
-    String newArtworkPath = '',
+    required Map<T, TrackExtended> tracksMap,
+    bool artworkWasEdited = true,
   }) async {
-    final oldTracks = <Track>[];
-    final newTracks = <Track>[];
+    final newTracks = <T>[];
 
-    if (newArtworkPath != '') {
-      imageCache.clear();
-      imageCache.clearLiveImages();
-      AudioService.evictArtworkCache();
+    if (artworkWasEdited) {
+      Indexer.clearMemoryImageCache();
     }
+
+    final finalNewOldTracks = <TrackExtended, TrackExtended?>{};
 
     for (final e in tracksMap.entries) {
       final ot = e.key;
-      final nt = e.value.toTrack();
-      oldTracks.add(ot);
+      final nt = e.value.asTrack() as T;
       newTracks.add(nt);
-      allTracksMappedByPath[ot] = e.value;
-      allTracksMappedByYTID.addForce(e.value.youtubeID, ot);
-      _currentFileNamesMap.remove(ot.filename);
-      _currentFileNamesMap[nt.filename] = true;
+      if (externalTracksMappedByPath.containsKey(ot.path)) {
+        _addExternalTrack(e.value, null);
+      } else {
+        finalNewOldTracks[e.value] = ot.toTrackExtOrNull();
+        allTracksMappedByPath[ot.path] = e.value;
+        unawaited(_tracksDBManager.put(ot.path, e.value.toJsonWithoutPath()));
+        allTracksMappedByYTID.addForce(e.value.youtubeID, ot);
+      }
+      // _currentFileNamesMap.remove(ot.filename); // same path alr
+      // _currentFileNamesMap[nt.filename] = true; // --^
+      TrackTileManager.rebuildTrackInfo(ot);
 
-      if (newArtworkPath != '') {
-        // await extractTracksArtworks(
-        //   [ot.path],
-        //   forceReExtract: true,
-        //   artworkPaths: {ot.path: newArtworkPath},
-        //   albumIdendifiers: {ot.path: e.value.albumIdentifier},
-        // );
+      if (artworkWasEdited) {
+        // artwork extraction is not our business
         CurrentColor.inst.reExtractTrackColorPalette(track: ot, newNC: null, imagePath: ot.pathToImage);
       }
     }
-    oldTracks.loop((tr, index) => _removeThisTrackFromAlbumGenreArtistEtc(tr));
-    _addTheseTracksToAlbumGenreArtistEtc(newTracks);
-    await _sortAndSaveTracks();
+    _addTheseTracksToAlbumGenreArtistEtc(finalNewOldTracks);
+    _sortAndRefreshTracks();
+    tracksInfoList.refresh();
+
+    SearchSortController.inst.refreshPortsIfNecessary();
+    final globalSearchText = ScrollSearchController.inst.searchTextEditingController.text;
+    if (globalSearchText.isNotEmpty) SearchSortController.inst.searchAll(globalSearchText);
   }
 
-  Future<List<Track>> convertPathToTrack(Iterable<String> tracksPathPre) async {
-    final List<Track> finalTracks = <Track>[];
-    final tracksToExtract = <String>[];
-
-    final orderLookup = <String, int>{};
-    int index = 0;
-    for (final path in tracksPathPre) {
-      final trInLib = path.toTrackOrNull();
-      if (trInLib != null) {
-        finalTracks.add(trInLib);
-      } else {
-        tracksToExtract.add(path);
-      }
-      orderLookup[path] = index;
-      index++;
+  Future<T?> convertPathToTracksAndAddToListsSingle(String trackPath) async {
+    final infoInLib = allTracksMappedByPath[trackPath];
+    if (infoInLib != null) {
+      return infoInLib.asTrack() as T;
     }
 
-    if (tracksToExtract.isNotEmpty) {
-      TrackExtended? extractFunction(FAudioModel item) => _convertTagToTrack(
-            trackPath: item.tags.path,
-            trackInfo: item,
-            tryExtractingFromFilename: true,
-            onMinDurTrigger: () => null,
-            onMinSizeTrigger: () => null,
-            onError: (_) => null,
-          );
+    final splitConfig = _createSplitConfig();
+    final shouldExtractArtwork = _isArtworkCachingEnabled;
 
-      final stream = await FAudioTaggerController.inst.extractMetadataAsStream(paths: tracksToExtract);
-      await for (final item in stream) {
-        finalTracks.add(Track(item.tags.path));
-        final trext = extractFunction(item);
-        if (trext != null) _addTrackToLists(trext, true, item.tags.artwork);
-      }
+    Future<TrackExtended?> extractFunction(FAudioModel item) => convertTagToTrack(
+      trackPath: item.tags.path,
+      trackInfo: item,
+      didExtractArtwork: shouldExtractArtwork,
+      tryExtractingFromFilename: true,
+      onMinDurTrigger: () => null,
+      onMinSizeTrigger: () => null,
+      onError: (_) => null,
+      splittersConfigs: splitConfig,
+    );
+
+    final model = await NamidaTaggerController.inst.extractMetadata(
+      trackPath: trackPath,
+      extractArtwork: shouldExtractArtwork,
+      isVideo: trackPath.isVideo(),
+      isNetwork: false,
+    );
+    final trext = await extractFunction(model);
+    if (trext != null) {
+      final addedMeanwhile = allTracksMappedByPath[trext.path];
+      _addTrackToLists(trext, model.tags.artwork);
+      _addTheseTracksToAlbumGenreArtistEtc({trext: addedMeanwhile});
+      // _sortAndRefreshTracks();
+      SearchSortController.inst.refreshPortsIfNecessary();
+      return trext.asTrack() as T;
     }
 
-    _addTheseTracksToAlbumGenreArtistEtc(finalTracks);
-    await _sortAndSaveTracks();
+    return null;
+  }
 
-    finalTracks.sortBy((e) => orderLookup[e.path] ?? 0);
+  Future<List<T>> convertPathsToTracksAndAddToLists(Iterable<String> tracksPathPre) async {
+    final finalNewOldTracks = <TrackExtended, TrackExtended?>{};
+    final finalTracks = await _convertPathsToTracks(
+      tracksPathPre,
+      (trext, artwork) {
+        finalNewOldTracks[trext] = allTracksMappedByPath[trext.path];
+        _addTrackToLists(trext, artwork);
+      },
+    );
+
+    _addTheseTracksToAlbumGenreArtistEtc(finalNewOldTracks);
+    _sortAndRefreshTracks();
+
+    SearchSortController.inst.refreshPortsIfNecessary();
+
     return finalTracks;
   }
 
-  Future<void> _sortAndSaveTracks() async {
+  Future<List<T>> convertPathsToExternalTracks(Iterable<String> tracksPathPre) {
+    return _convertPathsToTracks(tracksPathPre, _addExternalTrack);
+  }
+
+  Future<List<T>> _convertPathsToTracks(Iterable<String> tracksPathPre, void Function(TrackExtended trext, FArtwork? artwork) onExtracted) async {
+    final finalTracks = <T>[];
+    final tracksToExtract = <String>[];
+
+    final orderLookup = <String, int>{};
+    void onPath(String path) {
+      if (orderLookup.containsKey(path)) return;
+      orderLookup[path] = orderLookup.length;
+      final infoInLib = allTracksMappedByPath[path];
+      if (infoInLib != null) {
+        finalTracks.add(infoInLib.asTrack() as T);
+      } else {
+        tracksToExtract.add(path);
+      }
+    }
+
+    final resolvedPaths = await tracksPathPre.mapConcurrent(
+      (path) async {
+        final isDir = await Directory(path).exists().ignoreError() ?? false;
+        if (!isDir) return <String>[path];
+        final files = await Directory(path).listAllIsolate(recursive: true).ignoreError() ?? [];
+        return files.whereType<File>().map((f) => f.path).where(NamidaFileExtensionsWrapper.audioAndVideo.isPathValid).toFixedList();
+      },
+      concurrency: 4, // -- each directory listing spawns an isolate
+    );
+    for (final paths in resolvedPaths) {
+      for (final path in paths) {
+        onPath(path);
+      }
+    }
+
+    if (tracksToExtract.isNotEmpty) {
+      final splitConfig = _createSplitConfig();
+      final shouldExtractArtwork = _isArtworkCachingEnabled;
+
+      Future<TrackExtended?> extractFunction(FAudioModel item) => convertTagToTrack(
+        trackPath: item.tags.path,
+        trackInfo: item,
+        didExtractArtwork: shouldExtractArtwork,
+        tryExtractingFromFilename: true,
+        onMinDurTrigger: () => null,
+        onMinSizeTrigger: () => null,
+        onError: (_) => null,
+        splittersConfigs: splitConfig,
+      );
+
+      final keyWrapper = ExtractingPathKey.create();
+      final stream = await NamidaTaggerController.inst.extractMetadataAsStream(
+        paths: tracksToExtract,
+        extractArtwork: shouldExtractArtwork,
+        keyWrapper: keyWrapper,
+        isNetwork: false,
+      );
+      final extracted = <(TrackExtended, FArtwork)>[];
+      await for (final item in stream) {
+        final p = item.tags.path;
+        final obj = Track.orVideo(p);
+        finalTracks.add(obj as T);
+        final trext = await extractFunction(item);
+        if (trext != null) extracted.add((trext, item.tags.artwork));
+      }
+      // -- after the last await, so a path added meanwhile by another call or the library load updates as an edit
+      for (final (trext, artwork) in extracted) {
+        onExtracted(trext, artwork);
+      }
+    }
+
+    finalTracks.sortBy((e) => orderLookup[e.path] ?? 0);
+
+    return finalTracks;
+  }
+
+  void _sortAndRefreshTracks() {
     Player.inst.refreshRxVariables();
     Player.inst.refreshNotification();
     SearchSortController.inst.searchAll(ScrollSearchController.inst.searchTextEditingController.text);
     SearchSortController.inst.sortMedia(MediaType.track);
-    await _saveTrackFileToStorage();
-    await _createDefaultNamidaArtwork();
+    this.mainMapsGroup.refreshAll();
   }
 
-  void _clearLists() {
+  Future<void> _clearLists() async {
     artworksInStorage.value = 0;
     artworksSizeInStorage.value = 0;
     tracksInfoList.clear();
+    networkTracksCount.value = 0;
     allTracksMappedByPath.clear();
     allTracksMappedByYTID.clear();
+    _currentFileNamesMap.clear();
+    await _clearTracksDBAndReOpen();
+
     SearchSortController.inst.sortMedia(MediaType.track);
+    SearchSortController.inst.refreshPortsIfNecessary();
   }
 
   void _resetCounters() {
@@ -771,30 +1079,43 @@ class Indexer {
     tracksExcludedByNoMedia.value = 0;
   }
 
-  /// Removes [deletedPaths] and fetches [audioFiles].
+  /// Removes deleted paths of [filesDiff], fetches its new paths and re-fetches the modified ones.
   ///
   /// [bypassAllChecks] will bypass `duration`, `size` & similar filenames checks.
   ///
   /// Setting [forceReIndex] to `true` will require u to call [_afterIndexing],
   /// otherwise use [_addTheseTracksToAlbumGenreArtistEtc] with changed tracks only.
   Future<void> _fetchAllSongsAndWriteToFile({
-    required Set<String> audioFiles,
-    required Set<String> deletedPaths,
+    required IndexerFilesDiff? filesDiff,
     required bool forceReIndex,
     required bool useMediaStore,
   }) async {
     _resetCounters();
+    final serversFetchQueue = _startServersTracksCountFetch();
 
     if (forceReIndex) {
-      _clearLists();
-      if (!useMediaStore) audioFiles = await getAudioFiles();
+      await _clearLists();
+      if (!useMediaStore) {
+        final currentFiles = await _listAudioFiles(withStats: true);
+        filesDiff = getPathsDifference(currentFiles);
+      }
     }
 
+    final audioFiles = filesDiff?.newPaths ?? const <String>{};
+    final modifiedFiles = filesDiff?.modifiedPaths ?? const <String>{};
+    final deletedPaths = filesDiff?.deletedPaths ?? const <String>{};
+    final filesStats = filesDiff?.stats;
+
     printy("Audio Files New: ${audioFiles.length}");
+    printy("Audio Files Modified: ${modifiedFiles.length}");
     printy("Audio Files Deleted: ${deletedPaths.length}");
 
     if (deletedPaths.isNotEmpty) {
-      tracksInfoList.removeWhere((tr) => deletedPaths.contains(tr.path));
+      tracksInfoList.removeWhere((tr) {
+        final remove = deletedPaths.contains(tr.path);
+        if (remove) unawaited(_tracksDBManager.delete(tr.path));
+        return remove;
+      });
     }
 
     final minDur = settings.indexMinDurationInSec.value; // Seconds
@@ -803,17 +1124,21 @@ class Indexer {
     if (useMediaStore) {
       final trs = await _fetchMediaStoreTracks();
       tracksInfoList.clear();
+      networkTracksCount.value = 0;
       allTracksMappedByPath.clear();
+      _clearTracksDBAndReOpen();
       allTracksMappedByYTID.clear();
       _currentFileNamesMap.clear();
-      trs.loop((e, _) => _addTrackToLists(e.$1, false, null));
+      for (var e in trs) {
+        _addTrackToLists(e, null);
+      }
     } else {
-      FAudioTaggerController.inst.currentPathsBeingExtracted.clear();
+      // NamidaTaggerController.inst.currentPathsBeingExtracted.clear();
       final audioFilesWithoutDuplicates = <String>[];
       if (prevDuplicated) {
         /// skip duplicated tracks according to filename
         for (final trackPath in audioFiles) {
-          if (_currentFileNamesMap.keyExists(trackPath.getFilename)) {
+          if (_currentFileNamesMap.containsKey(trackPath.getFilename)) {
             duplicatedTracksLength.value++;
           } else {
             audioFilesWithoutDuplicates.add(trackPath);
@@ -822,14 +1147,22 @@ class Indexer {
       }
 
       final finalAudios = prevDuplicated ? audioFilesWithoutDuplicates : audioFiles.toList();
-      final listParts = (Platform.numberOfProcessors ~/ 2).withMinimum(1);
-      final audioFilesParts = finalAudios.split(listParts);
-      final audioFilesCompleters = List.generate(audioFilesParts.length, (_) => Completer<void>());
+      final filesToExtractCount = finalAudios.length + modifiedFiles.length;
+      _indexingTotalCount.value += filesToExtractCount;
+      final keyWrapper = ExtractingPathKey.create();
 
-      Future<void> extractFunction(List<String> chunkList) async {
-        if (chunkList.isEmpty) return;
-        await extractTracksInfo(
-          tracksPath: chunkList,
+      // -- the extractor reads on its own pool of native threads
+      Future<void> extractAll(List<String> paths, {required bool isModified}) async {
+        if (paths.isEmpty) return;
+
+        final splittersConfigs = _createSplitConfig();
+        final shouldExtractArtwork = _isArtworkCachingEnabled;
+        Future<TrackExtended?> extractFunction(FAudioModel item) => convertTagToTrack(
+          trackPath: item.tags.path,
+          stats: filesStats?[item.tags.path],
+          trackInfo: item,
+          didExtractArtwork: shouldExtractArtwork,
+          tryExtractingFromFilename: true,
           minDur: minDur,
           minSize: minSize,
           onMinDurTrigger: () {
@@ -840,499 +1173,1455 @@ class Indexer {
             filteredForSizeDurationTracks.value++;
             return null;
           },
-          checkForDuplicates: false,
+          onError: (_) => null,
+          splittersConfigs: splittersConfigs,
         );
+
+        final stream = await NamidaTaggerController.inst.extractMetadataAsStream(
+          paths: paths,
+          keyWrapper: keyWrapper,
+          extractArtwork: shouldExtractArtwork,
+          overrideArtwork: isModified,
+          isNetwork: false,
+        );
+
+        await for (final item in stream) {
+          final trext = await extractFunction(item);
+          _indexingDoneCount.value++;
+          if (trext == null) continue;
+          if (isModified) {
+            final tr = trext.asTrack();
+            allTracksMappedByYTID[tr.youtubeID]?.remove(tr);
+          }
+          _addTrackToLists(trext, item.tags.artwork);
+        }
       }
 
-      audioFilesParts.loop((part, partIndex) {
-        extractFunction(part).then((value) => audioFilesCompleters[partIndex].complete());
-      });
-      await Future.wait(audioFilesCompleters.map((e) => e.future).toList());
+      await extractAll(finalAudios, isModified: false);
+      if (modifiedFiles.isNotEmpty) {
+        Indexer.clearMemoryImageCache();
+        final modifiedAudios = modifiedFiles.toList();
+        await extractAll(modifiedAudios, isModified: true);
+      }
     }
+
+    final networkTrackMapsToRemove = await _addServerTracksIfAvailable(serversFetchQueue, forceReIndex: forceReIndex).toList();
 
     /// doing some checks to remove unqualified tracks.
     /// removes tracks after changing `duration` or `size`.
-    tracksInfoList.removeWhere((tr) => (tr.duration != 0 && tr.duration < minDur) || tr.size < minSize);
+    int networkTracksRemoved = 0;
+    tracksInfoList.removeWhere((tr) {
+      final remove = networkTrackMapsToRemove.any((map) => map.containsKey(tr.path)) || (tr.durationMS != 0 && tr.durationMS < minDur * 1000) || tr.size < minSize;
+      if (remove) {
+        if (tr.isNetwork) networkTracksRemoved++;
+        allTracksMappedByPath.remove(tr.path);
+        allTracksMappedByYTID.remove(tr.youtubeID);
+        _currentFileNamesMap.remove(tr.path.getFilename);
+        unawaited(_tracksDBManager.delete(tr.path));
+      }
+      return remove;
+    });
 
     /// removes duplicated tracks after a refresh
     if (prevDuplicated) {
-      final removedNumber = tracksInfoList.removeDuplicates((element) => element.filename);
+      final uniquedSet = <String>{};
+      final lengthBefore = tracksInfoList.value.length;
+      tracksInfoList.value.retainWhere((e) {
+        final keep = uniquedSet.add(e.filename);
+        if (!keep) {
+          if (e.isNetwork) networkTracksRemoved++;
+          unawaited(_tracksDBManager.delete(e.path));
+        }
+        return keep;
+      });
+      final lengthAfter = tracksInfoList.value.length;
+      final removedNumber = lengthBefore - lengthAfter;
       duplicatedTracksLength.value = removedNumber;
     }
 
+    networkTracksCount.value -= networkTracksRemoved;
+
     printy("FINAL: ${tracksInfoList.length}");
 
-    await _sortAndSaveTracks();
-  }
-
-  Future<void> _saveTrackFileToStorage() async {
+    _sortAndRefreshTracks();
+    Indexer.createDefaultNamidaArtworkIfRequired();
     TrackTileManager.onTrackItemPropChange();
-    await File(AppPaths.TRACKS).writeAsJson(tracksInfoList.map((key) => allTracksMappedByPath[key]?.toJson()).toList());
+    SearchSortController.inst.refreshPortsIfNecessary();
   }
 
-  Future<void> updateTrackDuration(Track track, Duration? dur) async {
-    final durInSeconds = dur?.inSeconds ?? 0;
-    if (durInSeconds > 0 && track.duration != durInSeconds) {
-      track.duration = durInSeconds;
-      await _saveTrackFileToStorage();
+  List<_ServerTracksFetchInfo> _startServersTracksCountFetch() {
+    final serversFetchQueue = <_ServerTracksFetchInfo>[];
+    for (final dir in settings.directoriesToScan.value) {
+      if (dir is! DirectoryIndexServer) continue;
+      final server = dir.toWebServer();
+      if (server == null) continue;
+      final tracksCountFuture = _fetchServerTracksCount(server);
+      final fetchInfo = _ServerTracksFetchInfo(
+        dir: dir,
+        server: server,
+        tracksCount: tracksCountFuture,
+      );
+      serversFetchQueue.add(fetchInfo);
     }
+    return serversFetchQueue;
   }
 
-  /// Returns new [TrackStats].
-  Future<TrackStats> updateTrackStats(
-    Track track, {
-    int? rating,
-    List<String>? tags,
-    List<String>? moods,
-    int? lastPositionInMs,
-  }) async {
-    rating ??= track.stats.rating;
-    tags ??= track.stats.tags;
-    moods ??= track.stats.moods;
-    lastPositionInMs ??= track.stats.lastPositionInMs;
-    final newStats = TrackStats(track, rating.clamp(0, 100), tags, moods, lastPositionInMs);
-    trackStatsMap[track] = newStats;
-
-    await _saveTrackStatsFileToStorage();
-    return newStats;
+  Future<int> _fetchServerTracksCount(MusicWebServer server) async {
+    int? tracksCount;
+    try {
+      tracksCount = await server.prepareTracksCount();
+    } catch (_) {}
+    if (tracksCount == null) return 0;
+    _indexingTotalCount.value += tracksCount;
+    return tracksCount;
   }
 
-  Future<void> _saveTrackStatsFileToStorage() async {
-    TrackTileManager.onTrackItemPropChange();
-    await File(AppPaths.TRACKS_STATS).writeAsJson(trackStatsMap.values.map((e) => e.toJson()).toList());
-  }
+  /// Streams Maps of tracks that should be deleted, cuz they no longer exist on the server
+  Stream<Map<String, int>> _addServerTracksIfAvailable(List<_ServerTracksFetchInfo> serversFetchQueue, {required bool forceReIndex}) async* {
+    bool didRefreshSearchList = false;
 
-  Future<void> readTrackData() async {
-    // reading stats file containing track rating etc.
-    final statsResult = await _readTracksStatsCompute.thready(AppPaths.TRACKS_STATS);
-    trackStatsMap.value = statsResult;
+    final tracksByServer = _getTracksGroupedByServer();
+    final configuredServers = <String>{};
+    final importServerPlaylists = settings.importServerPlaylists.value;
+    final playlistsImportQueue = <_RemotePlaylistImportInfo>[];
 
-    tracksInfoList.clear(); // clearing for cases which refreshing library is required (like after changing separators)
+    for (final fetchInfo in serversFetchQueue) {
+      final server = fetchInfo.server;
+      final dbKey = fetchInfo.dir.toDbKey();
+      configuredServers.add(dbKey);
 
-    /// Reading actual track file.
-    final splitconfig = _SplitArtistGenreConfig(
-      path: AppPaths.TRACKS,
-      artistsConfig: ArtistsSplitConfig.settings(),
-      genresConfig: GenresSplitConfig.settings(),
+      if (!didRefreshSearchList) {
+        didRefreshSearchList = true;
+        _refreshMediaTracksSubListsAfterSort([MediaType.track]);
+      }
+
+      final serverTracksInLibrary = tracksByServer[dbKey] ??= <String, int>{};
+
+      final tracksCount = await fetchInfo.tracksCount;
+      int tracksCounted = 0;
+
+      await server.fetchAllMusicAndProcess(
+        serverTracksInLibrary,
+        (trExt) {
+          _addTrackToLists(trExt, null);
+          serverTracksInLibrary.remove(trExt.path); // still exists
+          if (tracksCounted < tracksCount) {
+            tracksCounted++;
+            _indexingDoneCount.value++;
+          }
+        },
+        forceReIndex: forceReIndex,
+      );
+
+      final tracksUncounted = tracksCount - tracksCounted;
+      _indexingDoneCount.value += tracksUncounted;
+
+      if (importServerPlaylists) {
+        final dbKeyCleaned = DirectoryIndexServer.parseWithoutLibraryIdAndCleanTry(dbKey);
+        playlistsImportQueue.add(
+          _RemotePlaylistImportInfo(
+            server: server,
+            dbKey: dbKey,
+            serverKey: dbKeyCleaned ?? dbKey,
+          ),
+        );
+      }
+
+      // -- now without the tracks that was seen again on server
+      yield serverTracksInLibrary;
+    }
+
+    // -- remove tracks from servers that no longer exist
+    for (final entry in tracksByServer.entries) {
+      if (!configuredServers.contains(entry.key)) {
+        yield entry.value;
+      }
+    }
+
+    // -- import playlists after all music is fetched
+    _processServerPlaylistsImportQueue(
+      playlistsImportQueue: playlistsImportQueue,
+      configuredServers: configuredServers,
+      tracksByServer: tracksByServer,
+    ).whenComplete(
+      () {
+        // -- remove imported playlists of servers that no longer exist (or all if disabled)
+        final configuredServersIdentities = importServerPlaylists ? configuredServers.map(DirectoryIndexServer.parseWithoutLibraryIdAndCleanTry).toSet() : null;
+        PlaylistController.inst.removeServerPlaylists(
+          keepTest: configuredServersIdentities?.contains,
+        );
+      },
     );
-    final tracksResult = await _readTracksFileCompute.thready(splitconfig);
-    allTracksMappedByPath.value = tracksResult.$1;
-    allTracksMappedByYTID = tracksResult.$2;
-    tracksInfoList.value = tracksResult.$3;
-
-    printy("All Tracks Length From File: ${tracksInfoList.length}");
   }
 
-  static Future<Map<Track, TrackStats>> _readTracksStatsCompute(String path) async {
-    final map = <Track, TrackStats>{};
-    final list = File(path).readAsJsonSync() as List?;
-    if (list != null) {
-      for (int i = 0; i <= list.length - 1; i++) {
-        try {
-          final item = list[i];
-          final trst = TrackStats.fromJson(item);
-          map[trst.track] = trst;
-        } catch (e) {
-          continue;
+  // -- same logic of what's in _addServerTracksIfAvailable,
+  // -- but there its a lil more performant (reuses some values & has tracksByServer)
+  Future<void> refreshServerPlaylists({String? forThisServerKey}) async {
+    if (!settings.importServerPlaylists.value) return;
+
+    final playlistsImportQueue = <_RemotePlaylistImportInfo>[];
+    final configuredServers = <String>{};
+    for (final dir in settings.directoriesToScan.value) {
+      if (dir is DirectoryIndexServer) {
+        final dbKey = dir.toDbKey();
+        final serverKey = DirectoryIndexServer.parseWithoutLibraryIdAndCleanTry(dbKey);
+        if (forThisServerKey != null && serverKey != forThisServerKey) continue;
+        final server = dir.toWebServer();
+        if (server != null) {
+          configuredServers.add(dbKey);
+          playlistsImportQueue.add(
+            _RemotePlaylistImportInfo(
+              server: server,
+              dbKey: dbKey,
+              serverKey: serverKey ?? dbKey,
+            ),
+          );
+        }
+      }
+    }
+    return _processServerPlaylistsImportQueue(
+      playlistsImportQueue: playlistsImportQueue,
+      configuredServers: configuredServers,
+      tracksByServer: const {},
+    );
+  }
+
+  var _serverPlaylistsImportLock = Future<void>.value();
+
+  Future<void> _processServerPlaylistsImportQueue({
+    required List<_RemotePlaylistImportInfo> playlistsImportQueue,
+    required Set<String> configuredServers,
+    required Map<String, Map<String, int>> tracksByServer,
+  }) async {
+    if (playlistsImportQueue.isEmpty) return;
+
+    Future<void> execute() async {
+      Map<String, Map<String, String>>? mediaIdsToPathsPerServer;
+      if (playlistsImportQueue.any((item) => item.dbKey != item.serverKey)) {
+        mediaIdsToPathsPerServer = _getServerTracksPathsGroupedByMediaId(configuredServers);
+      }
+      // -- to prevent fetching from same server with different library id
+      final processedServers = <String>{};
+      for (final item in playlistsImportQueue) {
+        final serverKey = item.serverKey;
+        if (!processedServers.contains(serverKey)) {
+          final success = await _importServerPlaylists(
+            item.server,
+            serverKey,
+            mediaIdsToPaths: mediaIdsToPathsPerServer?[serverKey],
+            tracksByServer: tracksByServer,
+          );
+          if (success) processedServers.add(serverKey);
+        }
+      }
+    }
+
+    final future = _serverPlaylistsImportLock.then((_) => execute());
+    _serverPlaylistsImportLock = future.catchError((_) {});
+    return future;
+  }
+
+  Future<bool> _importServerPlaylists(
+    MusicWebServer server,
+    String serverKey, {
+    required Map<String, String>? mediaIdsToPaths,
+    required Map<String, Map<String, int>> tracksByServer,
+  }) async {
+    await PlaylistController.inst.waitForPlaylistsLoad;
+    final knownModifiedDates = PlaylistController.inst.getServerPlaylistsModifiedDates(serverKey);
+    final serverPlaylists = await server.fetchPlaylists(
+      knownChangedMS: (remoteId) => knownModifiedDates[remoteId],
+    );
+    if (serverPlaylists == null) return false;
+
+    Track resolveTrack(TrackExtended trExt) {
+      // -- prefer already indexed track, cuz this one coming from playlist request, might be missing anything idk
+      final existingPath = mediaIdsToPaths?[trExt.hashKey];
+      if (existingPath != null && existingPath != trExt.path) {
+        final existingTrExt = allTracksMappedByPath[existingPath];
+        if (existingTrExt != null) return existingTrExt.asTrack();
+      }
+      return trExt.asTrack();
+    }
+
+    for (final spl in serverPlaylists) {
+      final plTracks = spl.tracks;
+      if (plTracks != null) {
+        for (final trExt in plTracks) {
+          final path = resolveTrack(trExt).path;
+          if (path == trExt.path && !allTracksMappedByPath.containsKey(path)) {
+            _addTrackToLists(trExt, null);
+          }
+          // -- remove from tracksByServer means keep in library, see _addServerTracksIfAvailable it returns paths to remove
+          final trackServer = allTracksMappedByPath[path]?.server ?? trExt.server;
+          if (trackServer != null) tracksByServer[trackServer]?.remove(path);
+        }
+      }
+    }
+
+    await PlaylistController.inst.updateServerPlaylists(
+      serverKey,
+      serverPlaylists,
+      server: server,
+      resolveTrack: resolveTrack,
+    );
+
+    return true;
+  }
+
+  Map<String, Map<String, String>> _getServerTracksPathsGroupedByMediaId(Set<String> configuredServers) {
+    final map = <String, Map<String, String>>{};
+    final identityKeysCache = <String, String?>{};
+    for (final trExt in allTracksMappedByPath.values) {
+      final server = trExt.server;
+      final mediaId = trExt.hashKey;
+      if (server != null && server.isNotEmpty && mediaId != null && mediaId.isNotEmpty && configuredServers.contains(server)) {
+        final identityKey = identityKeysCache[server] ??= DirectoryIndexServer.parseWithoutLibraryIdAndCleanTry(server);
+        if (identityKey != null) {
+          (map[identityKey] ??= <String, String>{})[mediaId] = trExt.path;
         }
       }
     }
     return map;
   }
 
-  static (Map<Track, TrackExtended>, Map<String, List<Track>>, List<Track>) _readTracksFileCompute(_SplitArtistGenreConfig config) {
-    final map = <Track, TrackExtended>{};
-    final idsMap = <String, List<Track>>{};
-    final allTracks = <Track>[];
-    final list = File(config.path).readAsJsonSync() as List?;
-    if (list != null) {
-      for (int i = 0; i <= list.length - 1; i++) {
-        try {
-          final item = list[i];
-          final trExt = TrackExtended.fromJson(
-            item,
-            artistsSplitConfig: config.artistsConfig,
-            genresSplitConfig: config.genresConfig,
-          );
-          final track = trExt.toTrack();
-          map[track] = trExt;
-          allTracks.add(track);
-          idsMap.addForce(trExt.youtubeID, track);
-        } catch (e) {
-          continue;
+  Map<String, Map<String, int>> _getTracksGroupedByServer() {
+    final map = <String, Map<String, int>>{};
+    for (final trExt in allTracksMappedByPath.values) {
+      final server = trExt.server;
+      if (server != null && server.isNotEmpty) {
+        (map[server] ??= <String, int>{})[trExt.path] = trExt.dateModified;
+      }
+    }
+    return map;
+  }
+
+  Future<void> updateTrackDuration(Track track, Duration dur) async {
+    final durInMS = dur.inMilliseconds;
+    if (durInMS > 0 && track.durationMS != durInMS) {
+      final trx = allTracksMappedByPath[track.path];
+      if (trx != null) {
+        final newTrExt = trx.copyWith(durationMS: durInMS, generatePathHash: TagsExtractor.defaultUniqueArtworkHash);
+        allTracksMappedByPath[track.path] = newTrExt;
+        unawaited(_tracksDBManager.put(track.path, newTrExt.toJsonWithoutPath()));
+        tracksInfoList.refresh();
+        SearchSortController.inst.trackSearchList.refresh();
+        SearchSortController.inst.trackSearchTemp.refresh();
+      }
+      TrackTileManager.rebuildTrackInfo(track);
+    }
+  }
+
+  static List<String> splitByCommaList(String listText) {
+    final moodsFinalLookup = <String, bool>{};
+    final moodsFinal = <String>[];
+    final moodsPre = listText.split(',');
+    for (final m in moodsPre) {
+      final cleaned = m.trimAll();
+      if (cleaned.isEmpty) continue;
+      if (moodsFinalLookup[cleaned] == null) {
+        moodsFinalLookup[cleaned] = true;
+        moodsFinal.add(cleaned);
+      }
+    }
+    return moodsFinal;
+  }
+
+  /// Returns new [TrackStats].
+  Future<TrackStats> updateTrackStats(
+    Track track, {
+    String? ratingString,
+    String? tagsString,
+    String? moodsString,
+    int? lastPositionInMs,
+    List<PlayableBookmark>? bookmarks,
+  }) async {
+    if (ratingString != null || tagsString != null || moodsString != null) {
+      TrackTileManager.rebuildTrackInfo(track);
+    }
+
+    final statsRaw = track.statsRaw;
+
+    // fallbacks should not access tags rating/moods/tags (effectiveRating etc), otherwise they would stick and reindexing won't solve it
+    final rating = ratingString != null
+        ? ratingString.isEmpty
+              ? null
+              : int.tryParse(ratingString) ?? statsRaw?.rating
+        : statsRaw?.rating;
+    final tags = tagsString != null ? splitByCommaList(tagsString) : statsRaw?.tags;
+    final moods = moodsString != null ? splitByCommaList(moodsString) : statsRaw?.moods;
+    lastPositionInMs ??= track.lastPlayedPositionInMs ?? 0;
+    bookmarks ??= statsRaw?.bookmarks;
+    final newStats = TrackStats(
+      track: track,
+      rating: rating?.clampInt(0, 100) ?? 0,
+      tags: tags,
+      moods: moods,
+      lastPositionInMs: lastPositionInMs,
+      audioTrackId: statsRaw?.audioTrackId,
+      bookmarks: bookmarks,
+      modifiedDate: currentTimeMS,
+    );
+    trackStatsMap[track] = newStats;
+    unawaited(_trackStatsDBManager.put(track.path, newStats.toJsonWithoutTrack()));
+    return newStats;
+  }
+
+  Future<void> updateTrackAudioTrackId(
+    Track track, {
+    required String? audioTrackId,
+  }) async {
+    final stats = track.statsRaw;
+    final newStats = TrackStats(
+      track: track,
+      rating: stats?.rating ?? 0,
+      tags: stats?.tags,
+      moods: stats?.moods,
+      lastPositionInMs: stats?.lastPositionInMs ?? 0,
+      audioTrackId: audioTrackId,
+      bookmarks: stats?.bookmarks,
+      modifiedDate: currentTimeMS,
+    );
+    trackStatsMap[track] = newStats;
+    unawaited(_trackStatsDBManager.put(track.path, newStats.toJsonWithoutTrack()));
+  }
+
+  /// [incomingWins] skips the newest wins check, ex: restoring a backup.
+  Future<void> importTrackStats(Iterable<TrackStats> incomingStats, String senderDeviceId, {bool incomingWins = false}) async {
+    final dbEntries = <MapEntry<String, Map<String, dynamic>>>[];
+    for (final incoming in incomingStats) {
+      final resolvedTrack = SyncPathResolver.resolveTrackByPath(senderDeviceId, incoming.track.path);
+      final effective = resolvedTrack == null
+          ? incoming
+          : TrackStats(
+              track: resolvedTrack,
+              rating: incoming.rating,
+              tags: incoming.tags,
+              moods: incoming.moods,
+              lastPositionInMs: incoming.lastPositionInMs,
+              audioTrackId: incoming.audioTrackId,
+              bookmarks: incoming.bookmarks,
+              modifiedDate: incoming.modifiedDate,
+            );
+      final track = effective.track;
+      final local = trackStatsMap.value[track];
+      if (!incomingWins && local != null && local.modifiedDate >= effective.modifiedDate) continue;
+      final json = effective.toJsonWithoutTrack();
+      if (json == null) continue;
+      trackStatsMap.value[track] = effective;
+      if (track is Video) json['v'] = true;
+      dbEntries.add(MapEntry(track.path, json));
+    }
+    if (dbEntries.isEmpty) return;
+    trackStatsMap.refresh();
+    await _trackStatsDBManager.putAll(dbEntries, (e) => e);
+  }
+
+  /// stats of another stats db (ex: an extracted backup), [oldJsonFilePath] is its pre-db json if any.
+  static Future<Map<Track, TrackStats>> readTrackStatsDb(DbWrapperFileInfo dbInfo, String oldJsonFilePath) {
+    return _IndexerIsolateExecuter._readTrackStatsDataSync.thready((dbInfo: dbInfo, oldJsonFilePath: oldJsonFilePath));
+  }
+
+  Future<void> moveStatsPath(Map<Track, Track> oldNewTrack) async {
+    for (final oldNew in oldNewTrack.entries) {
+      final oldValue = trackStatsMap[oldNew.key];
+      if (oldValue != null) {
+        trackStatsMap.value[oldNew.value] = oldValue;
+        trackStatsMap.refresh();
+      }
+      final oldValueDB = await _trackStatsDBManager.get(oldNew.key.path);
+      await _trackStatsDBManager.put(oldNew.value.path, oldValueDB);
+      // await _trackStatsDBManager.delete(oldNew.key.path); // not so important ig, preserve just in case
+    }
+  }
+
+  Future<void> moveStatsDirectory(
+    String normalizedOldDir,
+    String normalizedNewDir, {
+    Iterable<String>? forThesePathsOnly,
+    bool ensureNewFileExists = false,
+  }) async {
+    final pathsOnlySet = forThesePathsOnly?.toSet();
+    final existenceCache = <String, bool>{};
+    final toUpdate = <Track, Track>{};
+
+    for (final track in trackStatsMap.value.keys.toFixedList()) {
+      final normalizedPath = replaceFunctionNormalizePath(track.path);
+      final shouldUpdate = replaceFunctionForUpdatedPaths(
+        track.path,
+        normalizedOldDir,
+        normalizedNewDir,
+        pathsOnlySet,
+        ensureNewFileExists,
+        existenceCache,
+      );
+      if (shouldUpdate) {
+        final newPath = replaceFunctionGetNewPath(normalizedPath, normalizedOldDir, normalizedNewDir);
+        toUpdate[track] = Track.fromTypeParameter(track.runtimeType, newPath);
+      }
+    }
+
+    if (toUpdate.isEmpty) return;
+
+    for (final entry in toUpdate.entries) {
+      final stats = trackStatsMap.value.remove(entry.key);
+      if (stats != null) trackStatsMap.value[entry.value] = stats;
+    }
+    trackStatsMap.refresh();
+
+    for (final oldNew in toUpdate.entries) {
+      final oldValueDB = await _trackStatsDBManager.get(oldNew.key.path);
+      await _trackStatsDBManager.put(oldNew.value.path, oldValueDB);
+      // await _trackStatsDBManager.delete(oldNew.key.path); // not so important ig, preserve just in case
+    }
+  }
+
+  Map<String, int> getLibraryMoodsCounts() {
+    final counts = <String, int>{};
+    _loopLibraryMoods((name, tr) => counts[name] = (counts[name] ?? 0) + 1);
+    return counts;
+  }
+
+  Map<String, int> getLibraryTagsCounts() {
+    final counts = <String, int>{};
+    _loopLibraryTags((name, tr) => counts[name] = (counts[name] ?? 0) + 1);
+    return counts;
+  }
+
+  List<Track>? getTracksForMood(String? name) {
+    if (name == null) return null;
+    final trs = <Track>[];
+    _loopLibraryMoods((currentName, tr) {
+      if (currentName == name) {
+        trs.add(tr);
+      }
+    });
+    return trs;
+  }
+
+  List<Track>? getTracksForTag(String? name) {
+    if (name == null) return null;
+    final trs = <Track>[];
+    _loopLibraryTags((currentName, tr) {
+      if (currentName == name) {
+        trs.add(tr);
+      }
+    });
+    return trs;
+  }
+
+  List<Track>? getTracksForRating(String? name) {
+    if (name == null) return null;
+    final trs = <Track>[];
+    _loopLibraryRatings((currentName, tr) {
+      if (currentName == name) {
+        trs.add(tr);
+      }
+    });
+    return trs;
+  }
+
+  Map<String, List<Track>> getTracksGroupedByMoods({bool sort = true}) {
+    final allAvailableMap = <String, List<Track>>{};
+    _loopLibraryMoods((mood, tr) => allAvailableMap.addForce(mood, tr));
+    if (sort) allAvailableMap.sortByReverse((e) => e.value.length);
+    return allAvailableMap;
+  }
+
+  void _loopLibraryMoods(void Function(String name, Track tr) callback) {
+    final tempSet = <(Track, String)>{};
+
+    // -- from stats map
+    for (final e in Indexer.inst.trackStatsMap.value.entries) {
+      final tr = e.key;
+      if (tr.hasInfoInLibrary()) {
+        final moods = e.value.moods;
+        if (moods != null) {
+          for (var mood in moods) {
+            if (tempSet.add((tr, mood))) {
+              callback(mood, tr);
+            }
+          }
         }
       }
     }
-    return (map, idsMap, allTracks);
+
+    // -- from track embedded tag
+    for (var tr in allTracksInLibrary) {
+      for (var mood in tr.moodList) {
+        if (tempSet.add((tr, mood))) {
+          callback(mood, tr);
+        }
+      }
+    }
   }
 
-  static List<String> splitBySeparators(String? string, Iterable<String> separators, String fallback, Iterable<String> blacklist) {
-    final List<String> finalStrings = <String>[];
-    final List<String> pre = string?.trimAll().multiSplit(separators, blacklist) ?? [fallback];
-    pre.loop((e, index) {
-      finalStrings.addIf(e != '', e.trimAll());
-    });
-    return finalStrings;
+  Map<String, List<Track>> getTracksGroupedByTags({bool sort = true}) {
+    final allAvailableMap = <String, List<Track>>{};
+    _loopLibraryTags((tag, tr) => allAvailableMap.addForce(tag, tr));
+    if (sort) allAvailableMap.sortByReverse((e) => e.value.length);
+    return allAvailableMap;
   }
 
-  /// [addArtistsFromTitle] extracts feat artists.
-  /// Defaults to [settings.extractFeatArtistFromTitle]
+  void _loopLibraryTags(void Function(String name, Track tr) callback) {
+    final tempSet = <(Track, String)>{};
+
+    // -- from stats map
+    for (final e in Indexer.inst.trackStatsMap.value.entries) {
+      final tr = e.key;
+      if (tr.hasInfoInLibrary()) {
+        final tags = e.value.tags;
+        if (tags != null) {
+          for (var tag in tags) {
+            if (tempSet.add((tr, tag))) {
+              callback(tag, tr);
+            }
+          }
+        }
+      }
+    }
+
+    // -- from track embedded tag
+    for (var tr in allTracksInLibrary) {
+      for (var tag in tr.tagsList) {
+        if (tempSet.add((tr, tag))) {
+          callback(tag, tr);
+        }
+      }
+    }
+  }
+
+  Map<String, List<Track>> getTracksGroupedByRatings({bool sort = true}) {
+    final allAvailableMap = <String, List<Track>>{};
+    _loopLibraryRatings((rating, tr) => allAvailableMap.addForce(rating, tr));
+    if (sort) allAvailableMap.sortByReverse((e) => int.tryParse(e.key) ?? 0);
+    return allAvailableMap;
+  }
+
+  void _loopLibraryRatings(void Function(String name, Track tr) callback) {
+    for (var tr in allTracksInLibrary) {
+      callback(tr.effectiveRating.toString(), tr);
+    }
+  }
+
+  Future<void> _readTrackData([Completer<void>? completer]) async {
+    tracksInfoList.clear(); // clearing for cases which refreshing library is required (like after changing separators)
+    networkTracksCount.value = 0;
+
+    final mediaSorters = <MediaType, SortChainComparables<Track>>{};
+
+    for (final e in MediaType.values) {
+      mediaSorters[e] = SearchSortController.inst.getMediaTracksSortingComparables(e);
+    }
+
+    await [
+      _IndexerIsolateExecuter._readTrackStatsDataSync.thready((dbInfo: AppPaths.TRACKS_STATS_DB_INFO, oldJsonFilePath: AppPaths.TRACKS_STATS_OLD)).then(
+        (res) {
+          trackStatsMap.value = res;
+        },
+      ),
+      _IndexerIsolateExecuter._readTracksDataSync
+          .thready((
+            dbInfo: AppPaths.TRACKS_DB_INFO,
+            externalDbInfo: AppPaths.TRACKS_EXTERNAL_DB_INFO,
+            oldJsonFilePath: AppPaths.TRACKS_OLD,
+            splitConfig: _createSplitConfig(),
+          ))
+          .then(
+            (value) async {
+              allTracksMappedByPath = value.allTracksMappedByPath;
+              externalTracksMappedByPath = value.externalTracksMappedByPath;
+              allTracksMappedByYTID = value.allTracksMappedByYTID as Map<String, List<T>>;
+              tracksInfoList.value = value.tracksInfoList as List<T>;
+              networkTracksCount.value = value.networkTracksCount;
+
+              mainMapsGroup.fillAll(
+                tracksInfoList.value,
+                (tr) =>
+                    allTracksMappedByPath[tr.path] ??
+                    kDummyExtendedTrack.copyWith(
+                      title: tr.path.getFilenameWOExt,
+                      path: tr.path,
+                      generatePathHash: TagsExtractor.defaultUniqueArtworkHash,
+                    ),
+                settings.albumIdentifiers.value,
+              );
+              QueueController.latestPlayedForSourceManager.migrateLegacyAlbumSources();
+
+              mainMapsGroup.sortAllSync(
+                mediaSorters,
+                tracksInfoList.value,
+              );
+
+              FoldersController.tracksAndVideos.onMapChanged(mainMapFoldersTracksAndVideos.value);
+              FoldersController.tracksAndVideos.onFirstLoad();
+
+              FoldersController.tracks.onMapChanged(mainMapFoldersTracks.value);
+              FoldersController.tracks.onFirstLoad();
+              FoldersController.videos.onMapChanged(mainMapFoldersVideos.value);
+              FoldersController.videos.onFirstLoad();
+
+              completer?.completeIfWasnt();
+
+              SearchSortController.inst.refreshPortsIfNecessary(); // -- vip to refresh filtering
+            },
+          ),
+    ].executeAllAndSilentReportErrors();
+
+    printy("All Tracks Length From File: ${tracksInfoList.length}");
+  }
+
+  /// Same as [_readTrackData] but sorting happens on the spawned isolate, means everything needs to be copied instead of just tracks
+  // Future<void> _readTrackDataWithOffloadSorting([Completer<void>? completer]) async {
+  //   tracksInfoList.clear(); // clearing for cases which refreshing library is required (like after changing separators)
+
+  //   final mediaSorters = <MediaType, List<Comparable<dynamic> Function(Track)>>{};
+  //   final mediaSortersNOTSafeInIsolate = _getMediaTypeSortThatDependOnHistory();
+  //   final mediaSortersReverse = settings.mediaItemsTrackSortingReverse.value;
+
+  //   for (final e in MediaType.values) {
+  //     if (!mediaSortersNOTSafeInIsolate.contains(e)) {
+  //       mediaSorters[e] = SearchSortController.inst.getMediaTracksSortingComparables(e);
+  //     }
+  //   }
+
+  //   final tracksRecievePort = ReceivePort();
+
+  //   Future<void> handleRecieveTracks() async {
+  //     try {
+  //       final value = await tracksRecievePort.first;
+  //       value as _TracksLoadResult;
+  //       allTracksMappedByPath = value.allTracksMappedByPath;
+  //       allTracksMappedByYTID = value.allTracksMappedByYTID as Map<String, List<T>>;
+  //       tracksInfoList.value = value.tracksInfoList as List<T>;
+  //       this.sortMediaTracksSubLists([MediaType.track]);
+  //       completer?.completeIfWasnt();
+  //     } catch (e, st) {
+  //       completer?.completeErrorIfWasnt(e, st);
+  //     } finally {
+  //       tracksRecievePort.close();
+  //     }
+  //   }
+
+  //   await [
+  //     _IndexerIsolateExecuter._readTrackStatsDataSync.thready([AppPaths.TRACKS_STATS_DB_INFO, AppPaths.TRACKS_STATS_OLD]).then(
+  //       (res) {
+  //         trackStatsMap.value = res;
+  //       },
+  //     ),
+  //     _IndexerIsolateExecuter._readTracksDataSync
+  //         .thready([
+  //           AppPaths.TRACKS_DB_INFO,
+  //           AppPaths.TRACKS_OLD,
+  //           _createSplitConfig(),
+  //           mediaSorters,
+  //           mediaSortersReverse,
+  //           settings.albumIdentifiers.value,
+  //           TagsExtractor.defaultUniqueArtworkHash,
+  //           tracksRecievePort.sendPort,
+  //         ])
+  //         .then(
+  //           (libraryGroup) async {
+  //             mainMapsGroup.updateFrom(libraryGroup);
+
+  //             FoldersController.tracksAndVideos.onMapChanged(mainMapFoldersTracksAndVideos.value);
+  //             FoldersController.tracksAndVideos.onFirstLoad();
+
+  //             FoldersController.tracks.onMapChanged(mainMapFoldersTracks.value);
+  //             FoldersController.tracks.onFirstLoad();
+  //             FoldersController.videos.onMapChanged(mainMapFoldersVideos.value);
+  //             FoldersController.videos.onFirstLoad();
+
+  //             _refreshMediaTracksSubListsAfterSort(mediaSorters.keys);
+
+  //             SearchSortController.inst.refreshPortsIfNecessary(); // -- vip to refresh filtering
+  //           },
+  //         ),
+  //     handleRecieveTracks(),
+  //   ].executeAllAndSilentReportErrors();
+
+  //   printy("All Tracks Length From File: ${tracksInfoList.length}");
+  // }
+
+  static final _featArtistRegex = RegExp(r'\(ft\. |\[ft\. |\(feat\. |\[feat\. ', caseSensitive: false);
+  static final _closingBracketRegex = RegExp(r'\)|\]');
+
   static List<String> splitArtist({
     required String? title,
     required String? originalArtist,
+    List<String>? tagged,
     required ArtistsSplitConfig config,
   }) {
-    final allArtists = <String>[];
-
-    final artistsOrg = splitBySeparators(
-      originalArtist,
-      config.separators,
-      UnknownTags.ARTIST,
-      config.separatorsBlacklist,
-    );
-    allArtists.addAll(artistsOrg);
-
-    if (config.addFeatArtist) {
-      final List<String>? moreArtists = title?.split(RegExp(r'\(ft\. |\[ft\. |\(feat\. |\[feat\. \]', caseSensitive: false));
-      if (moreArtists != null && moreArtists.length > 1) {
-        final extractedFeatArtists = moreArtists[1].split(RegExp(r'\)|\]')).first;
-        allArtists.addAll(
-          splitBySeparators(
-            extractedFeatArtists,
-            config.separators,
-            '',
-            config.separatorsBlacklist,
-          ),
-        );
-      }
+    final featArtists = title != null && config.addFeatArtist ? _extractFeatArtists(title) : null;
+    if (tagged != null) {
+      if (featArtists == null) return tagged;
+      final artists = [...tagged];
+      config.addSplitTextTo(artists, featArtists);
+      return artists;
     }
-    return allArtists;
+    final artists = originalArtist == UnknownTags.ARTIST ? [UnknownTags.ARTIST] : config.splitText(originalArtist, fallback: UnknownTags.ARTIST);
+    if (featArtists != null) config.addSplitTextTo(artists, featArtists);
+    return artists;
+  }
+
+  static String? _extractFeatArtists(String title) {
+    final match = _featArtistRegex.firstMatch(title);
+    if (match == null) return null;
+    final start = match.end;
+    final closingIndex = title.indexOf(_closingBracketRegex, start);
+    final nextFeatIndex = title.indexOf(_featArtistRegex, start);
+    final isNextFeatFirst = nextFeatIndex != -1 && (closingIndex == -1 || nextFeatIndex < closingIndex);
+    final end = isNextFeatFirst ? nextFeatIndex : closingIndex;
+    return end == -1 ? title.substring(start) : title.substring(start, end);
+  }
+
+  static String removeFeatArtistsFromTitle(String title) {
+    final match = _featArtistRegex.firstMatch(title);
+    if (match == null) return title;
+    final closingIndex = title.indexOf(_closingBracketRegex, match.end);
+    var start = match.start;
+    var end = closingIndex == -1 ? title.length : closingIndex + 1;
+    if (start > 0 && title.codeUnitAt(start - 1) == 0x20) {
+      start--;
+    } else if (end < title.length && title.codeUnitAt(end) == 0x20) {
+      end++;
+    }
+    return title.replaceRange(start, end, '');
+  }
+
+  static List<String> splitComposer(
+    String? originalComposer, {
+    List<String>? tagged,
+    required ArtistsSplitConfig config,
+  }) {
+    if (tagged != null) return tagged;
+    if (originalComposer == UnknownTags.COMPOSER) return [UnknownTags.COMPOSER];
+    return config.splitText(
+      originalComposer,
+      fallback: UnknownTags.COMPOSER,
+    );
+  }
+
+  static List<String> splitAlbumArtist(
+    String? originalAlbumArtist, {
+    List<String>? tagged,
+    required ArtistsSplitConfig config,
+  }) {
+    if (tagged != null) return tagged;
+    return config.splitText(
+      originalAlbumArtist,
+      fallback: UnknownTags.ALBUMARTIST,
+    );
   }
 
   static List<String> splitGenre(
     String? originalGenre, {
+    List<String>? tagged,
     required GenresSplitConfig config,
   }) {
-    return splitBySeparators(
+    if (tagged != null) return tagged;
+    if (originalGenre == UnknownTags.GENRE) return [UnknownTags.GENRE];
+    return config.splitText(
       originalGenre,
-      config.separators,
-      UnknownTags.GENRE,
-      config.separatorsBlacklist,
+      fallback: UnknownTags.GENRE,
     );
   }
 
-  /// (title, artist)
-  static (String, String) getTitleAndArtistFromFilename(String filename) {
-    final filenameWOEx = filename.replaceAll('_', ' ');
-    final titleAndArtist = <String>[];
-
-    /// preferring to split by [' - '], since there are artists that has '-' in their name.
-    titleAndArtist.addAll(filenameWOEx.split(' - '));
-    if (titleAndArtist.length == 1) {
-      titleAndArtist.addAll(filenameWOEx.split('-'));
-    }
-
-    /// in case splitting produced 2 entries or more, it means its high likely to be [artist - title]
-    /// otherwise [title] will be the [filename] and [artist] will be [Unknown]
-    final title = titleAndArtist.length >= 2 ? titleAndArtist[1].trimAll() : filenameWOEx;
-    final artist = titleAndArtist.length >= 2 ? titleAndArtist[0].trimAll() : UnknownTags.ARTIST;
-
-    // TODO: split by ( and ) too, but retain Remixes and feat.
-    final cleanedUpTitle = title.split('[').first.trimAll();
-    final cleanedUpArtist = artist.split(']').last.trimAll();
-
-    return (cleanedUpTitle, cleanedUpArtist);
+  static List<String> splitStyle(
+    String? originalStyle, {
+    List<String>? tagged,
+    required GenresSplitConfig config,
+  }) {
+    if (tagged != null) return tagged;
+    return config.splitText(
+      originalStyle,
+      fallback: UnknownTags.STYLE,
+    );
   }
 
-  Set<String> getNewFoundPaths(Set<String> currentFiles) => currentFiles.difference(Set.of(tracksInfoList.map((t) => t.path)));
-  Set<String> getDeletedPaths(Set<String> currentFiles) => Set.of(tracksInfoList.map((t) => t.path)).difference(currentFiles);
+  static List<String> splitGeneral(
+    String? originalText, {
+    List<String>? tagged,
+    required GeneralSplitConfig config,
+  }) {
+    if (tagged != null) return tagged;
+    return config.splitText(
+      originalText,
+      fallback: null,
+    );
+  }
+
+  static List<String> splitAlbum(
+    String? originalText, {
+    List<String>? tagged,
+    required AlbumsSplitConfig config,
+  }) {
+    if (tagged != null) return tagged;
+    if (originalText == UnknownTags.ALBUM) return [UnknownTags.ALBUM];
+    return config.splitText(
+      originalText,
+      fallback: null,
+    );
+  }
+
+  Set<String> _getPhysicalMediasPaths() {
+    final paths = <String>{};
+    final tracks = tracksInfoList.value;
+    for (int i = 0; i < tracks.length; i++) {
+      final tr = tracks[i];
+      if (tr.isPhysical) paths.add(tr.path);
+    }
+    return paths;
+  }
+
+  IndexerFilesDiff getPathsDifference(DirsFileFilterResult currentFiles) {
+    final newPaths = <String>{};
+    final modifiedPaths = <String>{};
+    final deletedPaths = _getPhysicalMediasPaths();
+    final newAndModifiedStats = <String, FileStatsAdv>{};
+
+    final allTracksMappedByPath = this.allTracksMappedByPath;
+    final stats = currentFiles.stats;
+    int index = -1;
+    for (final path in currentFiles.allPaths) {
+      index++;
+      final isInLibrary = deletedPaths.remove(path);
+      if (isInLibrary) {
+        if (stats == null || !stats.isKnownAt(index)) continue;
+        final trExt = allTracksMappedByPath[path];
+        if (trExt == null) continue;
+        // -- seconds, windows tracks indexed before had no milliseconds
+        final isSameDate = trExt.dateModified ~/ 1000 == stats.modifiedMSAt(index) ~/ 1000;
+        if (isSameDate && trExt.size == stats.sizeAt(index)) continue;
+        modifiedPaths.add(path);
+      } else {
+        newPaths.add(path);
+      }
+      final fileStats = stats?.toStatsAt(index);
+      if (fileStats != null) newAndModifiedStats[path] = fileStats;
+    }
+
+    return IndexerFilesDiff(
+      newPaths: newPaths,
+      modifiedPaths: modifiedPaths,
+      deletedPaths: deletedPaths,
+      stats: newAndModifiedStats,
+    );
+  }
 
   /// [strictNoMedia] forces all subdirectories to follow the same result of the parent.
   ///
   /// ex: if (.nomedia) was found in [/storage/0/Music/],
   /// then subdirectories [/storage/0/Music/folder1/], [/storage/0/Music/folder2/] & [/storage/0/Music/folder2/subfolder/] will be excluded too.
   Future<Set<String>> getAudioFiles({bool strictNoMedia = true}) async {
+    final result = await _listAudioFiles(strictNoMedia: strictNoMedia, withStats: false);
+    return result.allPaths;
+  }
+
+  /// stats are left out with media store, it re-fetches everything anyway.
+  Future<DirsFileFilterResult> getAudioFilesForRefresh() {
+    return _listAudioFiles(withStats: !_defaultUseMediaStore);
+  }
+
+  Future<DirsFileFilterResult> _listAudioFiles({bool strictNoMedia = true, required bool withStats}) async {
     tracksExcludedByNoMedia.value = 0;
-    final allAvailableDirectories = await getAvailableDirectories(forceReCheck: true, strictNoMedia: strictNoMedia);
 
-    final parameters = {
-      'allAvailableDirectories': allAvailableDirectories,
-      'directoriesToExclude': settings.directoriesToExclude.toList(),
-      'extensions': kAudioFileExtensions,
-      'imageExtensions': kImageFilesExtensions,
-    };
+    final extensions = _includeVideosAsTracks ? NamidaFileExtensionsWrapper.audioAndVideo : NamidaFileExtensionsWrapper.audio;
+    final dirsFilterer = DirsFileFilter(
+      extensions: extensions,
+      imageExtensions: NamidaFileExtensionsWrapper.image,
+      blacklistExtensions: settings.extensionsBlacklist.value,
+      strictNoMedia: strictNoMedia,
+      withStats: withStats,
+    );
+    final result = await dirsFilterer.filter();
 
-    final mapResult = await getFilesTypeIsolate.thready(parameters);
+    final allPaths = result.allPaths;
 
-    final allPaths = mapResult['allPaths'] as Set<String>;
-    final excludedByNoMedia = mapResult['pathsExcludedByNoMedia'] as Set<String>;
-    final folderCovers = mapResult['folderCovers'] as Map<String, String>;
-
-    tracksExcludedByNoMedia.value += excludedByNoMedia.length;
-
-    // ignore: invalid_use_of_protected_member
     allAudioFiles.value = allPaths;
-
-    allFolderCovers = folderCovers;
+    tracksExcludedByNoMedia.value += result.excludedByNoMedia.length;
+    allFolderCovers = result.folderCovers;
 
     printy("Paths Found: ${allPaths.length}");
-    return allPaths;
+    return result;
   }
 
-  Completer<Map<Directory, bool>>? _lastAvailableDirectories;
-  Future<Map<Directory, bool>> getAvailableDirectories({bool forceReCheck = true, bool strictNoMedia = true}) async {
-    if (forceReCheck == false && _lastAvailableDirectories != null) {
-      return await _lastAvailableDirectories!.future;
+  Future<void> scanMediaStore(String path) async {
+    if (NamidaFeaturesVisibility.onAudioQueryAvailable) {
+      try {
+        await _audioQuery.scanMedia(path);
+      } catch (_) {}
     }
-
-    _lastAvailableDirectories = null; // for when forceReCheck enabled.
-    _lastAvailableDirectories = Completer<Map<Directory, bool>>();
-    final parameters = {
-      'directoriesToScan': settings.directoriesToScan.toList(),
-      'respectNoMedia': settings.respectNoMedia.value,
-      'strictNoMedia': strictNoMedia, // TODO: expose [strictNoMedia] in settings?
-    };
-    final dirs = await _getAvailableDirectoriesIsolate.thready(parameters);
-    _lastAvailableDirectories?.completeIfWasnt(dirs);
-    return dirs;
   }
 
-  static Map<Directory, bool> _getAvailableDirectoriesIsolate(Map parameters) {
-    final directoriesToScan = parameters['directoriesToScan'] as List<String>;
-    final respectNoMedia = parameters['respectNoMedia'] as bool;
-    final strictNoMedia = parameters['strictNoMedia'] as bool;
-
-    final allAvailableDirectories = <Directory, bool>{};
-
-    for (final dirPath in directoriesToScan) {
-      final directory = Directory(dirPath);
-
-      if (directory.existsSync()) {
-        allAvailableDirectories[directory] = false;
-        for (final file in directory.listSyncSafe(recursive: true, followLinks: true)) {
-          if (file is Directory) {
-            allAvailableDirectories[file] = false;
-          }
-        }
-      }
-    }
-
-    /// Assigning directories and sub-subdirectories that has .nomedia.
-    if (respectNoMedia) {
-      for (final d in allAvailableDirectories.keys) {
-        final hasNoMedia = File("${d.path}/.nomedia").existsSync();
-        if (hasNoMedia) {
-          if (strictNoMedia) {
-            // strictly applies bool to all subdirectories.
-            allAvailableDirectories.forEach((key, value) {
-              if (key.path.startsWith(d.path)) {
-                allAvailableDirectories[key] = true;
-              }
-            });
-          } else {
-            allAvailableDirectories[d] = true;
-          }
-        }
-      }
-    }
-    return allAvailableDirectories;
-  }
-
-  Future<List<(TrackExtended, int)>> _fetchMediaStoreTracks() async {
+  Future<List<TrackExtended>> _fetchMediaStoreTracks() async {
+    if (!_defaultUseMediaStore) return [];
     final allMusic = await _audioQuery.querySongs();
-    // -- folders selected will be ignored when [settings.useMediaStore.value] is enabled.
+    // -- folders selected will be ignored when [_defaultUseMediaStore] is enabled.
     allMusic.retainWhere(
-        (element) => settings.directoriesToExclude.every((dir) => !element.data.startsWith(dir)) /* && settings.directoriesToScan.any((dir) => element.data.startsWith(dir)) */);
-    final tracks = <(TrackExtended, int)>[];
-    allMusic.loop((e, _) {
+      (element) => settings.directoriesToExclude.value.every(
+        (dir) => !element.data.startsWith(dir.sourceRaw),
+      ) /* && settings.directoriesToScan.value.any((dir) => element.data.startsWith(dir)) */,
+    );
+    final tracks = <TrackExtended>[];
+
+    final splitConfig = SplitArtistGenreConfigsWrapper.settings();
+
+    for (final e in allMusic) {
       final map = e.getMap;
-      final artist = e.artist;
-      final artists = artist == null
-          ? <String>[]
-          : Indexer.splitArtist(
-              title: e.title,
-              originalArtist: artist,
-              config: ArtistsSplitConfig.settings(),
-            );
-      final genre = e.genre;
-      final genres = genre == null
-          ? <String>[]
-          : Indexer.splitGenre(
-              genre,
-              config: GenresSplitConfig.settings(),
-            );
+      final albumArtist = map['album_artist'] as String?;
       final mood = map['mood'];
-      final moods = mood == null
-          ? <String>[]
-          : Indexer.splitGenre(
-              mood,
-              config: GenresSplitConfig.settings(),
-            );
+      final tag = map['tag'] ?? map['tags'];
       final bitrate = map['bitrate'] as int?;
       final disc = map['disc_number'] as int?;
-      final year = (map['year'] as String?).getIntValue();
-      final trext = TrackExtended(
+      final discTo = map['disc_total'] as int?;
+      final trackTo = map['track_total'] as int?;
+      final yearString = map['year'] as String?;
+      final path = e.data;
+      final trext = TrackExtended.derive(
+        splitConfig: splitConfig,
+        mbAlbumId: '',
+        mbAlbumArtistId: '',
         title: e.title,
         originalArtist: e.artist ?? UnknownTags.ARTIST,
-        artistsList: artists,
-        album: e.album ?? UnknownTags.ALBUM,
-        albumArtist: map['album_artist'] ?? UnknownTags.ALBUMARTIST,
+        originalAlbum: e.album ?? UnknownTags.ALBUM,
+        albumArtist: albumArtist ?? UnknownTags.ALBUMARTIST,
         originalGenre: e.genre ?? UnknownTags.GENRE,
-        genresList: genres,
+        originalStyle: UnknownTags.STYLE,
         originalMood: mood ?? '',
-        moodList: moods,
         composer: e.composer ?? '',
         trackNo: e.track ?? 0,
-        duration: e.duration == null ? 0 : e.duration! ~/ 1000,
-        year: year ?? 0,
+        trackTo: trackTo ?? 0,
+        durationMS: e.duration ?? 0, // `e.duration` => milliseconds
+        chapters: null,
+        year: TrackExtended.enforceYearFormat(yearString) ?? 0,
+        yearText: yearString ?? '',
         size: e.size,
         dateAdded: e.dateAdded ?? 0,
         dateModified: e.dateModified ?? 0,
-        path: e.data,
+        path: path,
         comment: '',
+        description: '',
+        synopsis: '',
         bitrate: bitrate == null ? 0 : bitrate ~/ 1000,
         sampleRate: 0,
+        bits: 0,
+        isLossless: null,
         format: '',
         channels: '',
         discNo: disc ?? 0,
+        discTo: discTo ?? 0,
         language: '',
         lyrics: '',
+        label: '',
+        releaseType: '',
+        bpm: 0,
+        musicalKey: '',
+        rating: 0.0,
+        originalTags: tag,
+        gainData: null,
+        sortInfo: null,
+        multiValues: null,
+        extraTags: null,
+        isVideo: e.data.isVideo(),
+        hashKey: TrackExtended.generateHashKeyIfEnabled(null, path, null),
+        server: null,
+        serverFolder: null,
+        hasNoEmbeddedArtwork: false,
       );
-      tracks.add((trext, e.id));
-      _backupMediaStoreIDS[trext.pathToImage] = (trext.toTrack(), e.id);
-    });
+      tracks.add(trext);
+      _backupMediaStoreIDS[trext.pathToImage] = (trext.asTrack(), e.id);
+    }
     return tracks;
   }
 
-  Future<void> updateImageSizeInStorage({String? newImagePath, File? oldDeletedFile}) async {
-    if (newImagePath != null || oldDeletedFile != null) {
-      if (oldDeletedFile != null) {
-        if (oldDeletedFile.existsSync()) {
-          artworksInStorage.value--;
-          artworksSizeInStorage.value -= oldDeletedFile.fileSizeSync() ?? 0;
-        }
-      }
-      if (newImagePath != null) {
-        artworksInStorage.value++;
-        artworksSizeInStorage.value += File(newImagePath).fileSizeSync() ?? 0;
-      }
+  void updateImageSizesInStorage({required int removedCount, required int removedSize}) {
+    artworksInStorage.value -= removedCount;
+    artworksSizeInStorage.value -= removedSize;
+  }
 
-      return;
-    }
-
-    final stats = await updateImageSizeInStorageIsolate.thready({
-      "dirPath": AppDirs.ARTWORKS,
-      "token": RootIsolateToken.instance,
-    });
+  Future<void> calculateAllImageSizesInStorage() async {
+    final stats = await _caclulateDirectoryInfoIsolate.thready((dirPath: AppDirs.ARTWORKS, token: RootIsolateToken.instance));
     artworksInStorage.value = stats.$1;
     artworksSizeInStorage.value = stats.$2;
   }
 
-  static (int, int) updateImageSizeInStorageIsolate(Map p) {
-    final dirPath = p["dirPath"] as String;
-    final newImagePath = p["newImagePath"] as String?;
-    final oldDeletedFile = p["oldDeletedFile"] as File?;
-    final token = p["token"] as RootIsolateToken;
-    BackgroundIsolateBinaryMessenger.ensureInitialized(token);
+  static (int, int) _caclulateDirectoryInfoIsolate(({String dirPath, RootIsolateToken? token}) p) {
+    final dirPath = p.dirPath;
+    final token = p.token;
+    if (token != null) BackgroundIsolateBinaryMessenger.ensureInitialized(token);
 
-    int initialCount = p["initialCount"] as int? ?? 0;
-    int initialSize = p["initialSize"] as int? ?? 0;
+    int totalCount = 0;
+    int totalSize = 0;
 
-    if (newImagePath != null || oldDeletedFile != null) {
-      if (oldDeletedFile != null) {
-        if (oldDeletedFile.existsSync()) {
-          initialCount--;
-          initialSize -= oldDeletedFile.fileSizeSync() ?? 0;
-        }
-      }
-      if (newImagePath != null) {
-        initialCount++;
-        initialSize += File(newImagePath).fileSizeSync() ?? 0;
-      }
-    } else {
-      final dir = Directory(dirPath);
-
-      for (final f in dir.listSyncSafe()) {
+    void calDirRecursive(Directory dir) {
+      final files = dir.listSyncSafe();
+      for (var f in files) {
         if (f is File) {
-          initialCount++;
-          initialSize += f.fileSizeSync() ?? 0;
+          try {
+            totalSize += (f).lengthSync();
+            totalCount++;
+          } catch (_) {}
+        } else {
+          try {
+            calDirRecursive(f as Directory);
+          } catch (_) {}
         }
       }
     }
 
-    return (initialCount, initialSize);
+    calDirRecursive(Directory(dirPath));
+
+    return (totalCount, totalSize);
   }
 
-  Future<void> updateColorPalettesSizeInStorage({String? newPalettePath}) async {
-    if (newPalettePath != null) {
-      colorPalettesInStorage.value++;
-      return;
-    }
-    await _updateDirectoryStats(AppDirs.PALETTES, colorPalettesInStorage, null);
-  }
+  // static int _caclulateDirectoryCountIsolate(String dirPath) {
+  //   int totalCount = 0;
 
-  Future<void> updateVideosSizeInStorage() async {
-    await _updateDirectoryStats(AppDirs.VIDEOS_CACHE, videosInStorage, videosSizeInStorage);
-  }
+  // void calDirRecursive(Directory dir) {
+  //   final files = dir.listSyncSafe();
+  //   for (var f in files) {
+  //     if (f is File) {
+  //       totalCount++;
+  //     } else {
+  //       try {
+  //         calDirRecursive(f as Directory);
+  //       } catch (_) {}
+  //     }
+  //   }
+  // }
 
-  Future<void> _updateDirectoryStats(String dirPath, RxInt? filesCountVariable, RxInt? filesSizeVariable) async {
-    // resets values
-    filesCountVariable?.value = 0;
-    filesSizeVariable?.value = 0;
+  //   calDirRecursive(Directory(dirPath));
 
-    final dir = Directory(dirPath);
+  //   return totalCount;
+  // }
 
-    await for (final f in dir.list()) {
-      if (f is File) {
-        filesCountVariable?.value++;
-        final st = await f.stat();
-        filesSizeVariable?.value += st.size;
-      }
-    }
-  }
+  // Future<void> updateColorPalettesSizeInStorage({String? newPalettePath}) async {
+  //   if (newPalettePath != null) {
+  //     colorPalettesInStorage.value++;
+  //     return;
+  //   }
+  //   final count = await _caclulateDirectoryCountIsolate.thready(AppDirs.PALETTES);
+  //   colorPalettesInStorage.value = count;
+  // }
 
   Future<void> clearImageCache() async {
     await Directory(AppDirs.ARTWORKS).delete(recursive: true);
     await Directory(AppDirs.ARTWORKS).create();
-    await _createDefaultNamidaArtwork();
-    updateImageSizeInStorage();
+    Indexer.createDefaultNamidaArtworkIfRequired();
+    calculateAllImageSizesInStorage();
   }
 
-  /// Deletes specific videos or the whole cache.
-  Future<void> clearVideoCache([List<NamidaVideo>? videosToDelete]) async {
-    if (videosToDelete != null) {
-      for (final v in videosToDelete) {
-        final deleted = await File(v.path).tryDeleting();
-        if (deleted) {
-          videosInStorage.value--;
-          videosSizeInStorage.value -= v.sizeInBytes;
-        }
-      }
-    } else {
-      await Directory(AppDirs.VIDEOS_CACHE).delete(recursive: true);
-      await Directory(AppDirs.VIDEOS_CACHE).create();
-      videosInStorage.value = 0;
-      videosSizeInStorage.value = 0;
+  static Future<String> createDefaultNamidaArtworkIfRequired() async {
+    if (!await File(AppPaths.NAMIDA_LOGO_LAYER).exists()) {
+      final byteData = await rootBundle.load(NamidaChannel.defaultLayerIconForPlatform);
+      final file = await File(AppPaths.NAMIDA_LOGO_LAYER).create(recursive: true);
+      await file.writeAsBytes(byteData.buffer.asUint8List());
     }
+    return AppPaths.NAMIDA_LOGO_LAYER;
   }
 
-  Future<void> _createDefaultNamidaArtwork() async {
-    if (!await File(AppPaths.NAMIDA_LOGO).exists()) {
-      final byteData = await rootBundle.load('assets/namida_icon.png');
-      final file = await File(AppPaths.NAMIDA_LOGO).create(recursive: true);
-      await file.writeAsBytes(byteData.buffer.asUint8List(byteData.offsetInBytes, byteData.lengthInBytes));
-    }
+  static SplitArtistGenreConfigsWrapper _createSplitConfig() {
+    return SplitArtistGenreConfigsWrapper.settings();
+  }
+
+  static void clearMemoryImageCache() {
+    imageCache.clear();
+    imageCache.clearLiveImages();
+    if (Platform.isAndroid) AudioService.evictArtworkCache();
   }
 }
 
-class _SplitArtistGenreConfig {
-  final String path;
-  final ArtistsSplitConfig artistsConfig;
-  final GenresSplitConfig genresConfig;
+class _IndexerIsolateExecuter {
+  /// reading stats db containing track rating etc.
+  static Future<Map<Track, TrackStats>> _readTrackStatsDataSync(({DbWrapperFileInfo dbInfo, String oldJsonFilePath}) params) async {
+    final statsDbInfo = params.dbInfo;
+    final oldJsonFilePath = params.oldJsonFilePath;
 
-  const _SplitArtistGenreConfig({
-    required this.path,
-    required this.artistsConfig,
-    required this.genresConfig,
+    final statsDBManager = await DBWrapper.openFromInfoSyncTry(
+      fileInfo: statsDbInfo,
+      config: const DBConfig(
+        createIfNotExist: true,
+        autoDisposeTimerDuration: null, // we close manually
+      ),
+    );
+
+    final trackStatsMap = <Track, TrackStats>{};
+
+    try {
+      statsDBManager?.loadEverythingKeyed(
+        (key, value) {
+          final track = Track.fromJson(key, isVideo: value['v'] == true);
+          final stats = TrackStats.fromJsonWithoutTrack(track, value);
+          trackStatsMap[stats.track] = stats;
+        },
+      );
+
+      // -- migrating tracks stats json to db
+      final statsJsonFile = File(oldJsonFilePath);
+      if (statsJsonFile.existsSync()) {
+        final list = statsJsonFile.readAsJsonSync() as List?;
+        if (list != null) {
+          for (final item in list) {
+            try {
+              final trst = TrackStats.fromJson(item);
+              if (trackStatsMap[trst.track] == null) {
+                final jsonDetails = trst.toJsonWithoutTrack();
+                if (jsonDetails != null) {
+                  trackStatsMap[trst.track] = trst;
+                  statsDBManager?.put(trst.track.path, trst.toJsonWithoutTrack());
+                }
+              }
+            } catch (_) {}
+          }
+        }
+        statsJsonFile.deleteSync();
+      }
+    } catch (_) {}
+    statsDBManager?.close();
+    return trackStatsMap;
+  }
+
+  /// Reading actual tracks db.
+  static Future<_TracksLoadResult> _readTracksDataSync(
+    ({DbWrapperFileInfo dbInfo, DbWrapperFileInfo externalDbInfo, String oldJsonFilePath, SplitArtistGenreConfigsWrapper splitConfig}) params,
+  ) async {
+    final tracksDbInfo = params.dbInfo;
+    final externalDbInfo = params.externalDbInfo;
+    final oldJsonFilePath = params.oldJsonFilePath;
+    final splitconfig = params.splitConfig;
+    // --------- enable only if sorting will be done here ---------
+    // final mediaItemsTrackSorters = paramsList[3] as Map<MediaType, List<Comparable<dynamic> Function(Track)>>;
+    // final mediaItemsTrackSortingReverse = paramsList[4] as Map<MediaType, bool>;
+    // final albumIdentifiers = paramsList[5] as List<AlbumIdentifier>;
+    // final generatePathHash = paramsList[6] as bool? ?? false;
+    // final tracksInitPort = paramsList[7] as SendPort;
+    // ------------------
+
+    final tracksDBManager = await DBWrapper.openFromInfoSyncTry(
+      fileInfo: tracksDbInfo,
+      config: DBConfig(
+        createIfNotExist: true,
+        autoDisposeTimerDuration: null, // we close manually
+      ),
+    );
+    final allTracksMappedByPath = <String, TrackExtended>{};
+    final tracksInfoList = <Track>[];
+    var allTracksMappedByYTID = <String, List<Track>>{};
+    int networkTracksCount = 0;
+
+    try {
+      tracksDBManager!.loadEverythingKeyed(
+        (path, item) {
+          try {
+            final trExt = TrackExtended.fromJson(
+              path,
+              item,
+              splitConfig: splitconfig,
+            );
+            final track = trExt.asTrack();
+            allTracksMappedByPath[track.path] = trExt;
+            tracksInfoList.add(track);
+            if (track.isNetwork) networkTracksCount++;
+            allTracksMappedByYTID.addForce(trExt.youtubeID, track);
+          } catch (_) {}
+        },
+      );
+
+      // -- migrating tracks json to db
+      final tracksJsonFile = File(oldJsonFilePath);
+      if (tracksJsonFile.existsSync()) {
+        final list = tracksJsonFile.readAsJsonSync() as List?;
+        if (list != null) {
+          for (final item in list) {
+            try {
+              final trExt = TrackExtended.fromJson(
+                item['path'] ?? '',
+                item,
+                splitConfig: splitconfig,
+              );
+              final track = trExt.asTrack();
+              allTracksMappedByPath[track.path] = trExt;
+              tracksInfoList.add(track);
+              if (track.isNetwork) networkTracksCount++;
+              allTracksMappedByYTID.addForce(trExt.youtubeID, track);
+              tracksDBManager.put(track.path, trExt.toJsonWithoutPath());
+            } catch (_) {}
+          }
+        }
+        tracksJsonFile.deleteSync();
+      }
+    } catch (_) {}
+
+    if (tracksInfoList.isEmpty && allTracksMappedByPath.isEmpty) {
+      // -- in case db disk image was malformed for example,
+      // -- clear the db so that it be ready by the next time.
+      try {
+        tracksDBManager?.deleteEverything();
+      } catch (_) {}
+    }
+
+    tracksDBManager?.close();
+
+    final externalTracksMappedByPath = await _readExternalTracksDataSync(externalDbInfo, splitconfig);
+
+    return _TracksLoadResult(
+      tracksInfoList: tracksInfoList,
+      allTracksMappedByPath: allTracksMappedByPath,
+      externalTracksMappedByPath: externalTracksMappedByPath,
+      allTracksMappedByYTID: allTracksMappedByYTID,
+      networkTracksCount: networkTracksCount,
+    );
+
+    // --------- enable only if sorting will be done here ---------
+    // tracksInitPort.send(
+    //   _TracksLoadResult(
+    //     tracksInfoList: tracksInfoList,
+    //     allTracksMappedByPath: allTracksMappedByPath,
+    //     allTracksMappedByYTID: allTracksMappedByYTID,
+    //   ),
+    // );
+
+    // // -- so that sorting works, the Indexer here is local to this isolate only
+    // Indexer.inst.allTracksMappedByPath = allTracksMappedByPath;
+    // Indexer.inst.tracksInfoList.value = tracksInfoList;
+    // Indexer.inst.allTracksMappedByYTID = allTracksMappedByYTID;
+
+    // final libraryGroup = LibraryGroup();
+    // libraryGroup.fillAll(
+    //   tracksInfoList,
+    //   (tr) =>
+    //       allTracksMappedByPath[tr.path] ??
+    //       kDummyExtendedTrack.copyWith(
+    //         title: tr.path.getFilenameWOExt,
+    //         path: tr.path,
+    //         generatePathHash: generatePathHash,
+    //       ),
+    //   albumIdentifiers,
+    // );
+
+    // libraryGroup.sortAllSync(
+    //   mediaItemsTrackSorters,
+    //   mediaItemsTrackSortingReverse,
+    //   tracksInfoList,
+    // );
+
+    // return libraryGroup;
+    // ------------------
+  }
+
+  static Future<Map<String, TrackExtended>> _readExternalTracksDataSync(DbWrapperFileInfo dbInfo, SplitArtistGenreConfigsWrapper splitConfig) async {
+    final externalTracksMappedByPath = <String, TrackExtended>{};
+    if (!dbInfo.file.existsSync()) return externalTracksMappedByPath;
+
+    final dbManager = await DBWrapper.openFromInfoSyncTry(
+      fileInfo: dbInfo,
+      config: const DBConfig(
+        autoDisposeTimerDuration: null,
+      ),
+    );
+    try {
+      dbManager?.loadEverythingKeyed(
+        (path, item) {
+          try {
+            externalTracksMappedByPath[path] = TrackExtended.fromJson(
+              path,
+              item,
+              splitConfig: splitConfig,
+            );
+          } catch (_) {}
+        },
+      );
+    } catch (_) {}
+    dbManager?.close();
+
+    return externalTracksMappedByPath;
+  }
+}
+
+class _TracksLoadResult {
+  final List<Track> tracksInfoList;
+  final Map<String, TrackExtended> allTracksMappedByPath;
+  final Map<String, TrackExtended> externalTracksMappedByPath;
+  final Map<String, List<Track>> allTracksMappedByYTID;
+  final int networkTracksCount;
+
+  const _TracksLoadResult({
+    required this.tracksInfoList,
+    required this.allTracksMappedByPath,
+    required this.externalTracksMappedByPath,
+    required this.allTracksMappedByYTID,
+    required this.networkTracksCount,
+  });
+}
+
+class IndexerFilesDiff {
+  final Set<String> newPaths;
+  final Set<String> modifiedPaths;
+  final Set<String> deletedPaths;
+
+  /// of new and modified files.
+  final Map<String, FileStatsAdv> stats;
+
+  const IndexerFilesDiff({
+    required this.newPaths,
+    required this.modifiedPaths,
+    required this.deletedPaths,
+    required this.stats,
+  });
+
+  IndexerFilesDiff withoutDeletedPaths() {
+    return IndexerFilesDiff(
+      newPaths: newPaths,
+      modifiedPaths: modifiedPaths,
+      deletedPaths: const {},
+      stats: stats,
+    );
+  }
+}
+
+class FileStatsAdv {
+  final int? creationDateMS;
+  final int? modifiedMS;
+  final int? size;
+
+  const FileStatsAdv({
+    required this.creationDateMS,
+    required this.modifiedMS,
+    required this.size,
+  });
+
+  factory FileStatsAdv.fromFileStat(FileStat stat) {
+    return FileStatsAdv(
+      creationDateMS: stat.creationDate.millisecondsSinceEpoch,
+      modifiedMS: stat.modified.millisecondsSinceEpoch,
+      size: stat.size,
+    );
+  }
+}
+
+class _ServerTracksFetchInfo {
+  final DirectoryIndexServer dir;
+  final MusicWebServer server;
+
+  /// 0 when unknown.
+  final Future<int> tracksCount;
+
+  const _ServerTracksFetchInfo({
+    required this.dir,
+    required this.server,
+    required this.tracksCount,
+  });
+}
+
+class _RemotePlaylistImportInfo {
+  final MusicWebServer server;
+  final String dbKey;
+  final String serverKey;
+
+  const _RemotePlaylistImportInfo({
+    required this.server,
+    required this.dbKey,
+    required this.serverKey,
   });
 }

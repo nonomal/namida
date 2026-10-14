@@ -1,103 +1,166 @@
-import 'package:flutter/material.dart';
-import 'package:get/get.dart';
+import 'dart:async';
+import 'dart:io';
 
+import 'package:flutter/material.dart';
+
+import 'package:modern_titlebar_buttons/modern_titlebar_buttons.dart';
+import 'package:window_manager/window_manager.dart';
+
+import 'package:namida/class/route.dart';
 import 'package:namida/controller/miniplayer_controller.dart';
 import 'package:namida/controller/navigator_controller.dart';
+import 'package:namida/controller/platform/namida_channel/namida_channel.dart';
 import 'package:namida/controller/player_controller.dart';
 import 'package:namida/controller/scroll_search_controller.dart';
 import 'package:namida/controller/settings_controller.dart';
+import 'package:namida/controller/shortcuts_controller.dart';
+import 'package:namida/controller/window_controller.dart';
 import 'package:namida/core/constants.dart';
+import 'package:namida/core/dimensions.dart';
 import 'package:namida/core/enums.dart';
 import 'package:namida/core/extensions.dart';
+import 'package:namida/core/functions.dart';
 import 'package:namida/core/icon_fonts/broken_icons.dart';
 import 'package:namida/core/namida_converter_ext.dart';
 import 'package:namida/core/translations/language.dart';
+import 'package:namida/core/ui_scale.dart';
+import 'package:namida/core/utils.dart';
 import 'package:namida/packages/miniplayer.dart';
+import 'package:namida/ui/dialogs/edit_tags_dialog.dart';
+import 'package:namida/ui/pages/about_page.dart';
 import 'package:namida/ui/pages/main_page.dart';
-import 'package:namida/ui/pages/onboarding.dart';
-import 'package:namida/ui/pages/queues_page.dart';
 import 'package:namida/ui/pages/settings_page.dart';
 import 'package:namida/ui/widgets/custom_widgets.dart';
+import 'package:namida/ui/widgets/effects/effects.dart';
 import 'package:namida/ui/widgets/inner_drawer.dart';
+import 'package:namida/ui/widgets/jellyfish.dart';
+import 'package:namida/ui/widgets/library_tab_variant_chip.dart';
 import 'package:namida/ui/widgets/selected_tracks_preview.dart';
 import 'package:namida/ui/widgets/settings/customization_settings.dart';
+import 'package:namida/ui/widgets/settings/indexer_settings.dart';
 import 'package:namida/ui/widgets/settings/theme_settings.dart';
 
 class MainPageWrapper extends StatefulWidget {
-  final bool shouldShowOnBoarding;
-  final void Function(BuildContext context) onContextAvailable;
-
-  const MainPageWrapper({super.key, required this.shouldShowOnBoarding, required this.onContextAvailable});
+  const MainPageWrapper({super.key});
 
   @override
   State<MainPageWrapper> createState() => _MainPageWrapperState();
 }
 
-class _MainPageWrapperState extends State<MainPageWrapper> {
-  @override
-  void initState() {
-    super.initState();
-    widget.onContextAvailable(context);
-    if (widget.shouldShowOnBoarding) {
-      WidgetsBinding.instance.addPostFrameCallback(
-        (timeStamp) {
-          Navigator.of(context).pushReplacement(MaterialPageRoute(builder: (context) {
-            return FirstRunConfigureScreen(
-              onContextAvailable: widget.onContextAvailable,
-            );
-          }));
-        },
-      );
-    }
-  }
-
-  @override
-  void didChangeDependencies() {
-    widget.onContextAvailable(context);
-    super.didChangeDependencies();
-  }
-
-  @override
-  void didUpdateWidget(covariant MainPageWrapper oldWidget) {
-    widget.onContextAvailable(context);
-    super.didUpdateWidget(oldWidget);
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return NamidaInnerDrawer(
-      key: NamidaNavigator.inst.innerDrawerKey,
-      borderRadius: 42.0.multipliedRadius,
-      drawerChild: const NamidaDrawer(),
-      maxPercentage: 0.465.withMaximum(324.0 / context.width),
-      child: const MainScreenStack(),
-    );
-  }
-}
-
-class MainScreenStack extends StatefulWidget {
-  const MainScreenStack({super.key});
-
-  @override
-  State<MainScreenStack> createState() => _MainScreenStackState();
-}
-
-class _MainScreenStackState extends State<MainScreenStack> with SingleTickerProviderStateMixin {
+class _MainPageWrapperState extends State<MainPageWrapper> with TickerProviderStateMixin {
   late AnimationController animation;
+
   @override
   void initState() {
     super.initState();
     animation = MiniPlayerController.inst.initialize(this);
+    MiniPlayerController.inst.updateScreenValuesInitial();
+    MiniPlayerController.inst.initializeSAnim(this);
+    Player.inst.currentItem.addListener(_currentItemListener);
+    if (kAllowJellysInvasion) _jellysTeaserTimer = Timer(_jellysTeaserDelay, NamidaJellys.promptEnableOnce);
+    _seasonAnnounceTimer = Timer(_seasonAnnounceDelay, NamidaEffects.announceSeason);
   }
+
+  static const _jellysTeaserDelay = Duration(seconds: 5);
+  Timer? _jellysTeaserTimer;
+
+  static const _seasonAnnounceDelay = Duration(seconds: 8);
+  Timer? _seasonAnnounceTimer;
+
+  @override
+  void dispose() {
+    _jellysTeaserTimer?.cancel();
+    _seasonAnnounceTimer?.cancel();
+    Player.inst.currentItem.removeListener(_currentItemListener);
+    super.dispose();
+  }
+
+  // -- to fix black ui when nothing is playing
+  bool? _isCurrentItemNull;
+  void _currentItemListener() {
+    final isItemNull = Player.inst.currentItem.value == null;
+    if (isItemNull != _isCurrentItemNull) {
+      _isCurrentItemNull = isItemNull;
+      if (mounted) setState(() {}); // update mp values
+    }
+  }
+
+  static const _drawerWidth = 194.0;
+  static const _drawerReferenceWidth = 400.0;
 
   @override
   Widget build(BuildContext context) {
+    final width = context.width;
+    final drawerScale = (width / _drawerReferenceWidth).clampDouble(0.7, 1.0);
+    return NamidaInnerDrawer(
+      key: NamidaNavigator.inst.innerDrawerKey,
+      borderRadius: 42.0.multipliedRadius,
+      drawerChild: NamidaUiScaleBox(
+        scale: drawerScale,
+        child: const NamidaDrawer(),
+      ),
+      maxPercentage: _drawerWidth * drawerScale / width,
+      initiallySwipeable: settings.swipeableDrawer.value,
+      isEdgeSwipeOnly: () => NamidaNavigator.inst.currentRoute?.route.isDrawerEdgeSwipeOnly == true,
+      child: MainScreenStack(
+        animation: animation,
+      ),
+    );
+  }
+}
+
+class MainScreenStack extends StatelessWidget {
+  final Animation<double> animation;
+  const MainScreenStack({super.key, required this.animation});
+
+  @override
+  Widget build(BuildContext context) {
+    MiniPlayerController.inst.updateScreenValues(context); // for updating after split screen & landscape values.
+
+    final miniplayerMaxWidth = Dimensions.inst.miniplayerMaxWidth;
+    final miniplayerIsWideScreen = Dimensions.inst.miniplayerIsWideScreen;
+
+    final selectedTracksWidget = SelectedTracksPreviewContainer(
+      animation: animation,
+      isMiniplayerAlwaysVisible: miniplayerIsWideScreen,
+    );
+
+    // -- do not create MainPage twice as it will cause duplication issues
     return Stack(
       alignment: Alignment.bottomCenter,
       children: [
-        MainPage(animation: animation),
-        MiniPlayerParent(animation: animation),
-        SelectedTracksPreviewContainer(animation: animation),
+        Padding(
+          padding: !miniplayerIsWideScreen ? EdgeInsets.zero : EdgeInsets.only(right: miniplayerMaxWidth),
+          child: MediaQuery.removePadding(
+            context: context,
+            removeRight: miniplayerIsWideScreen,
+            child: Stack(
+              alignment: Alignment.bottomCenter,
+              children: [
+                MainPage(
+                  animation: animation,
+                  isMiniplayerAlwaysVisible: miniplayerIsWideScreen,
+                ),
+                if (miniplayerIsWideScreen) selectedTracksWidget,
+              ],
+            ),
+          ),
+        ),
+        RepaintBoundary(
+          child: Padding(
+            padding: !miniplayerIsWideScreen ? EdgeInsets.zero : EdgeInsets.only(left: Dimensions.inst.availableAppContentWidthContext(context)),
+            child: MediaQuery.removePadding(
+              context: context,
+              removeLeft: miniplayerIsWideScreen,
+              child: SafeArea(
+                top: false,
+                bottom: false,
+                child: MiniPlayerParent(animation: animation),
+              ),
+            ),
+          ),
+        ),
+        if (!miniplayerIsWideScreen) selectedTracksWidget,
       ],
     );
   }
@@ -108,184 +171,869 @@ class NamidaDrawer extends StatelessWidget {
 
   void toggleDrawer() => NamidaNavigator.inst.toggleDrawer();
 
-  @override
-  Widget build(BuildContext context) {
-    return SafeArea(
-      child: Column(
-        children: [
-          Expanded(
-            child: Obx(
-              () => ListView(
-                children: [
-                  const NamidaLogoContainer(),
-                  const NamidaContainerDivider(width: 42.0, margin: EdgeInsets.all(10.0)),
-                  ...LibraryTab.values.map(
-                    (e) => NamidaDrawerListTile(
-                      enabled: settings.selectedLibraryTab.value == e,
-                      title: e.toText(),
-                      icon: e.toIcon(),
-                      onTap: () async {
-                        ScrollSearchController.inst.animatePageController(e);
-                        await Future.delayed(const Duration(milliseconds: 100));
-                        toggleDrawer();
-                      },
-                    ),
-                  ),
-                  NamidaDrawerListTile(
-                    enabled: false,
-                    title: lang.QUEUES,
-                    icon: Broken.driver,
-                    onTap: () {
-                      NamidaNavigator.inst.navigateTo(const QueuesPage());
-                      toggleDrawer();
-                    },
-                  ),
-                ],
-              ),
+  static void openSleepTimerDialog(BuildContext context) {
+    final textTheme = context.textTheme;
+
+    final initialSleepConfig = Player.inst.sleepTimerConfig.value;
+    final minutesRx = initialSleepConfig.sleepAfterMin.obs;
+    final tracksRx = initialSleepConfig.sleepAfterItems.obs;
+    final hasInitialValues = initialSleepConfig.sleepAfterMin > 0 || initialSleepConfig.sleepAfterItems > 0;
+
+    NamidaNavigator.inst.navigateDialog(
+      onDisposing: () {
+        minutesRx.close();
+        tracksRx.close();
+      },
+      dialog: CustomBlurryDialog(
+        title: lang.sleepAfter,
+        icon: Broken.timer_1,
+        normalTitleStyle: true,
+        actions: [
+          const CancelButton(),
+          if (hasInitialValues)
+            ObxO(
+              rx: Player.inst.sleepTimerConfig,
+              builder: (context, currentConfig) {
+                return NamidaButton(
+                  enabled: currentConfig.enableSleepAfterMins || currentConfig.enableSleepAfterItems,
+                  icon: Broken.timer_pause,
+                  text: lang.stop,
+                  onTap: () {
+                    Player.inst.resetSleepAfterTimer();
+                    NamidaNavigator.inst.closeDialog();
+                  },
+                );
+              },
             ),
-          ),
-          const SizedBox(height: 12.0),
-          Material(
-            borderRadius: BorderRadius.circular(12.0.multipliedRadius),
-            child: ToggleThemeModeContainer(
-              width: Get.width / 2.3,
-              blurRadius: 3.0,
-            ),
-          ),
-          const SizedBox(height: 8.0),
-          NamidaDrawerListTile(
-            margin: const EdgeInsets.symmetric(vertical: 2.0, horizontal: 12.0),
-            enabled: false,
-            title: lang.SLEEP_TIMER,
-            icon: Broken.timer_1,
-            onTap: () {
-              toggleDrawer();
-              final minutes = Player.inst.sleepAfterMin.obs;
-              final tracks = Player.inst.sleepAfterTracks.obs;
-              NamidaNavigator.inst.navigateDialog(
-                onDisposing: () {
-                  minutes.close();
-                  tracks.close();
-                },
-                dialog: CustomBlurryDialog(
-                  title: lang.SLEEP_AFTER,
-                  icon: Broken.timer_1,
-                  normalTitleStyle: true,
-                  actions: [
-                    const CancelButton(),
-                    Obx(
-                      () => Player.inst.enableSleepAfterMins || Player.inst.enableSleepAfterTracks
-                          ? NamidaButton(
-                              icon: Broken.timer_pause,
-                              text: lang.STOP,
-                              onPressed: () {
-                                Player.inst.resetSleepAfterTimer();
-                                NamidaNavigator.inst.closeDialog();
-                              },
-                            )
-                          : NamidaButton(
-                              icon: Broken.timer_start,
-                              text: lang.START,
-                              onPressed: () {
-                                if (minutes.value > 0 || tracks.value > 0) {
-                                  Player.inst.updateSleepTimerValues(
-                                    enableSleepAfterMins: minutes.value > 0,
-                                    enableSleepAfterTracks: tracks.value > 0,
-                                    sleepAfterMin: minutes.value,
-                                    sleepAfterTracks: tracks.value,
-                                  );
-                                }
-                                NamidaNavigator.inst.closeDialog();
-                              },
-                            ),
-                    ),
-                  ],
-                  child: Column(
-                    children: [
-                      const SizedBox(
-                        height: 32.0,
-                      ),
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                        children: [
-                          // minutes
-                          Obx(
-                            () => NamidaWheelSlider(
-                              totalCount: 180,
-                              initValue: minutes.value,
-                              onValueChanged: (val) => minutes.value = val,
-                              text: "${minutes.value}m",
-                              topText: lang.MINUTES.capitalizeFirst,
-                              textPadding: 8.0,
-                            ),
-                          ),
-                          Text(
-                            lang.OR,
-                            style: context.textTheme.displayMedium,
-                          ),
-                          // tracks
-                          Obx(
-                            () => NamidaWheelSlider(
-                              totalCount: kMaximumSleepTimerTracks,
-                              initValue: tracks.value,
-                              onValueChanged: (val) => tracks.value = val,
-                              text: "${tracks.value} ${lang.TRACK}",
-                              topText: lang.TRACKS,
-                              textPadding: 8.0,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ],
-                  ),
+          ObxO(
+            rx: Player.inst.sleepTimerConfig,
+            builder: (context, currentConfig) {
+              return Obx(
+                (context) => NamidaButton(
+                  enabled: (minutesRx.valueR > 0 || tracksRx.valueR > 0) && (currentConfig.sleepAfterItems != tracksRx.valueR || currentConfig.sleepAfterMin != minutesRx.valueR),
+                  icon: Broken.timer_start,
+                  text: hasInitialValues ? lang.update : lang.start,
+                  onTap: () {
+                    if (minutesRx.value > 0 || tracksRx.value > 0) {
+                      final didChangeTracks = currentConfig.sleepAfterItems != tracksRx.value;
+                      Player.inst.updateSleepTimerValues(
+                        enableSleepAfterMins: minutesRx.value > 0,
+                        enableSleepAfterItems: tracksRx.value > 0,
+                        sleepAfterMin: minutesRx.value,
+                        sleepAfterItems: tracksRx.value,
+                        isAnchoredToItem: didChangeTracks ? false : null,
+                      );
+                    }
+                    NamidaNavigator.inst.closeDialog();
+                  },
                 ),
               );
             },
           ),
-          Row(
+        ],
+        child: Column(
+          children: [
+            const SizedBox(
+              height: 32.0,
+            ),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+              children: [
+                Obx(
+                  (context) => NamidaWheelSlider(
+                    max: _kSleepTimerMaxMinutes,
+                    initValue: minutesRx.valueR,
+                    onValueChanged: (val) => minutesRx.value = val,
+                    text: "${minutesRx.valueR}m",
+                    topText: lang.minutes.capitalizeFirst(),
+                    textPadding: 8.0,
+                  ),
+                ),
+                Text(
+                  lang.or,
+                  style: textTheme.displayMedium,
+                ),
+                ObxO(
+                  rx: tracksRx,
+                  builder: (context, trs) => NamidaWheelSlider(
+                    max: kMaximumSleepTimerTracks,
+                    initValue: trs,
+                    onValueChanged: (val) => tracksRx.value = val,
+                    text: lang.countTracks(count: trs),
+                    topText: lang.tracks,
+                    textPadding: 8.0,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(
+              height: 24.0,
+            ),
+            _SleepTimerPresetsRow(
+              minutesRx: minutesRx,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  static const _kSleepTimerMaxMinutes = 180;
+
+  static String _sleepMinutesToText(int minutes) {
+    final hours = minutes ~/ 60;
+    final remainingMinutes = minutes % 60;
+    if (hours == 0) return '${minutes}m';
+    if (remainingMinutes == 0) return '${hours}h';
+    return '${hours}h ${remainingMinutes}m';
+  }
+
+  static void _openAddSleepPresetDialog(Rx<int> minutesRx) {
+    final currentMinutes = minutesRx.value;
+    final controller = TextEditingController(text: currentMinutes > 0 ? '$currentMinutes' : '');
+    final formKey = GlobalKey<FormState>();
+    const validRangeText = '1 - $_kSleepTimerMaxMinutes';
+
+    void submit() {
+      if (formKey.currentState?.validate() != true) return;
+      final minutes = int.parse(controller.text);
+      final isNewPreset = !settings.player.sleepTimerPresetsMin.value.contains(minutes);
+      if (isNewPreset) {
+        settings.player.sleepTimerPresetsMin.update(
+          (presets) => presets
+            ..add(minutes)
+            ..sort(),
+        );
+      }
+      minutesRx.value = minutes;
+      NamidaNavigator.inst.closeDialog();
+    }
+
+    NamidaNavigator.inst.navigateDialog(
+      onDisposing: controller.dispose,
+      dialog: Form(
+        key: formKey,
+        child: CustomBlurryDialog(
+          title: lang.minutes.capitalizeFirst(),
+          icon: Broken.timer_1,
+          normalTitleStyle: true,
+          actions: [
+            const CancelButton(),
+            NamidaButton(
+              text: lang.add,
+              onTap: submit,
+            ),
+          ],
+          child: Padding(
+            padding: const EdgeInsets.only(top: 14.0),
+            child: CustomTagTextField(
+              controller: controller,
+              hintText: validRangeText,
+              labelText: lang.minutes.capitalizeFirst(),
+              isNumeric: true,
+              autofocus: true,
+              onFieldSubmitted: (_) => submit(),
+              validator: (value) {
+                final minutes = int.tryParse(value ?? '');
+                if (minutes == null || minutes < 1 || minutes > _kSleepTimerMaxMinutes) return validRangeText;
+                return null;
+              },
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// height the footer needs before it starts eating into the tabs list.
+  static const _footerComfortableHeight = 620.0;
+
+  @override
+  Widget build(BuildContext context) {
+    final showLogoInDrawer = WindowController.instance?.usingCustomWindowTitleBar != true;
+    return SafeArea(
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final compact = (constraints.maxHeight / _footerComfortableHeight).clampDouble(0.5, 1.0);
+          final foldSleepTimerIntoRow = compact < 0.8;
+          return _buildInternal(context, showLogoInDrawer, compact, foldSleepTimerIntoRow);
+        },
+      ),
+    );
+  }
+
+  Widget _buildInternal(BuildContext context, bool showLogoInDrawer, double compact, bool foldSleepTimerIntoRow) {
+    // -- whole pixels only, fractional paddings round up into 1px overflows.
+    final gap12 = (12.0 * compact).roundToDouble();
+    final gap6 = (6.0 * compact).roundToDouble();
+    final tilePadding = EdgeInsets.symmetric(horizontal: 10.0, vertical: (11.0 * compact).roundToDouble());
+    final iconTilePadding = EdgeInsets.symmetric(horizontal: 6.0, vertical: (10.0 * compact).roundToDouble());
+    return Column(
+      children: [
+        Expanded(
+          child: ObxO(
+            rx: settings.libraryTabs,
+            builder: (context, libraryTabs) => SuperSmoothListView(
+              children: [
+                if (showLogoInDrawer)
+                  NamidaLogoContainer(
+                    afterTap: NamidaNavigator.inst.toggleDrawer,
+                  ),
+                const NamidaContainerDivider(width: 42.0, margin: EdgeInsets.all(10.0)),
+                ...LibraryTab.values
+                    .where((element) => element != LibraryTab.search && element.isGroupHead && (!element.isInDrawerOnlyWhenActive || libraryTabs.contains(element)))
+                    .map(
+                      (e) => ObxO(
+                        rx: settings.extra.selectedLibraryTab,
+                        builder: (context, selectedLibraryTab) => ObxO(
+                          rx: settings.includeVideos,
+                          builder: (context, includeVideos) {
+                            final enabled = selectedLibraryTab.group == e;
+                            final variants = e.availableVariants(includeVideos);
+                            final hasMenu = variants.isNotEmpty || e.hasSectionsMenu;
+                            return NamidaDrawerListTile(
+                              enabled: enabled,
+                              title: e.toText(),
+                              icon: e.toIcon(),
+                              trailing: !hasMenu
+                                  ? null
+                                  : LibraryTabVariantsPopup(
+                                      tab: enabled ? selectedLibraryTab : e,
+                                      variants: variants,
+                                      openOnTap: true,
+                                      onSelected: toggleDrawer,
+                                      child: Padding(
+                                        padding: const EdgeInsets.symmetric(horizontal: 4.0),
+                                        child: Icon(
+                                          Broken.arrow_right_3,
+                                          size: 16.0,
+                                          color: enabled ? Colors.white.withAlpha(200) : null,
+                                        ),
+                                      ),
+                                    ),
+                              onTap: () async {
+                                ScrollSearchController.inst.animatePageController(e.activeVariant());
+                                toggleDrawer();
+                              },
+                            );
+                          },
+                        ),
+                      ),
+                    ),
+              ],
+            ),
+          ),
+        ),
+        SizedBox(height: gap12),
+        Material(
+          borderRadius: BorderRadius.circular(12.0.multipliedRadius),
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              return ToggleThemeModeContainer(
+                // -- floored, it gets divided by 3 internally & fractions overflow by a pixel.
+                maxWidth: (constraints.maxWidth * 0.9).floorToDouble(),
+                blurRadius: 3.0,
+              );
+            },
+          ),
+        ),
+        SizedBox(height: gap6),
+        if (!foldSleepTimerIntoRow) ...[
+          NamidaDrawerListTile(
+            margin: const EdgeInsets.symmetric(horizontal: 12.0),
+            padding: tilePadding,
+            enabled: false,
+            title: lang.sleepTimer,
+            icon: Broken.timer_1,
+            onTap: () {
+              toggleDrawer();
+              openSleepTimerDialog(context);
+            },
+          ),
+          SizedBox(height: gap6 * 0.25),
+        ],
+        LayoutBuilder(
+          builder: (context, constraints) {
+            final buttons = <({IconData icon, void Function() onTap})>[
+              if (foldSleepTimerIntoRow)
+                (
+                  icon: Broken.timer_1,
+                  onTap: () {
+                    toggleDrawer();
+                    openSleepTimerDialog(context);
+                  },
+                ),
+              (
+                icon: Broken.brush_1,
+                onTap: () {
+                  SettingsSubPage(
+                    title: () => lang.customizations,
+                    child: const CustomizationSettings(),
+                  ).navigate();
+                  toggleDrawer();
+                },
+              ),
+              (
+                icon: Broken.setting,
+                onTap: () {
+                  const SettingsPage().navigate();
+                  toggleDrawer();
+                },
+              ),
+            ];
+            // -- explicit floored widths, [Expanded] leaves fractions that overflow by a pixel.
+            const horizontalPadding = 4.0;
+            final totalGaps = 12.0 * 2 + 6.0 * (buttons.length - 1);
+            final tileWidth = ((constraints.maxWidth - totalGaps) / buttons.length).floorToDouble();
+            // -- narrow drawers cant fit a full size icon once folded, shrink instead of overflowing.
+            final iconSize = (tileWidth - horizontalPadding * 2).clampDouble(14.0, 24.0);
+            return Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                for (int i = 0; i < buttons.length; i++) ...[
+                  if (i > 0) const SizedBox(width: 6.0),
+                  SizedBox(
+                    width: tileWidth,
+                    child: NamidaDrawerListTile(
+                      margin: EdgeInsets.only(top: 4.0),
+                      padding: EdgeInsets.symmetric(horizontal: horizontalPadding, vertical: iconTilePadding.vertical / 2),
+                      enabled: false,
+                      isCentered: true,
+                      iconSize: iconSize,
+                      title: '',
+                      icon: buttons[i].icon,
+                      onTap: buttons[i].onTap,
+                    ),
+                  ),
+                ],
+              ],
+            );
+          },
+        ),
+        SizedBox(height: gap6 + (8.0 * compact).roundToDouble()),
+      ],
+    );
+  }
+}
+
+class WrapWithWindowGoodies extends StatelessWidget {
+  final Widget child;
+  const WrapWithWindowGoodies({super.key, required this.child});
+
+  @override
+  Widget build(BuildContext context) {
+    Widget child = ObxO(
+      rx: settings.desktopTitlebar,
+      builder: (context, show) => Column(
+        children: [
+          if (show) const NamidaDesktopAppBar(),
+          Expanded(
+            child: this.child,
+          ),
+        ],
+      ),
+    );
+    final addRoundedCorners = WindowController.instance?.customRoundedCorners == true;
+    if (addRoundedCorners) {
+      final borderRadius = BorderRadiusGeometry.circular(8.0.multipliedRadius);
+      child = BorderRadiusClip(
+        borderRadius: borderRadius,
+        child: DecoratedBox(
+          position: DecorationPosition.foreground,
+          decoration: BoxDecoration(
+            borderRadius: borderRadius,
+            border: Border.all(
+              width: 1.0,
+              color: const Color.fromARGB(200, 60, 60, 60),
+            ),
+          ),
+          child: child,
+        ),
+      );
+    }
+
+    return child;
+  }
+}
+
+class NamidaDesktopAppBar extends StatefulWidget {
+  const NamidaDesktopAppBar({super.key});
+
+  @override
+  State<NamidaDesktopAppBar> createState() => NamidaDesktopAppBarState();
+}
+
+class NamidaDesktopAppBarState extends State<NamidaDesktopAppBar> with WindowListener {
+  @override
+  void initState() {
+    windowManager.addListener(this);
+    super.initState();
+  }
+
+  @override
+  void dispose() {
+    windowManager.removeListener(this);
+    super.dispose();
+  }
+
+  @override
+  void onWindowMaximize() {
+    setState(() {});
+  }
+
+  @override
+  void onWindowUnmaximize() {
+    setState(() {});
+  }
+
+  @override
+  void onWindowFocus() {
+    // setState(() {});
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final title = 'Namida';
+    final height = WindowController.instance?.windowTitleBarHeightIfActive;
+
+    final appBarTheme = AppBarTheme.of(context);
+    final theme = context.theme;
+    final textTheme = theme.textTheme;
+    final colorscheme = theme.colorScheme;
+    final brightness = theme.brightness;
+    final buttonHeight = (height ?? 24.0) * 0.75;
+    final buttonWidth = Platform.isWindows ? 42.0 : 18.0;
+    // final backgroundColor = Color.alphaBlend(context.theme.scaffoldBackgroundColor, Colors.white.withOpacityExt(0.25));
+    final backgroundColor = appBarTheme.backgroundColor ?? colorscheme.surface;
+    final surfaceTintColor = appBarTheme.surfaceTintColor ?? colorscheme.surfaceTint;
+    final logoImgPath = NamidaChannel.defaultLayerIconForPlatform;
+    final logoBgColor = context.isDarkMode ? const Color(0x40262729) : const Color(0x063c3f46);
+    final logoColor = context.isDarkMode
+        ? Color.alphaBlend(theme.colorScheme.secondary.withOpacityExt(0.5), const Color.fromARGB(240, 230, 230, 230))
+        : Color.alphaBlend(theme.colorScheme.secondary.withOpacityExt(0.5), const Color.fromARGB(220, 16, 16, 16));
+    final logoTextColor = logoColor.withOpacityExt(0.7);
+
+    final buttonsRow = Platform.isWindows
+        ? Row(
+            mainAxisAlignment: MainAxisAlignment.end,
             mainAxisSize: MainAxisSize.min,
             children: [
-              Expanded(
-                child: NamidaDrawerListTile(
-                  margin: const EdgeInsets.symmetric(vertical: 5.0).add(const EdgeInsets.only(left: 12.0)),
-                  padding: const EdgeInsets.symmetric(vertical: 10.0, horizontal: 6.0),
-                  enabled: false,
-                  isCentered: true,
-                  iconSize: 24.0,
-                  title: '',
-                  icon: Broken.brush_1,
-                  onTap: () {
-                    NamidaNavigator.inst.navigateTo(
-                      SettingsSubPage(
-                        title: lang.CUSTOMIZATIONS,
-                        child: const CustomizationSettings(),
-                      ),
-                    );
-
-                    toggleDrawer();
+              SizedBox(
+                width: buttonWidth * 0.95,
+                child: WindowCaptionButton.minimize(
+                  brightness: brightness,
+                  onPressed: () async {
+                    final isMinimized = await windowManager.isMinimized();
+                    if (isMinimized) {
+                      windowManager.restore();
+                    } else {
+                      windowManager.minimize();
+                    }
                   },
                 ),
               ),
-              const SizedBox(width: 8.0),
-              Expanded(
-                child: NamidaDrawerListTile(
-                  margin: const EdgeInsets.symmetric(vertical: 5.0).add(const EdgeInsets.only(right: 12.0)),
-                  padding: const EdgeInsets.symmetric(vertical: 10.0, horizontal: 6.0),
-                  enabled: false,
-                  isCentered: true,
-                  iconSize: 24.0,
-                  title: '',
-                  icon: Broken.setting,
-                  onTap: () {
-                    NamidaNavigator.inst.navigateTo(const SettingsPage());
-                    toggleDrawer();
+              SizedBox(
+                width: buttonWidth * 0.95,
+                child: FutureBuilder<bool>(
+                  future: windowManager.isMaximized(),
+                  builder: (context, snapshot) {
+                    if (snapshot.data == true) {
+                      return WindowCaptionButton.unmaximize(
+                        brightness: brightness,
+                        onPressed: windowManager.unmaximize,
+                      );
+                    }
+                    return WindowCaptionButton.maximize(
+                      brightness: brightness,
+                      onPressed: windowManager.maximize,
+                    );
+                  },
+                ),
+              ),
+              SizedBox(
+                width: buttonWidth,
+                child: WindowCaptionButton.close(
+                  brightness: brightness,
+                  onPressed: () async {
+                    await windowManager.close().ignoreError();
                   },
                 ),
               ),
             ],
+          )
+        : ObxO(
+            rx: settings.desktopTitlebarType,
+            builder: (context, buttonsTypePre) {
+              final buttonsType = buttonsTypePre.toThemeType();
+              if (buttonsType == null) return const SizedBox();
+              return Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  DecoratedMinimizeButton(
+                    width: buttonWidth,
+                    height: buttonHeight,
+                    type: buttonsType,
+                    onPressed: () async {
+                      bool isMinimized = await windowManager.isMinimized();
+                      if (isMinimized) {
+                        windowManager.restore();
+                      } else {
+                        windowManager.minimize();
+                      }
+                    },
+                  ),
+                  DecoratedMaximizeButton(
+                    width: buttonWidth,
+                    height: buttonHeight,
+                    type: buttonsType,
+                    onPressed: () async {
+                      final isMaximized = await windowManager.isMaximized();
+                      if (isMaximized) {
+                        await windowManager.unmaximize();
+                      } else {
+                        await windowManager.maximize();
+                      }
+                    },
+                  ),
+                  DecoratedCloseButton(
+                    width: buttonWidth,
+                    height: buttonHeight,
+                    type: buttonsType,
+                    onPressed: () async {
+                      await windowManager.close().ignoreError();
+                    },
+                  ),
+                ],
+              );
+            },
+          );
+    return SizedBox(
+      height: height,
+      child: Material(
+        shadowColor: Colors.transparent,
+        type: MaterialType.canvas,
+        color: backgroundColor,
+        surfaceTintColor: surfaceTintColor,
+        child: Stack(
+          children: [
+            Positioned.fill(
+              child: GestureDetector(
+                behavior: HitTestBehavior.translucent,
+                onPanStart: (_) => windowManager.startDragging(),
+                onSecondaryTap: windowManager.popUpWindowMenu,
+                onDoubleTap: () async {
+                  bool isMaximized = await windowManager.isMaximized();
+                  if (!isMaximized) {
+                    windowManager.maximize();
+                  } else {
+                    windowManager.unmaximize();
+                  }
+                },
+                child: const SizedBox(),
+              ),
+            ),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: [
+                Expanded(
+                  child: SizedBox(
+                    height: double.infinity,
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.center,
+                      children: [
+                        Flexible(
+                          child: GestureDetector(
+                            behavior: HitTestBehavior.translucent,
+                            onPanStart: (_) => windowManager.startDragging(),
+                            child: NamidaInkWell(
+                              onTap: () {
+                                if (NamidaNavigator.inst.currentRoute?.route != RouteType.PAGE_about) {
+                                  const AboutPage().navigate();
+                                }
+                              },
+                              height: height,
+                              animationDurationMS: 200,
+                              decoration: BoxDecoration(
+                                color: logoBgColor,
+                                borderRadius: const BorderRadius.only(
+                                  bottomRight: Radius.circular(8.0),
+                                ),
+                              ),
+                              child: Row(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  const SizedBox(width: 6.0),
+                                  Flexible(
+                                    child: Image.asset(
+                                      logoImgPath,
+                                      width: 22.0,
+                                      height: 22.0,
+                                      cacheHeight: 240,
+                                      cacheWidth: 240,
+                                      color: logoColor,
+                                      alignment: Alignment.center,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 4.0),
+                                  Flexible(
+                                    child: Text(
+                                      title,
+                                      style: textTheme.displayMedium?.copyWith(
+                                        color: logoTextColor,
+                                        fontSize: 14.0,
+                                      ),
+                                      overflow: TextOverflow.fade,
+                                      softWrap: false,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 6.0),
+                                  const SizedBox(width: 4.0),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                        Flexible(
+                          child: FittedBox(
+                            fit: BoxFit.scaleDown,
+                            child: SizedBox(
+                              height: height,
+                              child: Row(
+                                crossAxisAlignment: CrossAxisAlignment.center,
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  SizedBox(width: 2.0),
+                                  // -- dont try to hide based on rail bar or widescreen, its not reactive here and would look a bit bad
+                                  _DesktopShortcutIcon(
+                                    type: _DesktopShortcutActionType.opensRoute,
+                                    tooltip: lang.home,
+                                    icon: Broken.home_1,
+                                    onTap: () => ScrollSearchController.inst.animatePageController(LibraryTab.home),
+                                  ),
+                                  _DesktopShortcutIcon(
+                                    type: _DesktopShortcutActionType.performsAction,
+                                    tooltip: lang.queue,
+                                    icon: Broken.row_vertical,
+                                    size: _DesktopShortcutIcon.iconSize * 0.85,
+                                    onTap: ShortcutsController.instance?.openPlayerQueue,
+                                  ),
+                                  _DesktopShortcutIcon(
+                                    type: _DesktopShortcutActionType.opensRoute,
+                                    tooltip: lang.soundControl,
+                                    icon: Broken.sound,
+                                    onTap: NamidaOnTaps.inst.openSoundControl,
+                                  ),
+                                  _DesktopShortcutIcon(
+                                    type: _DesktopShortcutActionType.performsAction,
+                                    tooltip: lang.miniLyricsWindow,
+                                    icon: Broken.subtitle,
+                                    onTap: () => WindowController.instance?.enterMiniLyricsMode(),
+                                  ),
+                                  _DesktopShortcutIcon(
+                                    type: _DesktopShortcutActionType.opensDialog,
+                                    tooltip: lang.refreshLibrary,
+                                    icon: Broken.refresh_2,
+                                    onTap: () => showRefreshPromptDialog(false, allowBypassing: true),
+                                    child: RefreshLibraryIcon(
+                                      widgetKey: 'desktop_appbar',
+                                      color: _DesktopShortcutIcon.getColor(context),
+                                      size: _DesktopShortcutIcon.iconSize,
+                                    ),
+                                  ),
+                                  _DesktopShortcutIcon(
+                                    type: _DesktopShortcutActionType.opensDialog,
+                                    tooltip: lang.shortcuts,
+                                    icon: Broken.flash_1,
+                                    onTap: () => AboutPage.showShortcutsDialog(context),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                buttonsRow,
+              ],
+            ),
+            // -- juust slight dim
+            Positioned.fill(
+              child: IgnorePointer(
+                child: ColoredBox(
+                  color: backgroundColor.withOpacityExt(0.1),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+enum _DesktopShortcutActionType {
+  opensRoute,
+  opensDialog,
+  performsAction,
+}
+
+class _DesktopShortcutIcon extends StatelessWidget {
+  final String tooltip;
+  final IconData icon;
+  final double? size;
+  final _DesktopShortcutActionType type;
+  final VoidCallback? onTap;
+  final Widget? child;
+
+  const _DesktopShortcutIcon({
+    required this.tooltip,
+    required this.icon,
+    this.size,
+    required this.type,
+    this.onTap,
+    this.child,
+  });
+
+  static Color getColor(BuildContext context) {
+    return context.theme.colorScheme.secondary.withOpacityExt(0.8);
+  }
+
+  static const double iconSize = 15.0;
+
+  @override
+  Widget build(BuildContext context) {
+    return NamidaTooltip(
+      message: () => tooltip,
+      preferBelow: true,
+      child: NamidaInkWell(
+        onTap: () {
+          // -- prevent executing actions over and over
+          switch (type) {
+            case _DesktopShortcutActionType.opensRoute:
+              if (NamidaNavigator.inst.rootNavHasOpenedPages) return;
+            case _DesktopShortcutActionType.opensDialog:
+              if (NamidaNavigator.inst.openedDialogsCount > 0) return;
+            case _DesktopShortcutActionType.performsAction:
+            // -- allow
+          }
+
+          onTap?.call();
+        },
+        borderRadius: 99.0,
+        alignment: Alignment.center,
+        height: iconSize * 1.6,
+        width: iconSize * 1.6,
+        child:
+            child ??
+            Icon(
+              icon,
+              size: size ?? iconSize,
+              color: getColor(context),
+            ),
+      ),
+    );
+  }
+}
+
+class _SleepTimerPresetsRow extends StatelessWidget {
+  final Rx<int> minutesRx;
+
+  const _SleepTimerPresetsRow({
+    required this.minutesRx,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = context.theme;
+    final textTheme = theme.textTheme;
+    return Row(
+      children: [
+        Expanded(
+          child: NamidaEndEdgeFeather(
+            color: theme.dialogTheme.backgroundColor,
+            child: ObxO(
+              rx: settings.player.sleepTimerPresetsMin,
+              builder: (context, presetsMin) => ObxO(
+                rx: minutesRx,
+                builder: (context, minutes) => SmoothSingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  padding: const EdgeInsetsDirectional.only(end: 16.0),
+                  child: Row(
+                    children: presetsMin
+                        .map(
+                          (presetMinutes) => _SleepTimerChip(
+                            selected: minutes == presetMinutes,
+                            onTap: () => minutesRx.value = presetMinutes,
+                            onLongPress: () => settings.player.sleepTimerPresetsMin.update((presets) => presets.remove(presetMinutes)),
+                            child: Text(
+                              NamidaDrawer._sleepMinutesToText(presetMinutes),
+                              style: textTheme.displaySmall,
+                            ),
+                          ),
+                        )
+                        .toFixedList(),
+                  ),
+                ),
+              ),
+            ),
           ),
-          const SizedBox(height: 8.0),
-        ],
+        ),
+        _SleepTimerChip(
+          selected: false,
+          big: true,
+          onTap: () => NamidaDrawer._openAddSleepPresetDialog(minutesRx),
+          child: const Icon(
+            Broken.add,
+            size: 16.0,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _SleepTimerChip extends StatelessWidget {
+  final bool selected;
+  final bool big;
+  final VoidCallback onTap;
+  final VoidCallback? onLongPress;
+  final Widget child;
+
+  const _SleepTimerChip({
+    required this.selected,
+    this.big = false,
+    required this.onTap,
+    this.onLongPress,
+    required this.child,
+  });
+
+  static const _kHeight = 30.0;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = context.theme;
+    final borderColor = selected ? theme.colorScheme.primary : Colors.transparent;
+    return NamidaInkWell(
+      alignment: .center,
+      animationDurationMS: 200,
+      height: big ? _kHeight : _kHeight * 0.75,
+      borderRadius: 8.0,
+      bgColor: theme.cardTheme.color,
+      margin: const EdgeInsets.symmetric(horizontal: 3.0),
+      padding: const EdgeInsets.symmetric(horizontal: 10.0),
+      decoration: BoxDecoration(
+        border: Border.all(color: borderColor),
+        borderRadius: BorderRadius.circular(8.0.multipliedRadius),
+      ),
+      onTap: onTap,
+      onLongPress: onLongPress,
+      child: Center(
+        widthFactor: 1.0,
+        child: child,
       ),
     );
   }

@@ -1,44 +1,87 @@
 import 'package:flutter/material.dart';
-import 'package:get/get.dart';
+
+import 'package:flutter_scrollbar_modified/flutter_scrollbar_modified.dart';
+import 'package:flutter_staggered_animations/flutter_staggered_animations.dart';
 
 import 'package:namida/base/pull_to_refresh.dart';
+import 'package:namida/class/route.dart';
 import 'package:namida/controller/indexer_controller.dart';
 import 'package:namida/controller/player_controller.dart';
 import 'package:namida/controller/scroll_search_controller.dart';
 import 'package:namida/controller/search_sort_controller.dart';
 import 'package:namida/controller/settings_controller.dart';
+import 'package:namida/controller/settings_search_controller.dart';
+import 'package:namida/core/constants.dart';
 import 'package:namida/core/dimensions.dart';
 import 'package:namida/core/enums.dart';
 import 'package:namida/core/extensions.dart';
 import 'package:namida/core/icon_fonts/broken_icons.dart';
 import 'package:namida/core/namida_converter_ext.dart';
 import 'package:namida/core/translations/language.dart';
+import 'package:namida/core/utils.dart';
+import 'package:namida/ui/dialogs/queue_insertion_dialogs.dart';
+import 'package:namida/ui/widgets/creative_animations.dart';
 import 'package:namida/ui/widgets/custom_widgets.dart';
 import 'package:namida/ui/widgets/expandable_box.dart';
+import 'package:namida/ui/widgets/jellyfish.dart';
 import 'package:namida/ui/widgets/library/track_tile.dart';
+import 'package:namida/ui/widgets/library_tab_variant_chip.dart';
 import 'package:namida/ui/widgets/settings/indexer_settings.dart';
 import 'package:namida/ui/widgets/sort_by_button.dart';
+import 'package:namida/ui/widgets/stats.dart';
 
-class TracksPage extends StatefulWidget {
+class TracksPage extends StatefulWidget with NamidaRouteWidget {
+  @override
+  RouteType get route => routeOfTab(tab);
+
+  final LibraryTab tab;
   final bool animateTiles;
-  const TracksPage({super.key, required this.animateTiles});
+  const TracksPage({super.key, required this.tab, required this.animateTiles});
+
+  static RouteType routeOfTab(LibraryTab tab) => switch (tab) {
+    LibraryTab.tracksMusic => RouteType.PAGE_allTracks_music,
+    LibraryTab.tracksVideos => RouteType.PAGE_allTracks_videos,
+    _ => RouteType.PAGE_allTracks,
+  };
 
   @override
   State<TracksPage> createState() => _TracksPageState();
 }
 
 class _TracksPageState extends State<TracksPage> with TickerProviderStateMixin, PullToRefreshMixin {
-  bool get _shouldAnimate => widget.animateTiles && LibraryTab.tracks.shouldAnimateTiles;
+  bool get _shouldAnimate => widget.animateTiles && widget.tab.shouldAnimateTiles;
 
-  final _animationKey = 'tracks_page';
+  int _totalTracksLengthR() {
+    final allTracksLength = Indexer.inst.tracksInfoList.valueR.length;
+    final isVideo = widget.tab.isVideoFilter;
+    if (isVideo == null) return allTracksLength;
+    var videosLength = 0;
+    for (final videos in Indexer.inst.mainMapFoldersVideos.valueR.values) {
+      videosLength += videos.length;
+    }
+    return isVideo ? videosLength : allTracksLength - videosLength;
+  }
+
+  void _onAddFolderTap(BuildContext context) {
+    SettingsSearchController.inst
+        .onResultTap(
+          settingPage: SettingSubpageEnum.indexer,
+          key: IndexerSettings.addFolder,
+          context: context,
+        )
+        .ignoreError();
+    const IndexerSettings().promptAddFolderType();
+  }
+
+  late final _animationKey = 'tracks_page_${widget.tab.name}';
 
   @override
   AnimationController get refreshAnimation => RefreshLibraryIconController.getController(_animationKey, this);
 
   @override
   void initState() {
-    RefreshLibraryIconController.init(_animationKey, this);
     super.initState();
+    RefreshLibraryIconController.init(_animationKey, this);
   }
 
   @override
@@ -47,98 +90,218 @@ class _TracksPageState extends State<TracksPage> with TickerProviderStateMixin, 
     RefreshLibraryIconController.dispose(_animationKey);
   }
 
+  ScrollbarThumbLabelResolver? _createThumbLabel() {
+    final sort = settings.mediaItemsTrackSorting.value[MediaType.track]?.firstType;
+    if (sort == null) return null;
+    final tracks = SearchSortController.inst.trackSearchList.value;
+    final labelOf = SearchSortController.inst.getTracksSortLabelResolver(sort);
+    return NamidaScrollbar.createListThumbLabel(tracks, labelOf);
+  }
+
   @override
   Widget build(BuildContext context) {
-    final scrollController = LibraryTab.tracks.scrollController;
+    final libraryTab = widget.tab;
+    final scrollController = libraryTab.scrollController;
+
+    final listHeader = ExpandableBoxEmptyAnimatedPadding(tab: libraryTab);
+
     return BackgroundWrapper(
       child: Listener(
         onPointerMove: (event) {
           onPointerMove(scrollController, event);
         },
         onPointerUp: (event) {
-          onRefresh(() async => await showRefreshPromptDialog(false));
+          onRefresh(() async => await showRefreshPromptDialog(false, allowBypassing: true));
         },
         onPointerCancel: (event) => onVerticalDragFinish(),
-        child: Obx(
-          () {
-            settings.trackListTileHeight.value;
-            return Column(
-              children: [
-                ExpandableBox(
-                  enableHero: false,
-                  isBarVisible: LibraryTab.tracks.isBarVisible,
-                  showSearchBox: LibraryTab.tracks.isSearchBoxVisible,
-                  displayloadingIndicator: Indexer.inst.isIndexing.value,
-                  leftWidgets: [
-                    NamidaIconButton(
-                      icon: Broken.shuffle,
-                      onPressed: () => Player.inst.playOrPause(0, SearchSortController.inst.trackSearchList, QueueSource.allTracks, shuffle: true),
-                      iconSize: 18.0,
-                      horizontalPadding: 0,
-                    ),
-                    const SizedBox(width: 12.0),
-                    NamidaIconButton(
-                      icon: Broken.play,
-                      onPressed: () => Player.inst.playOrPause(0, SearchSortController.inst.trackSearchList, QueueSource.allTracks),
-                      iconSize: 18.0,
-                      horizontalPadding: 0,
-                    ),
-                    const SizedBox(width: 12.0),
-                  ],
-                  leftText: SearchSortController.inst.trackSearchList.displayTrackKeyword,
-                  onFilterIconTap: () => ScrollSearchController.inst.switchSearchBoxVisibilty(LibraryTab.tracks),
-                  onCloseButtonPressed: () {
-                    ScrollSearchController.inst.clearSearchTextField(LibraryTab.tracks);
+        child: ExpandableBoxColumn(
+          tab: libraryTab,
+          header: Obx(
+            (context) {
+              final finalTracksLength = SearchSortController.inst.trackSearchList.valueR.length;
+              final totalTracksLength = _totalTracksLengthR();
+              String leftText = finalTracksLength != totalTracksLength ? '$finalTracksLength/${totalTracksLength.displayTrackKeyword}' : finalTracksLength.displayTrackKeyword;
+              final isIndexingR = Indexer.inst.isIndexing.valueR;
+              final presetName = settings.mediaItemsTrackSortingPresets.valueR[MediaType.track]?.activePreset?.name;
+              final sorting = settings.mediaItemsTrackSorting.valueR[MediaType.track];
+              final sortReverse = sorting?.reverse == true;
+              final sortTitle = presetName ?? sorting?.firstType?.toText() ?? '';
+              return ExpandableBox(
+                enableHero: false,
+                isBarVisible: libraryTab.isBarVisible.valueR,
+                displayloadingIndicator: isIndexingR,
+                leftWidgets: [
+                  NamidaIconButton(
+                    icon: Broken.shuffle,
+                    onPressed: () => Player.inst.playOrPause(0, SearchSortController.inst.trackSearchList.value, QueueSource.allTracksAll, shuffle: true, gentlePlay: false),
+                    onLongPress: () => showAdvancedShuffleDialog(() => SearchSortController.inst.trackSearchList.value, QueueSource.allTracksAll),
+                    iconSize: 18.0,
+                    horizontalPadding: 2.0,
+                  ),
+                  const SizedBox(width: 10.0),
+                  NamidaIconButton(
+                    icon: Broken.play,
+                    onPressed: () => Player.inst.playOrPause(0, SearchSortController.inst.trackSearchList.value, QueueSource.allTracksAll, gentlePlay: false),
+                    onLongPress: () => showAdvancedPlayDialog(() => SearchSortController.inst.trackSearchList.value, QueueSource.allTracksAll),
+                    iconSize: 18.0,
+                    horizontalPadding: 2.0,
+                  ),
+                  const SizedBox(width: 10.0),
+                ],
+                leftText: leftText,
+                leftTextTrailing: LibraryTabVariantChip(tab: libraryTab),
+                onLeftTextTap: const StatsPage(isYoutube: false).navigate,
+                onSearchBoxVisibilityChange: (newShow) => ScrollSearchController.inst.onSearchBoxVisibiltyChange(libraryTab, newShow),
+                onCloseButtonPressed: () {
+                  ScrollSearchController.inst.clearSearchTextField(libraryTab);
+                },
+                sortByMenuWidget: SortByMenu(
+                  title: sortTitle,
+                  popupMenuChild: const SortByMenuTracks(),
+                  isCurrentlyReversed: sortReverse,
+                  onReverseIconTap: () {
+                    SearchSortController.inst.sortMedia(MediaType.track, reverse: !sortReverse);
                   },
-                  sortByMenuWidget: SortByMenu(
-                    title: settings.tracksSort.value.toText(),
-                    popupMenuChild: () => const SortByMenuTracks(),
-                    isCurrentlyReversed: settings.tracksSortReversed.value,
-                    onReverseIconTap: () {
-                      SearchSortController.inst.sortMedia(MediaType.track, reverse: !settings.tracksSortReversed.value);
-                    },
-                  ),
-                  textField: CustomTextFiled(
-                    textFieldController: LibraryTab.tracks.textSearchController,
-                    textFieldHintText: lang.FILTER_TRACKS,
-                    onTextFieldValueChanged: (value) => SearchSortController.inst.searchMedia(value, MediaType.track),
-                  ),
                 ),
-                Expanded(
-                  child: NamidaListViewRaw(
-                    itemExtents: List.filled(SearchSortController.inst.trackSearchList.length, Dimensions.inst.trackTileItemExtent),
-                    itemCount: SearchSortController.inst.trackSearchList.length,
-                    scrollController: LibraryTab.tracks.scrollController,
-                    scrollStep: Dimensions.inst.trackTileItemExtent,
-                    itemBuilder: (context, i) {
-                      final track = SearchSortController.inst.trackSearchList[i];
-                      return AnimatingTile(
-                        key: Key("$i${track.path}"),
-                        position: i,
-                        shouldAnimate: _shouldAnimate,
-                        child: TrackTile(
-                          index: i,
-                          trackOrTwd: track,
-                          draggableThumbnail: false,
-                          queueSource: QueueSource.allTracks,
-                        ),
-                      );
-                    },
-                    listBuilder: (list) {
-                      return Stack(
-                        children: [
-                          list,
-                          pullToRefreshWidget,
-                        ],
-                      );
-                    },
-                  ),
+                textField: CustomTextField(
+                  textFieldController: libraryTab.textSearchControllerR,
+                  textFieldHintText: lang.filterTracks,
+                  onTextFieldValueChanged: (value) => SearchSortController.inst.searchMedia(value, MediaType.track),
                 ),
-              ],
-            );
-          },
+              );
+            },
+          ),
+          page: AnimationLimiter(
+            child: TrackTilePropertiesProvider(
+              configs: const TrackTilePropertiesConfigs(
+                queueSource: QueueSource.allTracks,
+              ),
+              builder: (properties) => ObxO(
+                rx: SearchSortController.inst.trackSearchList,
+                builder: (context, trackSearchList) => trackSearchList.isEmpty
+                    ? Center(
+                        child: NamidaJellys.enabled
+                            ? _JellyTracksEmptyState(
+                                onAddFolder: () => _onAddFolderTap(context),
+                              )
+                            : kEnableFancyAnimations
+                            ? Column(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  CAEmptyStateCTA(
+                                    header: Text(
+                                      lang.noTracksFound,
+                                      style: context.textTheme.displayLarge,
+                                    ),
+                                    child: NamidaButton(
+                                      borderRadius: 8.0,
+                                      icon: Broken.folder_add,
+                                      text: lang.addFolder,
+                                      onTap: () => _onAddFolderTap(context),
+                                    ),
+                                  ),
+                                ],
+                              )
+                            : Column(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  Text(
+                                    lang.noTracksFound,
+                                    style: context.textTheme.displayLarge,
+                                  ),
+                                  const SizedBox(height: 8.0),
+                                  NamidaInkWell(
+                                    borderRadius: 8.0,
+                                    bgColor: context.theme.cardColor,
+                                    padding: const EdgeInsetsGeometry.symmetric(horizontal: 12.0, vertical: 6.0),
+                                    onTap: () => _onAddFolderTap(context),
+                                    child: Text(
+                                      lang.addFolder,
+                                      style: context.textTheme.displayLarge,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                      )
+                    : NamidaListView(
+                        itemExtent: Dimensions.inst.trackTileItemExtent,
+                        itemCount: trackSearchList.length,
+                        scrollController: libraryTab.scrollController,
+                        scrollStep: Dimensions.inst.trackTileItemExtent,
+                        thumbLabel: _createThumbLabel,
+                        header: listHeader,
+                        footer: NamidaJellys.enabled ? const JellyListEnd() : null,
+                        itemBuilder: (context, i) {
+                          final track = trackSearchList[i];
+                          return AnimatingTile(
+                            key: Key("$i${track.path}"),
+                            position: i,
+                            shouldAnimate: _shouldAnimate,
+                            child: TrackTile(
+                              properties: properties,
+                              index: i,
+                              trackOrTwd: track,
+                              tracks: trackSearchList,
+                            ),
+                          );
+                        },
+                        listBuilder: (list) {
+                          return Stack(
+                            children: [
+                              list,
+                              pullToRefreshWidget,
+                            ],
+                          );
+                        },
+                      ),
+              ),
+            ),
+          ),
         ),
       ),
+    );
+  }
+}
+
+class _JellyTracksEmptyState extends StatelessWidget {
+  final VoidCallback onAddFolder;
+
+  const _JellyTracksEmptyState({required this.onAddFolder});
+
+  @override
+  Widget build(BuildContext context) {
+    return Builder(
+      builder: (context) {
+        // if (Indexer.inst.isIndexing.valueR) {
+        //   final total = Indexer.inst.allAudioFiles.valueR.length;
+        //   final done = Indexer.inst.tracksInfoList.valueR.length;
+        //   return JellyLoader(
+        //     percentage: total <= 0 ? null : done / total,
+        //     tint: tint,
+        //   );
+        // }
+        return Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const FloatingJelly(
+              height: 170.0,
+              opacity: 0.9,
+            ),
+            const SizedBox(height: 8.0),
+            Text(
+              lang.noTracksFound,
+              style: context.textTheme.displayLarge,
+            ),
+            const SizedBox(height: 12.0),
+            NamidaButton(
+              borderRadius: 8.0,
+              icon: Broken.folder_add,
+              text: lang.addFolder,
+              onTap: onAddFolder,
+            ),
+          ],
+        );
+      },
     );
   }
 }

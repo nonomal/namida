@@ -1,0 +1,644 @@
+/// built by claude code
+part of '../sync_manager.dart';
+
+/// Raw file syncing for directory-based [AppPathsBackupEnum] items,
+/// using manifest diffing so only missing/newer files get sent:
+///
+/// 1. A -> B: [DirFilesManifestRequestMessage] asking for B's files info.
+/// 2. B -> A: [DirFilesManifestResponseMessage] with `{name: [size, mtime]}` of B's existing files.
+/// 3. A -> B: [DirFileMessage] per required file (missing on B, or newer on A, see [DirFileMessage.isIncomingNewer]).
+///    the file bytes travel in a raw binary frame right after the json frame, see [BinaryPayloadMessage].
+abstract final class _DirFilesSyncUtils {
+  /// keeps memory bounded, the whole file is buffered on both sides.
+  static const kMaxFileSize = 200 * 1024 * 1024;
+
+  static bool isAllowedSubtype(AppPathsBackupEnum subtype) => subtype.isDir && subtype.supportsSync() == true;
+
+  /// caches named after what they hold (video id, thumbnail), each device fetches them on its own at different times.
+  static bool isNamedByContent(AppPathsBackupEnum subtype) => switch (subtype) {
+    AppPathsBackupEnum.VIDEOS_CACHE || AppPathsBackupEnum.AUDIOS_CACHE || AppPathsBackupEnum.YT_THUMBNAILS || AppPathsBackupEnum.YT_THUMBNAILS_CHANNELS => true,
+    _ => false,
+  };
+
+  /// prevents path traversal outside the target dir.
+  static bool isSafeFileName(String name) => name.isNotEmpty && !name.contains('/') && !name.contains('\\') && !name.contains('..');
+
+  /// `{fileName: [size, mtimeMS]}` for top-level files of the dir.
+  static Future<Map<String, dynamic>> buildManifest(AppPathsBackupEnum subtype) async {
+    final result = <String, dynamic>{};
+    final dir = Directory(subtype.resolve());
+    if (!await dir.exists()) return result;
+    await for (final e in dir.list(followLinks: false)) {
+      if (e is! File) continue;
+      try {
+        final stat = await e.stat();
+        result[e.path.getFilename] = [stat.size, stat.modified.millisecondsSinceEpoch];
+      } catch (_) {}
+    }
+    return result;
+  }
+}
+
+class DirFilesManifestRequestMessage extends BaseMessage {
+  final AppPathsBackupEnum subtype;
+  final SyncBatchRef? batchRef;
+
+  const DirFilesManifestRequestMessage({
+    required this.subtype,
+    required this.batchRef,
+    required super.messageInfo,
+  }) : super(MessageType.dirFilesManifestRequest);
+
+  static Future<DirFilesManifestRequestMessage> create(AppPathsBackupEnum subtype, SyncBatchRef batchRef) async {
+    return DirFilesManifestRequestMessage(
+      subtype: subtype,
+      batchRef: batchRef,
+      messageInfo: await SyncUtils.createMessageInfo(.manifest),
+    );
+  }
+
+  factory DirFilesManifestRequestMessage.fromMap(Map<String, dynamic> map, BaseMessageInfo messageInfo) {
+    return DirFilesManifestRequestMessage(
+      subtype: AppPathsBackupEnum.values.getEnum(map['st'] as String)!,
+      batchRef: SyncBatchRef.fromMap(map['br']),
+      messageInfo: messageInfo,
+    );
+  }
+
+  @override
+  Map<String, dynamic> _encodeToMap() => {
+    'br': ?batchRef?.toMap(),
+    'st': subtype.name,
+  };
+
+  @override
+  FutureOr<void> executeOnReceived() async {
+    final manifest = _DirFilesSyncUtils.isAllowedSubtype(subtype) ? await _DirFilesSyncUtils.buildManifest(subtype) : const <String, dynamic>{};
+    final msg = DirFilesManifestResponseMessage(
+      subtype: subtype,
+      batchRef: batchRef,
+      files: manifest,
+      messageInfo: await SyncUtils.createMessageInfo(.manifest),
+    );
+    await SyncDiscovery.sendMessage(msg, messageInfo.senderDeviceId);
+  }
+}
+
+class DirFilesManifestResponseMessage extends BaseMessage {
+  final AppPathsBackupEnum subtype;
+  final SyncBatchRef? batchRef;
+
+  /// `{fileName: [size, mtimeMS]}` of the files already existing on the other device.
+  final Map<String, dynamic> files;
+
+  const DirFilesManifestResponseMessage({
+    required this.subtype,
+    required this.batchRef,
+    required this.files,
+    required super.messageInfo,
+  }) : super(MessageType.dirFilesManifestResponse);
+
+  factory DirFilesManifestResponseMessage.fromMap(Map<String, dynamic> map, BaseMessageInfo messageInfo) {
+    return DirFilesManifestResponseMessage(
+      subtype: AppPathsBackupEnum.values.getEnum(map['st'] as String)!,
+      batchRef: SyncBatchRef.fromMap(map['br']),
+      files: (map['f'] as Map).cast<String, dynamic>(),
+      messageInfo: messageInfo,
+    );
+  }
+
+  @override
+  Map<String, dynamic> _encodeToMap() => {
+    'st': subtype.name,
+    'br': ?batchRef?.toMap(),
+    'f': files,
+  };
+
+  @override
+  String toRawInfo() => 'DirFilesManifestResponse(${subtype.name}: ${files.length} files)';
+
+  /// we requested this manifest earlier, now send the files the other device needs.
+  @override
+  FutureOr<void> executeOnReceived() async {
+    final batchRef = this.batchRef;
+    batchRef?.markTransferring();
+    try {
+      await _sendRequiredFiles(batchRef);
+    } finally {
+      // -- the item is done no matter how this went, otherwise the batch
+      // -- would never complete & progress would hang forever.
+      batchRef?.markDone();
+    }
+  }
+
+  Future<void> _sendRequiredFiles(SyncBatchRef? batchRef) async {
+    if (!_DirFilesSyncUtils.isAllowedSubtype(subtype)) return;
+
+    final receiverDeviceId = messageInfo.senderDeviceId;
+    final dir = Directory(subtype.resolve());
+    if (!await dir.exists()) return;
+
+    // -- cache videos get their info piggybacked, so the receiver doesn't re-extract it.
+    // -- only the sent file's own info travels, the map is a local by-filename lookup
+    // -- (the cache map is keyed by id), built lazily when a file actually gets sent.
+    final isVideosCache = subtype == AppPathsBackupEnum.VIDEOS_CACHE;
+    late final cacheVideosInfo = isVideosCache ? VideoController.inst.buildCacheVideosSyncInfoByFilename() : null;
+    final isNamedByContent = _DirFilesSyncUtils.isNamedByContent(subtype);
+
+    final newMessageInfoForSend = await SyncUtils.createMessageInfo(.add);
+
+    int sentCount = 0;
+    int sentBytes = 0;
+    int skippedLargeCount = 0;
+
+    final messagesToSend = <_DirFileMessageWrapper>[];
+    int messagesToSendTotalCount = 0;
+    int messagesToSendTotalSizeBytes = 0;
+
+    await for (final e in dir.list(followLinks: false)) {
+      if (e is! File) continue;
+      final name = e.path.getFilename;
+      if (!_DirFilesSyncUtils.isSafeFileName(name)) continue;
+
+      final FileStat stat;
+      try {
+        stat = await e.stat();
+      } catch (_) {
+        continue;
+      }
+      if (stat.size > _DirFilesSyncUtils.kMaxFileSize) {
+        skippedLargeCount++;
+        continue;
+      }
+
+      final mtimeMS = stat.modified.millisecondsSinceEpoch;
+      final other = files[name];
+      if (other is List && other.length >= 2) {
+        final otherSize = other[0] as int? ?? -1;
+        final otherMtimeMS = other[1] as int? ?? 0;
+        final isOursNewer = DirFileMessage.isIncomingNewer(
+          isNamedByContent: isNamedByContent,
+          existingSize: otherSize,
+          existingMtimeMS: otherMtimeMS,
+          incomingSize: stat.size,
+          incomingMtimeMS: mtimeMS,
+        );
+        if (!isOursNewer) continue;
+      }
+
+      final msg = DirFileMessage(
+        subtype: subtype,
+        fileName: name,
+        mtime: mtimeMS,
+        info: cacheVideosInfo?[name],
+        bytes: null,
+        messageInfo: newMessageInfoForSend,
+      );
+      final msgWrapper = _DirFileMessageWrapper._(
+        msg: msg,
+        localFile: e,
+        sizeBytes: stat.size,
+      );
+      messagesToSend.add(msgWrapper);
+      messagesToSendTotalCount++;
+      messagesToSendTotalSizeBytes += stat.size;
+    }
+
+    if (messagesToSendTotalCount == 0) return; // -- they are up to date
+
+    batchRef?.setProgress(count: 0, totalCount: messagesToSendTotalCount, bytes: 0, totalBytes: messagesToSendTotalSizeBytes);
+
+    for (final msgWrapper in messagesToSend) {
+      final Uint8List bytes;
+      try {
+        bytes = await msgWrapper.localFile.readAsBytes();
+      } catch (_) {
+        continue;
+      }
+      msgWrapper.msg.binaryPayload = bytes;
+
+      await SyncDiscovery.sendMessage(msgWrapper.msg, receiverDeviceId);
+      sentCount++;
+      sentBytes += msgWrapper.sizeBytes;
+
+      // -- throttled inside, sending a snapshot per file would double the frames
+      batchRef?.setProgress(count: sentCount, totalCount: messagesToSendTotalCount, bytes: sentBytes, totalBytes: messagesToSendTotalSizeBytes);
+    }
+
+    if (_kEnableSyncDebug) _debugNotify('==> dir files sent[${subtype.name}]: $sentCount, skipped large: $skippedLargeCount');
+  }
+}
+
+/// Raw database file syncing for [DBWrapper]-based [AppPathsBackupEnum] items.
+/// the sender checkpoints (merging wal journal contents) & sends the whole db
+/// file as a binary frame, skipping any db load/encode. the receiver writes it
+/// to a temp file next to its own db and merges entries inside an isolate.
+class DbFileMessage extends BaseMessage with BinaryPayloadMessage {
+  final AppPathsBackupEnum subtype;
+
+  DbFileMessage({
+    required this.subtype,
+    Uint8List? bytes,
+    required super.messageInfo,
+  }) : super(MessageType.dbFile) {
+    binaryPayload = bytes;
+  }
+
+  static bool isAllowedSubtype(AppPathsBackupEnum subtype) => switch (subtype) {
+    AppPathsBackupEnum.VIDEO_ID_STATS_DB_INFO || AppPathsBackupEnum.CACHE_VIDEOS_PRIORITY => true,
+    _ => false,
+  };
+
+  /// returns null when the local db file doesn't exist.
+  static Future<DbFileMessage?> create(AppPathsBackupEnum subtype) async {
+    final bytes = await switch (subtype) {
+      AppPathsBackupEnum.VIDEO_ID_STATS_DB_INFO => YoutubeController.inst.statsManager.buildSyncDbBytes(),
+      AppPathsBackupEnum.CACHE_VIDEOS_PRIORITY => VideoController.inst.videosPriorityManager.buildSyncDbBytes(),
+      _ => Future<Uint8List?>.value(null),
+    };
+    if (bytes == null) return null;
+    return DbFileMessage(
+      subtype: subtype,
+      bytes: bytes,
+      messageInfo: await SyncUtils.createMessageInfo(.add),
+    );
+  }
+
+  factory DbFileMessage.fromMap(Map<String, dynamic> map, BaseMessageInfo messageInfo) {
+    return DbFileMessage(
+      subtype: AppPathsBackupEnum.values.getEnum(map['st'] as String)!,
+      messageInfo: messageInfo,
+    );
+  }
+
+  @override
+  Map<String, dynamic> _encodeToMap() => {
+    'st': subtype.name,
+  };
+
+  @override
+  String toRawInfo() {
+    final bytes = binaryPayload;
+    return 'DbFile(${subtype.name}, ${bytes == null ? '?' : bytes.length.fileSizeFormatted})';
+  }
+
+  @override
+  FutureOr<void> executeOnReceived() async {
+    final bytes = binaryPayload;
+    if (bytes == null) return; // -- binary payload frame never arrived
+    if (!isAllowedSubtype(subtype)) return;
+
+    if (!SyncUtils.kAllowModification) {
+      snackyy(message: 'Importing db file ${subtype.name} (${bytes.length.fileSizeFormatted})');
+      return;
+    }
+
+    final dbPath = subtype.resolve();
+    final tempDir = Directory('$dbPath.sync_incoming');
+    // -- keeps our db filename, the table inside is named after it
+    final tempFile = FileParts.join(tempDir.path, dbPath.getFilename);
+    try {
+      await tempFile.create(recursive: true);
+      await tempFile.writeAsBytes(bytes);
+      final changed = await switch (subtype) {
+        AppPathsBackupEnum.VIDEO_ID_STATS_DB_INFO => YoutubeController.inst.statsManager.importFromSyncDb(tempFile),
+        AppPathsBackupEnum.CACHE_VIDEOS_PRIORITY => VideoController.inst.videosPriorityManager.importFromSyncDb(tempFile),
+        _ => Future.value(0),
+      };
+      if (_kEnableSyncDebug) _debugNotify('==> db file merged[${subtype.name}]: $changed entries');
+    } catch (e, st) {
+      logger.error('Error merging synced db file ${subtype.name}', e: e, st: st);
+    } finally {
+      await tempDir.delete(recursive: true).ignoreError();
+    }
+  }
+}
+
+/// Db entries syncing with manifest diffing so only missing/newer entries get sent
+/// (the whole-db alternative is [DbFileMessage], see [SyncUtils.kUseDbEntriesSync]):
+///
+/// 1. A -> B: [DbManifestRequestMessage] asking for B's entries info.
+/// 2. B -> A: [DbManifestResponseMessage] with `{key: token}` of B's entries.
+///    the token meaning is per subtype (stats: modified date, priority: priority index).
+/// 3. A -> B: [DbEntriesMessage] chunks with the entries B is missing or would replace.
+class DbManifestRequestMessage extends BaseMessage {
+  final AppPathsBackupEnum subtype;
+  final SyncBatchRef? batchRef;
+
+  const DbManifestRequestMessage({
+    required this.subtype,
+    required this.batchRef,
+    required super.messageInfo,
+  }) : super(MessageType.dbManifestRequest);
+
+  static Future<DbManifestRequestMessage> create(AppPathsBackupEnum subtype, SyncBatchRef batchRef) async {
+    return DbManifestRequestMessage(
+      subtype: subtype,
+      batchRef: batchRef,
+      messageInfo: await SyncUtils.createMessageInfo(.manifest),
+    );
+  }
+
+  factory DbManifestRequestMessage.fromMap(Map<String, dynamic> map, BaseMessageInfo messageInfo) {
+    return DbManifestRequestMessage(
+      subtype: AppPathsBackupEnum.values.getEnum(map['st'] as String)!,
+      batchRef: SyncBatchRef.fromMap(map['br']),
+      messageInfo: messageInfo,
+    );
+  }
+
+  @override
+  Map<String, dynamic> _encodeToMap() => {
+    'st': subtype.name,
+    'br': ?batchRef?.toMap(),
+  };
+
+  @override
+  FutureOr<void> executeOnReceived() async {
+    // -- the response is sent back even for a rejected subtype, otherwise
+    // -- the origin's batch item would stay pending until it times out.
+    final manifest = await switch (subtype) {
+      AppPathsBackupEnum.VIDEO_ID_STATS_DB_INFO => YoutubeController.inst.statsManager.buildSyncManifest(),
+      AppPathsBackupEnum.CACHE_VIDEOS_PRIORITY => VideoController.inst.videosPriorityManager.buildSyncManifest(),
+      _ => Future.value(<String, int>{}),
+    };
+    final msg = DbManifestResponseMessage(
+      subtype: subtype,
+      manifest: manifest,
+      batchRef: batchRef,
+      messageInfo: await SyncUtils.createMessageInfo(.manifest),
+    );
+    await SyncDiscovery.sendMessage(msg, messageInfo.senderDeviceId);
+  }
+}
+
+class DbManifestResponseMessage extends BaseMessage {
+  final AppPathsBackupEnum subtype;
+
+  /// `{key: token}` of the entries already existing on the other device.
+  final Map<String, dynamic> manifest;
+
+  final SyncBatchRef? batchRef;
+
+  const DbManifestResponseMessage({
+    required this.subtype,
+    required this.manifest,
+    required this.batchRef,
+    required super.messageInfo,
+  }) : super(MessageType.dbManifestResponse);
+
+  /// keeps single messages bounded, big diffs stream chunk by chunk.
+  static const _kEntriesChunkSize = 500;
+
+  factory DbManifestResponseMessage.fromMap(Map<String, dynamic> map, BaseMessageInfo messageInfo) {
+    return DbManifestResponseMessage(
+      subtype: AppPathsBackupEnum.values.getEnum(map['st'] as String)!,
+      manifest: (map['m'] as Map).cast<String, dynamic>(),
+      batchRef: SyncBatchRef.fromMap(map['br']),
+      messageInfo: messageInfo,
+    );
+  }
+
+  @override
+  Map<String, dynamic> _encodeToMap() => {
+    'st': subtype.name,
+    'm': manifest,
+    'br': ?batchRef?.toMap(),
+  };
+
+  @override
+  String toRawInfo() => 'DbManifestResponse(${subtype.name}: ${manifest.length} entries)';
+
+  /// we requested this manifest earlier, now send the entries the other device needs.
+  @override
+  FutureOr<void> executeOnReceived() async {
+    final batchRef = this.batchRef;
+    batchRef?.markTransferring();
+    try {
+      await _sendRequiredEntries(batchRef);
+    } finally {
+      // -- the item is done no matter how this went, otherwise the batch
+      // -- would never complete & progress would hang forever.
+      batchRef?.markDone();
+    }
+  }
+
+  Future<void> _sendRequiredEntries(SyncBatchRef? batchRef) async {
+    if (!DbFileMessage.isAllowedSubtype(subtype)) return;
+
+    final receiverDeviceId = messageInfo.senderDeviceId;
+    final entries = await switch (subtype) {
+      AppPathsBackupEnum.VIDEO_ID_STATS_DB_INFO => YoutubeController.inst.statsManager.buildSyncEntriesToSend(manifest),
+      AppPathsBackupEnum.CACHE_VIDEOS_PRIORITY => VideoController.inst.videosPriorityManager.buildSyncEntriesToSend(manifest),
+      _ => Future.value(<String, Map<String, dynamic>>{}),
+    };
+    if (entries.isEmpty) return; // -- they are up to date
+
+    final totalCount = entries.length;
+    int sentCount = 0;
+    batchRef?.setProgress(count: 0, totalCount: totalCount);
+
+    var chunk = <String, dynamic>{};
+    for (final e in entries.entries) {
+      chunk[e.key] = e.value;
+      if (chunk.length >= _kEntriesChunkSize) {
+        sentCount += chunk.length;
+        await _sendChunk(chunk, receiverDeviceId);
+        batchRef?.setProgress(count: sentCount, totalCount: totalCount);
+        chunk = {};
+      }
+    }
+    if (chunk.isNotEmpty) {
+      sentCount += chunk.length;
+      await _sendChunk(chunk, receiverDeviceId);
+      batchRef?.setProgress(count: sentCount, totalCount: totalCount);
+    }
+  }
+
+  Future<void> _sendChunk(Map<String, dynamic> chunk, String receiverDeviceId) async {
+    final msg = DbEntriesMessage(
+      subtype: subtype,
+      entries: chunk,
+      messageInfo: await SyncUtils.createMessageInfo(.add),
+    );
+    await SyncDiscovery.sendMessage(msg, receiverDeviceId);
+  }
+}
+
+class DbEntriesMessage extends BaseMessage {
+  final AppPathsBackupEnum subtype;
+
+  /// `{key: valueMap}` entries to merge into the receiver's db.
+  final Map<String, dynamic> entries;
+
+  const DbEntriesMessage({
+    required this.subtype,
+    required this.entries,
+    required super.messageInfo,
+  }) : super(MessageType.dbEntries);
+
+  factory DbEntriesMessage.fromMap(Map<String, dynamic> map, BaseMessageInfo messageInfo) {
+    return DbEntriesMessage(
+      subtype: AppPathsBackupEnum.values.getEnum(map['st'] as String)!,
+      entries: (map['e'] as Map).cast<String, dynamic>(),
+      messageInfo: messageInfo,
+    );
+  }
+
+  @override
+  Map<String, dynamic> _encodeToMap() => {
+    'st': subtype.name,
+    'e': entries,
+  };
+
+  @override
+  String toRawInfo() => 'DbEntries(${subtype.name}: ${entries.length} entries)';
+
+  @override
+  FutureOr<void> executeOnReceived() async {
+    if (!DbFileMessage.isAllowedSubtype(subtype)) return;
+
+    if (!SyncUtils.kAllowModification) {
+      snackyy(message: 'Importing ${entries.length} db entries [${subtype.name}]');
+      return;
+    }
+
+    final changed = await switch (subtype) {
+      AppPathsBackupEnum.VIDEO_ID_STATS_DB_INFO => YoutubeController.inst.statsManager.importSyncEntries(entries),
+      AppPathsBackupEnum.CACHE_VIDEOS_PRIORITY => VideoController.inst.videosPriorityManager.importSyncEntries(entries),
+      _ => Future.value(0),
+    };
+    if (_kEnableSyncDebug) _debugNotify('==> db entries merged[${subtype.name}]: $changed/${entries.length}');
+  }
+}
+
+class _DirFileMessageWrapper {
+  final DirFileMessage msg;
+  final File localFile;
+  final int sizeBytes;
+
+  const _DirFileMessageWrapper._({
+    required this.msg,
+    required this.localFile,
+    required this.sizeBytes,
+  });
+}
+
+class DirFileMessage extends BaseMessage with BinaryPayloadMessage {
+  final AppPathsBackupEnum subtype;
+  final String fileName;
+  final int mtime;
+
+  /// extra info attached to the file, interpreted per subtype. currently
+  /// [AppPathsBackupEnum.VIDEOS_CACHE] video info, saving the receiver
+  /// an ffmpeg extraction for the synced file.
+  final Map<String, dynamic>? info;
+
+  DirFileMessage({
+    required this.subtype,
+    required this.fileName,
+    required this.mtime,
+    this.info,
+    Uint8List? bytes,
+    required super.messageInfo,
+  }) : super(MessageType.dirFile) {
+    binaryPayload = bytes;
+  }
+
+  /// filesystems keep mtimes at different precisions (fat: 2s), a copy written with the sender's mtime can read back slightly off.
+  static const _kMtimeToleranceMS = 2000;
+
+  /// queue files arrive one message each, they get read once the burst is over.
+  static Timer? _queuesReloadTimer;
+
+  static void _reloadQueuesSoon() {
+    _queuesReloadTimer?.cancel();
+    _queuesReloadTimer = Timer(const Duration(seconds: 1), QueueController.inst.prepareAllQueuesFile);
+  }
+
+  /// the rule both sides use to tell whether the incoming copy replaces the existing one: newer wins,
+  /// same sized copies with mtimes within [_kMtimeToleranceMS] are the same file.
+  /// [isNamedByContent] (see [_DirFilesSyncUtils.isNamedByContent]) makes any same sized copy the same file.
+  @visibleForTesting
+  static bool isIncomingNewer({
+    required bool isNamedByContent,
+    required int existingSize,
+    required int existingMtimeMS,
+    required int incomingSize,
+    required int incomingMtimeMS,
+  }) {
+    final isSameSize = existingSize == incomingSize;
+    if (isSameSize && isNamedByContent) return false;
+    final mtimeDiffMS = incomingMtimeMS - existingMtimeMS;
+    final isSameFile = isSameSize && mtimeDiffMS.abs() <= _kMtimeToleranceMS;
+    if (isSameFile) return false;
+    return mtimeDiffMS > 0;
+  }
+
+  factory DirFileMessage.fromMap(Map<String, dynamic> map, BaseMessageInfo messageInfo) {
+    return DirFileMessage(
+      subtype: AppPathsBackupEnum.values.getEnum(map['st'] as String)!,
+      fileName: map['n'] as String,
+      mtime: map['mt'] as int? ?? 0,
+      info: (map['i'] as Map?)?.cast<String, dynamic>(),
+      messageInfo: messageInfo,
+    );
+  }
+
+  @override
+  Map<String, dynamic> _encodeToMap() => {
+    'st': subtype.name,
+    'n': fileName,
+    'mt': mtime,
+    'i': ?info,
+  };
+
+  @override
+  String toRawInfo() {
+    final bytes = binaryPayload;
+    return 'DirFile(${subtype.name}/$fileName, ${bytes == null ? '?' : bytes.length.fileSizeFormatted})';
+  }
+
+  @override
+  FutureOr<void> executeOnReceived() async {
+    final bytes = binaryPayload;
+    if (bytes == null) return; // -- binary payload frame never arrived
+
+    if (!_DirFilesSyncUtils.isAllowedSubtype(subtype)) return;
+    if (!_DirFilesSyncUtils.isSafeFileName(fileName)) return;
+
+    if (!SyncUtils.kAllowModification) {
+      // snackyy(message: 'Importing file ${subtype.name}/$fileName (${bytes.length.fileSizeFormatted})');
+      return;
+    }
+
+    try {
+      final file = FileParts.join(subtype.resolve(), fileName);
+      final stat = await file.stat();
+      if (stat.type != FileSystemEntityType.notFound) {
+        final existingMtimeMS = stat.modified.millisecondsSinceEpoch;
+        final isNamedByContent = _DirFilesSyncUtils.isNamedByContent(subtype);
+        final isTheirsNewer = isIncomingNewer(
+          isNamedByContent: isNamedByContent,
+          existingSize: stat.size,
+          existingMtimeMS: existingMtimeMS,
+          incomingSize: bytes.length,
+          incomingMtimeMS: mtime,
+        );
+        if (!isTheirsNewer) return;
+      }
+      await file.create(recursive: true);
+      await file.writeAsBytes(bytes);
+      // -- keep the sender's mtime so future manifests compare correctly
+      await file.setLastModified(DateTime.fromMillisecondsSinceEpoch(mtime));
+
+      if (subtype == AppPathsBackupEnum.AUDIOS_CACHE) AudioCacheController.inst.addFileToCacheMap(file);
+      if (subtype == AppPathsBackupEnum.QUEUES) _reloadQueuesSoon();
+
+      final info = this.info;
+      if (info != null && subtype == AppPathsBackupEnum.VIDEOS_CACHE) VideoController.inst.importSyncedCacheVideoInfo(fileName, info);
+    } catch (e, st) {
+      logger.error('Error writing synced file ${subtype.name}/$fileName', e: e, st: st);
+    }
+  }
+}

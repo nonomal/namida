@@ -1,0 +1,120 @@
+import 'dart:io';
+import 'dart:math' as math;
+
+import 'package:namida/class/taglib_res.dart';
+
+class ReplayGainData {
+  final double? trackGain, albumGain;
+  final double? trackPeak, albumPeak;
+
+  const ReplayGainData._({
+    required this.trackGain,
+    required this.trackPeak,
+    required this.albumGain,
+    required this.albumPeak,
+  });
+
+  static const double kDefaultFallbackVolume = 1.0;
+  static final double kMaxPlatformVolume = Platform.isAndroid || Platform.isIOS ? 1.0 : 1.3; // mpv is up to 130% (without distortion i think).
+  static final RegExp _dBUnitRegex = RegExp(r'\s*db\s*$', caseSensitive: false);
+
+  double? get gainToUse => trackGain ?? albumGain;
+
+  double? calculateGainAsVolume({double withRespectiveVolume = kDefaultFallbackVolume}) {
+    final gainFinal = gainToUse;
+    if (gainFinal == null) return null;
+    return convertGainToVolume(gain: gainFinal, withRespectiveVolume: withRespectiveVolume);
+  }
+
+  static double? convertGainToVolume({required double gain, double withRespectiveVolume = kDefaultFallbackVolume}) {
+    final gainLinear = math.pow(10, gain / 20).clamp(0.1, kMaxPlatformVolume);
+    return gainLinear * withRespectiveVolume;
+  }
+
+  static ReplayGainData? orNull({
+    required double? trackGain,
+    required double? albumGain,
+    required double? trackPeak,
+    required double? albumPeak,
+  }) {
+    if (trackGain == null && albumGain == null && trackPeak == null && albumPeak == null) return null;
+    return ReplayGainData._(
+      trackGain: trackGain,
+      trackPeak: trackPeak,
+      albumGain: albumGain,
+      albumPeak: albumPeak,
+    );
+  }
+
+  static ReplayGainData? fromTagLibMap(TagLibPropertiesWrapper properties) {
+    final simpleMap = properties.propertiesMap.map<String, String?>((key, value) => MapEntry(key, value.firstOrNull));
+    return ReplayGainData.fromPropertiesMap(simpleMap);
+  }
+
+  static ReplayGainData? fromPropertiesMap(Map map) {
+    double? trackGainDB = ((map['replaygain_track_gain'] ?? map['REPLAYGAIN_TRACK_GAIN']) as String?)?._parseGainValue()?._ensureValidNumber(); // "-0.515000 dB"
+    double? albumGainDB = ((map['replaygain_album_gain'] ?? map['REPLAYGAIN_ALBUM_GAIN']) as String?)?._parseGainValue()?._ensureValidNumber(); // "+0.040000 dB"
+
+    trackGainDB ??= ((map['r128_track_gain'] ?? map['R128_TRACK_GAIN']) as String?)?._parseGainValueR128()?._ensureValidNumber();
+    albumGainDB ??= ((map['r128_album_gain'] ?? map['R128_ALBUM_GAIN']) as String?)?._parseGainValueR128()?._ensureValidNumber();
+
+    final trackPeak = ((map['replaygain_track_peak'] ?? map['REPLAYGAIN_TRACK_PEAK']) as String?)?._parsePeakValue()?._ensureValidNumber();
+    final albumPeak = ((map['replaygain_album_peak'] ?? map['REPLAYGAIN_ALBUM_PEAK']) as String?)?._parsePeakValue()?._ensureValidNumber();
+
+    if (trackGainDB == null && trackPeak == null && albumGainDB == null && albumPeak == null) return null;
+
+    return ReplayGainData._(
+      trackGain: trackGainDB,
+      trackPeak: trackPeak,
+      albumGain: albumGainDB,
+      albumPeak: albumPeak,
+    );
+  }
+
+  factory ReplayGainData.fromMap(Map<String, dynamic> map) {
+    return ReplayGainData._(
+      trackGain: map['tg'],
+      trackPeak: map['tp'],
+      albumGain: map['ag'],
+      albumPeak: map['ap'],
+    );
+  }
+
+  Map<String, dynamic> toMap() {
+    return <String, dynamic>{
+      "tg": trackGain,
+      "tp": trackPeak,
+      "ag": albumGain,
+      "ap": albumPeak,
+    };
+  }
+}
+
+extension on String? {
+  double? _parseGainValueR128() {
+    final parsed = _parseGainValue();
+    if (parsed == null) return null;
+    if (parsed == 0) return null;
+    return (parsed / 256) + 5;
+  }
+
+  double? _parseGainValue() {
+    final text = this;
+    if (text == null) return null;
+    final withoutUnit = text.replaceFirst(ReplayGainData._dBUnitRegex, '');
+    final numberText = withoutUnit.replaceFirst(',', '.');
+    final gain = double.tryParse(numberText);
+    if (gain != null) return gain;
+    final firstWord = numberText.split(' ').first;
+    return double.tryParse(firstWord);
+  }
+
+  double? _parsePeakValue() {
+    var text = this;
+    return text == null ? null : double.tryParse(text);
+  }
+}
+
+extension on double {
+  double? _ensureValidNumber() => isFinite ? this : null;
+}

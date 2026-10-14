@@ -1,16 +1,23 @@
+// ignore_for_file: use_build_context_synchronously
+
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart' as material;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:get/get.dart';
+
+import 'package:native_device_orientation/native_device_orientation.dart';
 
 import 'package:namida/class/route.dart';
 import 'package:namida/controller/folders_controller.dart';
 import 'package:namida/controller/miniplayer_controller.dart';
+import 'package:namida/controller/playlist_controller.dart';
 import 'package:namida/controller/scroll_search_controller.dart';
 import 'package:namida/controller/settings_controller.dart';
 import 'package:namida/controller/settings_search_controller.dart';
 import 'package:namida/controller/wakelock_controller.dart';
+import 'package:namida/controller/window_controller.dart';
 import 'package:namida/core/constants.dart';
 import 'package:namida/core/dimensions.dart';
 import 'package:namida/core/enums.dart';
@@ -19,29 +26,48 @@ import 'package:namida/core/icon_fonts/broken_icons.dart';
 import 'package:namida/core/namida_converter_ext.dart';
 import 'package:namida/core/themes.dart';
 import 'package:namida/core/translations/language.dart';
+import 'package:namida/core/ui_scale.dart';
+import 'package:namida/core/utils.dart';
+import 'package:namida/ui/widgets/animated_widgets.dart';
 import 'package:namida/ui/widgets/custom_widgets.dart';
 import 'package:namida/ui/widgets/inner_drawer.dart';
+import 'package:namida/youtube/controller/youtube_playlist_controller.dart';
 import 'package:namida/youtube/widgets/yt_queue_chip.dart';
+
+part 'navigator_controller.snackbar.dart';
 
 class NamidaNavigator {
   static NamidaNavigator get inst => _instance;
   static final NamidaNavigator _instance = NamidaNavigator._internal();
   NamidaNavigator._internal();
 
-  final navKey = Get.nestedKey(1);
+  GlobalKey<NavigatorState> get _rootNav => namida.rootNavigatorKey;
+  bool get rootNavHasOpenedPages => _rootNav.currentState?.canPop() == true;
+  int get openedDialogsCount => _openedNumbersManager._currentDialogNumber;
+  int get openedSheetsCount => _openedNumbersManager._currentSheetNumber;
+  int get openedMenusCount => _openedNumbersManager._currentMenusNumber;
 
-  final ytLocalSearchNavigatorKey = Get.nestedKey(9);
+  bool get _shouldUpdateSubpagesColors => settings.autoColor.value;
 
-  final ytMiniplayerCommentsPageKey = Get.nestedKey(11);
+  final navKey = GlobalKey<NavigatorState>();
+
+  final ytLocalSearchNavigatorKey = GlobalKey<NavigatorState>();
+
+  final ytMiniplayerCommentsPageKey = GlobalKey<NavigatorState>();
 
   bool isytLocalSearchInFullPage = false;
   bool isInYTCommentsSubpage = false;
+  bool isInYTCommentRepliesSubpage = false;
+  bool isInSoundControlSubpage = false;
+  bool isInWideScreenPlayerPage = false;
   bool isQueueSheetOpen = false;
 
-  final RxList<NamidaRoute> currentWidgetStack = <NamidaRoute>[].obs;
-  NamidaRoute? get currentRoute => currentWidgetStack.lastOrNull;
-  int _currentDialogNumber = 0;
-  int _currentMenusNumber = 0;
+  final currentWidgetStack = <NamidaRoute>[].obs;
+  NamidaRoute? get currentRoute => currentWidgetStack.value.lastOrNull;
+  // ignore: avoid_rx_value_getter_outside_obx
+  NamidaRoute? get currentRouteR => currentWidgetStack.valueR.lastOrNull;
+
+  final _openedNumbersManager = _OpenedNumbersManager();
 
   final innerDrawerKey = GlobalKey<NamidaInnerDrawerState>();
   final ytQueueSheetKey = GlobalKey<YTMiniplayerQueueChipState>();
@@ -49,57 +75,51 @@ class NamidaNavigator {
 
   bool _isInLanscape = false;
   bool get isInLanscape => _isInLanscape;
-  set isInLanscape(bool val) {
-    _isInLanscape = val;
-    for (final fn in _onLandscapeEvents.values) {
-      fn();
-    }
-  }
 
-  static const _defaultRouteAnimationDurMS = 500;
+  static const _defaultRouteAnimationDurMS = 400;
+  static const kDefaultDialogDurationMS = 300;
 
-  final _onLandscapeEvents = <String, FutureOr<void> Function()>{};
+  Future<T?> showMenu<T>({required PopupRoute<T> route}) async {
+    ScrollSearchController.inst.unfocusKeyboard();
+    _openedNumbersManager.incrementMenus();
 
-  void addOnLandScapeEvent(String key, FutureOr<void> Function() fn) {
-    _onLandscapeEvents[key] = fn;
-  }
-
-  void removeOnLandScapeEvent(String key) {
-    _onLandscapeEvents.remove(key);
-  }
-
-  Future<T?> showMenu<T>(Future? menuFunction) async {
-    _currentMenusNumber++;
-    _printMenus();
-    return await menuFunction;
+    return _rootNav.currentState?.push(route);
   }
 
   void popMenu({bool handleClosing = true}) {
-    if (_currentMenusNumber > 0) {
-      _currentMenusNumber--;
+    if (_openedNumbersManager._currentMenusNumber > 0) {
+      _openedNumbersManager.decrementMenus();
       if (handleClosing) {
-        Get.close(1);
+        popRoot();
       }
     }
-    _printMenus();
   }
 
   void popAllMenus() {
-    if (_currentMenusNumber > 0) {
-      Get.until((route) => route.isFirst);
-      _currentMenusNumber = 0;
+    if (_openedNumbersManager._currentMenusNumber == 0) return;
+    while (_openedNumbersManager._currentMenusNumber > 0) {
+      _openedNumbersManager.decrementMenus();
+      popRoot();
     }
-    _printMenus();
   }
 
   void toggleDrawer() {
     innerDrawerKey.currentState?.toggle();
   }
 
-  void _hideSearchMenuAndUnfocus() => ScrollSearchController.inst.hideSearchMenu();
+  /// hides library search and settings search pages
+  void _hideSearchMenusAndUnfocus() {
+    ScrollSearchController.inst.hideSearchMenu();
+    SettingsSearchController.inst.closeSearch();
+  }
+
   void _minimizeMiniplayer() {
-    MiniPlayerController.inst.snapToMini();
-    MiniPlayerController.inst.ytMiniplayerKey.currentState?.animateToState(false);
+    try {
+      MiniPlayerController.inst.snapToMini();
+      MiniPlayerController.inst.ytMiniplayerKey.currentState?.animateToState(false);
+    } catch (_) {
+      // -- could be non initialized
+    }
   }
 
   void hideStuff({
@@ -107,39 +127,62 @@ class NamidaNavigator {
     bool minimizeMiniplayers = true,
     bool closeDialogs = true,
   }) {
-    if (searchMenuAndUnfocus) _hideSearchMenuAndUnfocus();
+    if (searchMenuAndUnfocus) _hideSearchMenusAndUnfocus();
     if (minimizeMiniplayers) _minimizeMiniplayer();
     if (closeDialogs) closeAllDialogs();
   }
 
   void _hideEverything() {
-    _hideSearchMenuAndUnfocus();
+    _hideSearchMenusAndUnfocus();
     _minimizeMiniplayer();
     closeAllDialogs();
   }
 
+  NamidaRouteWidget? _pageAfterFirstLoad;
+
+  void openAfterFirstLoad(NamidaRouteWidget page) => _pageAfterFirstLoad = page;
+
   void onFirstLoad() {
-    final initialTab = settings.selectedLibraryTab.value;
+    final initialTab = settings.extra.selectedLibraryTab.value;
     final isSearchTab = initialTab == LibraryTab.search;
-    final finalTab = isSearchTab ? settings.libraryTabs.first : initialTab;
-    navigateTo(finalTab.toWidget(), durationInMs: 0);
-    Dimensions.inst.updateAllTileDimensions();
-    if (isSearchTab) ScrollSearchController.inst.animatePageController(initialTab);
+    final finalTab = isSearchTab ? settings.libraryTabs.value.first : initialTab;
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      navigateTo(finalTab.toWidget(), durationInMs: 0);
+      if (isSearchTab) ScrollSearchController.inst.animatePageController(initialTab);
+
+      final pageAfterFirstLoad = _pageAfterFirstLoad;
+      if (pageAfterFirstLoad != null) {
+        _pageAfterFirstLoad = null;
+        navigateTo(pageAfterFirstLoad);
+      }
+    });
   }
 
   Future<void> toggleFullScreen(Widget widget, {bool setOrientations = true, Future<void> Function()? onWillPop}) async {
     if (_isInFullScreen) {
-      await exitFullScreen();
+      return await exitFullScreen();
     } else {
-      await enterFullScreen(widget, setOrientations: setOrientations, onWillPop: onWillPop);
+      return await enterFullScreen(widget, setOrientations: setOrientations, onWillPop: onWillPop);
     }
   }
 
-  Future<void> setDefaultSystemUI({List<SystemUiOverlay> overlays = SystemUiOverlay.values}) async {
-    await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge, overlays: overlays);
+  static bool? _latestSystemUIImmersive;
+  static List<SystemUiOverlay>? _latestSystemUIOverlays;
+
+  /// Raw access to system UI mode. For more accurate results, use [MiniPlayerController.setImmersiveMode].
+  static Future<void> setSystemUIImmersiveMode(bool immersive, {List<SystemUiOverlay> overlays = SystemUiOverlay.values}) async {
+    if (_latestSystemUIImmersive == immersive && !overlays.didChangeFrom(_latestSystemUIOverlays)) {
+      return;
+    }
+    _latestSystemUIImmersive = immersive;
+    _latestSystemUIOverlays = overlays;
+
+    final mode = immersive ? SystemUiMode.immersiveSticky : SystemUiMode.edgeToEdge;
+    return SystemChrome.setEnabledSystemUIMode(mode, overlays: overlays);
   }
 
-  void setDefaultSystemUIOverlayStyle({bool semiTransparent = false}) {
+  static void setDefaultSystemUIOverlayStyle({bool semiTransparent = false}) {
     SystemChrome.setSystemUIOverlayStyle(
       semiTransparent
           ? const SystemUiOverlayStyle(
@@ -151,26 +194,81 @@ class NamidaNavigator {
           : const SystemUiOverlayStyle(
               statusBarColor: Colors.transparent,
               systemNavigationBarColor: Colors.transparent,
+              systemNavigationBarDividerColor: Colors.transparent,
             ),
     );
   }
 
-  Future<void> setDeviceOrientations(bool lanscape) async {
-    isInLanscape = lanscape;
-    final orientations = lanscape ? [DeviceOrientation.landscapeLeft, DeviceOrientation.landscapeRight] : kDefaultOrientations;
+  bool? _latestIsAppLight;
+
+  /// optimized to set only if its different from the previous value.
+  void setSystemUIOverlayStyleCustom(bool isAppLight, {bool forceRefresh = false}) {
+    if (_latestIsAppLight == isAppLight && !forceRefresh) return;
+    _latestIsAppLight = isAppLight;
+    SystemChrome.setSystemUIOverlayStyle(
+      SystemUiOverlayStyle(
+        systemNavigationBarContrastEnforced: false,
+        systemNavigationBarColor: const Color(0x00000000),
+        systemNavigationBarDividerColor: const Color(0x00000000),
+        systemNavigationBarIconBrightness: isAppLight ? Brightness.dark : Brightness.light,
+      ),
+    );
+  }
+
+  static const _landscapeOrientations = [DeviceOrientation.landscapeLeft, DeviceOrientation.landscapeRight];
+
+  Future<void> setDeviceOrientations(bool? lanscape) async {
+    if (lanscape != null) _isInLanscape = lanscape;
+
+    final orientations = lanscape == true
+        ? await _resolveLandscapeOrientations()
+        : lanscape == null
+        ? await _resolveActualOrientation()
+        : DeviceOrientation.values;
+
+    if (lanscape == null) {
+      _isInLanscape = _landscapeOrientations.any((landscape) => orientations.contains(landscape));
+    }
+
     await SystemChrome.setPreferredOrientations(orientations);
+  }
+
+  /// prefer based on sensor, otherwise system will pick the first
+  Future<List<DeviceOrientation>> _resolveLandscapeOrientations() async {
+    if (!NamidaFeaturesVisibility.deviceOrientationSensorAvailable) return _landscapeOrientations;
+    try {
+      final communicator = NativeDeviceOrientationCommunicator();
+      final physical = (await communicator.orientation(useSensor: true).timeout(const Duration(milliseconds: 500))).deviceOrientation;
+      if (physical == null || !_landscapeOrientations.contains(physical)) return _landscapeOrientations;
+      final window = (await communicator.orientation()).deviceOrientation;
+      return physical == window ? _landscapeOrientations : [physical];
+    } catch (_) {
+      return _landscapeOrientations;
+    }
+  }
+
+  Future<List<DeviceOrientation>> _resolveActualOrientation() async {
+    if (!NamidaFeaturesVisibility.deviceOrientationSensorAvailable) return _landscapeOrientations;
+    try {
+      final communicator = NativeDeviceOrientationCommunicator();
+      final physical = (await communicator.orientation(useSensor: true).timeout(const Duration(milliseconds: 500))).deviceOrientation;
+      if (physical == null) return _landscapeOrientations;
+      return [physical];
+    } catch (_) {
+      return _landscapeOrientations;
+    }
   }
 
   bool get isInFullScreen => _isInFullScreen;
   bool _isInFullScreen = false;
   Future<void> enterFullScreen(Widget widget, {bool setOrientations = true, Future<void> Function()? onWillPop}) async {
-    if (_isInFullScreen) return;
-
+    if (_isInFullScreen == true) return;
     _isInFullScreen = true;
+
     WakelockController.inst.updateFullscreenStatus(true);
 
-    Get.to(
-      () => WillPopScope(
+    _rootNav.currentState?.pushPage(
+      NamidaPopScope(
         onWillPop: () async {
           if (onWillPop != null) await onWillPop();
           exitFullScreen();
@@ -178,254 +276,449 @@ class NamidaNavigator {
         },
         child: widget,
       ),
-      id: null,
-      preventDuplicates: true,
-      transition: Transition.noTransition,
-      curve: Curves.easeOut,
-      duration: Duration.zero,
-      opaque: true,
-      fullscreenDialog: false,
+      params: const NamPackPushPageParams(
+        transition: Transition.noTransition,
+        durationInMs: 0,
+        maintainState: true,
+      ),
     );
 
     setDefaultSystemUIOverlayStyle(semiTransparent: true);
     await Future.wait([
       if (setOrientations) setDeviceOrientations(true),
-      SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky),
+      setSystemUIImmersiveMode(true),
     ]);
   }
 
   Future<void> exitFullScreen() async {
-    if (!_isInFullScreen) return;
-    Get.until((route) => route.isFirst);
+    if (_isInFullScreen == false) return;
+    _isInFullScreen = false;
+
+    if (NamidaFeaturesVisibility.fullScreenChangesScreenSize) MiniPlayerController.inst.updateScreenValuesInitial(); // -- updates were dropped while in fullscreen
+
+    popRoot();
 
     setDefaultSystemUIOverlayStyle();
     await Future.wait([
       if (isInLanscape) setDeviceOrientations(false),
-      setDefaultSystemUI(),
+      MiniPlayerController.inst.setImmersiveMode(null), // let mp decides
     ]);
 
-    _isInFullScreen = false;
     WakelockController.inst.updateFullscreenStatus(false);
   }
 
-  Future<void> navigateTo(
-    Widget page, {
+  Future<void> navigateTo<W extends NamidaRouteWidget>(
+    W page, {
     Transition transition = Transition.cupertino,
     int durationInMs = _defaultRouteAnimationDurMS,
   }) async {
-    currentWidgetStack.add(page.toNamidaRoute());
     _hideEverything();
+    if (currentRoute != null && page.isSameRouteAs(currentRoute!)) return;
+    currentWidgetStack.add(page);
 
-    currentRoute?.updateColorScheme();
+    if (_shouldUpdateSubpagesColors) page.updateColorScheme();
 
-    await Get.to(
-      () => page,
-      id: 1,
-      preventDuplicates: false,
-      transition: transition,
-      curve: Curves.easeOut,
-      duration: Duration(milliseconds: durationInMs),
-      opaque: true,
-      fullscreenDialog: false,
+    await navKey.currentState?.pushPage(
+      page,
+      params: NamPackPushPageParams(
+        durationInMs: durationInMs,
+        transition: transition,
+        maintainState: true,
+      ),
     );
   }
 
+  Future<T?> navigateToRoot<T>(
+    Widget page, {
+    Transition transition = Transition.cupertino,
+    int durationInMs = _defaultRouteAnimationDurMS,
+    bool opaque = true,
+  }) async {
+    return await _rootNav.currentState?.pushPage(
+      page,
+      params: NamPackPushPageParams(
+        durationInMs: durationInMs,
+        transition: transition,
+        maintainState: true,
+        opaque: opaque,
+      ),
+    );
+  }
+
+  Future<T?> navigateToRootReplacement<T>(
+    Widget page, {
+    Transition transition = Transition.cupertino,
+    int durationInMs = _defaultRouteAnimationDurMS,
+    bool opaque = true,
+  }) async {
+    currentWidgetStack.clear();
+    _hideEverything();
+
+    return await _rootNav.currentState?.pushPageReplacement(
+      page,
+      params: NamPackPushPageParams(
+        durationInMs: durationInMs,
+        transition: transition,
+        maintainState: true,
+        opaque: opaque,
+      ),
+    );
+  }
+
+  Future<void> popRoot<T>([T? result]) async {
+    final state = _rootNav.currentState;
+    if (state == null) return;
+    if (!state.canPop()) return;
+    return state.pop<T>(result);
+  }
+
   /// Use [dialogBuilder] in case you want to acess the theme generated by [colorScheme].
-  Future<void> navigateDialog({
+  Future<T?> navigateDialog<T>({
     final Widget? dialog,
     final Widget Function(ThemeData theme)? dialogBuilder,
-    final int durationInMs = 300,
-    final bool tapToDismiss = true,
+    final int durationInMs = NamidaNavigator.kDefaultDialogDurationMS,
+    final bool Function()? tapToDismiss,
     final FutureOr<void> Function()? onDismissing,
     final Color? colorScheme,
+    ThemeData? theme,
     final bool lighterDialogColor = true,
     final double scale = 0.96,
     final bool blackBg = false,
     final void Function()? onDisposing,
   }) async {
-    final rootNav = navigator;
-    if (rootNav == null) return;
-
     ScrollSearchController.inst.unfocusKeyboard();
-    _currentDialogNumber++;
+    _openedNumbersManager.incrementDialogs();
 
     Future<bool> onWillPop() async {
-      if (!tapToDismiss) return false;
-      if (onDismissing != null) await onDismissing();
+      if (tapToDismiss != null && tapToDismiss() == false) return false;
 
-      if (_currentDialogNumber > 0) {
+      if (_openedNumbersManager._currentDialogNumber > 0) {
         closeDialog();
+        if (onDismissing != null) await onDismissing(); // this can open new dialog, so we closeDialog() first.
         return false;
       }
 
       return true;
     }
 
-    final theme = AppThemes.inst.getAppTheme(colorScheme, null, lighterDialogColor);
+    theme ??= AppThemes.inst.getAppTheme(colorScheme, null, lighterDialogColor);
 
-    await Get.to(
-      () => WillPopScope(
+    final res = await _rootNav.currentState?.pushPage<T>(
+      NamidaPopScope(
         onWillPop: onWillPop,
-        child: TapDetector(
-          onTap: onWillPop,
+        child: material.RepaintBoundary(
           child: NamidaBgBlur(
             blur: 5.0,
-            enabled: _currentDialogNumber == 1,
-            child: Container(
-              color: Colors.black.withOpacity(blackBg ? 1.0 : 0.45),
-              child: Transform.scale(
-                scale: scale,
-                child: Theme(
-                  data: theme,
-                  child: dialogBuilder == null ? dialog! : dialogBuilder(theme),
+            enabled: _openedNumbersManager._currentDialogNumber == 1,
+            child: TapDetector(
+              onTap: onWillPop,
+              child: Container(
+                color: Colors.black.withOpacityExt(blackBg ? 1.0 : 0.45),
+                child: Transform.scale(
+                  scale: scale,
+                  child: Theme(
+                    data: theme,
+                    child: dialogBuilder == null ? dialog! : dialogBuilder(theme),
+                  ),
                 ),
               ),
             ),
           ),
         ),
       ),
-      duration: Duration(milliseconds: durationInMs),
-      preventDuplicates: false,
-      opaque: false,
-      fullscreenDialog: true,
-      transition: Transition.fade,
+      params: NamPackPushPageParams(
+        durationInMs: durationInMs,
+        opaque: false,
+        fullscreenDialog: true,
+        transition: Transition.fade,
+        maintainState: true,
+      ),
     );
     if (onDisposing != null) {
       onDisposing.executeAfterDelay(durationMS: durationInMs * 2);
     }
-    _printDialogs();
+
+    return res;
+  }
+
+  Future<bool> _confirmDiscardChanges() async {
+    bool discard = false;
+    await navigateDialog(
+      dialog: CustomBlurryDialog(
+        isWarning: true,
+        normalTitleStyle: true,
+        bodyText: lang.discardChanges,
+        actions: [
+          const CancelButton(),
+          NamidaButton(
+            colorScheme: Colors.red,
+            text: lang.discard.toUpperCase(),
+            onTap: () {
+              discard = true;
+              closeDialog();
+            },
+          ),
+        ],
+      ),
+    );
+    return discard;
   }
 
   Future<void> closeDialog([int count = 1]) async {
-    if (_currentDialogNumber == 0) return;
-    final closeCount = count.withMaximum(_currentDialogNumber);
-    _currentDialogNumber -= closeCount;
-    Get.close(closeCount);
-    _printDialogs();
+    if (_openedNumbersManager._currentDialogNumber == 0) return;
+    int closeCount = count.withMaximum(_openedNumbersManager._currentDialogNumber);
+    while (closeCount > 0) {
+      _openedNumbersManager.decrementDialogs();
+      popRoot();
+      closeCount--;
+    }
   }
 
   Future<void> closeAllDialogs() async {
-    closeDialog(_currentDialogNumber);
-    _printDialogs();
+    if (_openedNumbersManager._currentDialogNumber == 0) return;
+    closeDialog(_openedNumbersManager._currentDialogNumber);
   }
 
-  void _printDialogs() => printy("Current Dialogs: $_currentDialogNumber");
-  void _printMenus() => printy("Current Menus: $_currentMenusNumber");
+  Future<T?> showSheet<T>({
+    required Widget Function(BuildContext context, double bottomPadding, double maxWidth, double maxHeight) builder,
+    BoxDecoration Function(BuildContext context)? decoration,
+    double? heightPercentage,
+    bool isScrollControlled = false,
+    bool isDismissible = true,
+    bool? showDragHandle,
+    Color? backgroundColor,
+    bool Function()? hasUnsavedChanges,
+  }) async {
+    await Future.delayed(Duration.zero); // delay bcz sometimes doesnt show
 
-  Future<void> navigateOff(
-    Widget page, {
+    final navigator = _rootNav.currentState;
+    if (navigator == null) return null;
+
+    _openedNumbersManager.incrementSheets();
+    return navigator
+        .push(
+          _CustomModalBottomSheetRoute<T>(
+            backgroundBlur: _openedNumbersManager._currentSheetNumber == 1 ? 3.0 : 0.0,
+            isScrollControlled: isScrollControlled,
+            showDragHandle: showDragHandle,
+            isDismissible: isDismissible,
+            backgroundColor: backgroundColor,
+            hasUnsavedChanges: hasUnsavedChanges,
+            builder: (context) {
+              final bottomMargin = MediaQuery.viewInsetsOf(context).bottom;
+              final bottomPadding = MediaQuery.paddingOf(context).bottom;
+              return material.Padding(
+                padding: EdgeInsets.only(bottom: bottomMargin),
+                child: DecoratedBox(
+                  decoration: decoration?.call(context) ?? const BoxDecoration(),
+                  child: SizedBox(
+                    height: heightPercentage == null ? null : (context.height * heightPercentage),
+                    width: context.width,
+                    child: material.Padding(
+                      padding: EdgeInsets.only(bottom: bottomPadding),
+                      child: LayoutWidthHeightProvider(
+                        builder: (context, maxWidth, maxHeight) => builder(
+                          context,
+                          bottomPadding,
+                          maxWidth,
+                          maxHeight,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              );
+            },
+          ),
+        )
+        .whenComplete(_openedNumbersManager.decrementSheets);
+  }
+
+  Future<void> navigateOff<W extends NamidaRouteWidget>(
+    W page, {
     Transition transition = Transition.cupertino,
     int durationInMs = _defaultRouteAnimationDurMS,
   }) async {
-    currentWidgetStack.removeLast();
-    currentWidgetStack.add(page.toNamidaRoute());
+    currentWidgetStack.execute(
+      (value) {
+        value.removeLast();
+        value.add(page);
+      },
+    );
+
     _hideEverything();
 
-    currentRoute?.updateColorScheme();
+    if (_shouldUpdateSubpagesColors) page.updateColorScheme();
 
-    await Get.off(
-      () => page,
-      id: 1,
-      preventDuplicates: false,
-      transition: transition,
-      curve: Curves.easeOut,
-      duration: Duration(milliseconds: durationInMs),
-      opaque: true,
-      fullscreenDialog: false,
+    await navKey.currentState?.pushPageReplacement(
+      page,
+      params: NamPackPushPageParams(
+        durationInMs: durationInMs,
+        transition: transition,
+        maintainState: true,
+      ),
     );
   }
 
-  Future<void> navigateOffAll(
-    Widget page, {
+  Future<void> navigateOffAll<W extends NamidaRouteWidget>(
+    W page, {
     Transition transition = Transition.cupertino,
+    int durationMs = 500,
   }) async {
-    currentWidgetStack.value = [page.toNamidaRoute()];
+    currentWidgetStack.assign(page);
     _hideEverything();
 
-    currentRoute?.updateColorScheme();
+    if (_shouldUpdateSubpagesColors) page.updateColorScheme();
 
-    await Get.offAll(
-      () => page,
-      id: 1,
-      transition: transition,
-      curve: Curves.easeOut,
-      duration: const Duration(milliseconds: 500),
-    );
+    try {
+      await navKey.currentState?.pushPageReplacementAll(
+        page,
+        params: NamPackPushPageParams(
+          durationInMs: durationMs,
+          transition: transition,
+          maintainState: true,
+        ),
+      );
+    } on StateError catch (_) {
+      // -- no route was there yet, simple push now
+      await navKey.currentState?.pushPage(
+        page,
+        params: NamPackPushPageParams(
+          durationInMs: durationMs,
+          transition: transition,
+          maintainState: true,
+        ),
+      );
+    }
   }
 
-  Future<void> popPage({bool waitForAnimation = false}) async {
-    if (innerDrawerKey.currentState?.isOpened ?? false) {
-      innerDrawerKey.currentState?.close();
+  Future<void> back({bool waitForAnimation = false}) async {
+    if (this.isInFullScreen) {
+      NamidaNavigator.inst.exitFullScreen();
       return;
     }
 
-    if (isQueueSheetOpen) {
-      ytQueueSheetKey.currentState?.dismissSheet();
-      isQueueSheetOpen = false;
-      return;
+    if (_openedNumbersManager._currentMenusNumber > 0) {
+      this.popMenu();
+    } else if (_openedNumbersManager._currentSheetNumber > 0) {
+      _rootNav.currentState?.maybePop();
+    } else if (_openedNumbersManager._currentDialogNumber > 0) {
+      closeDialog();
+    } else {
+      popPage();
     }
-    if (isInYTCommentsSubpage) {
-      ytMiniplayerCommentsPageKey?.currentState?.pop();
-      isInYTCommentsSubpage = false;
-      return;
+  }
+
+  bool _tryPopNonMainPageLayer() {
+    if (isInSoundControlSubpage) {
+      popRoot();
+      isInSoundControlSubpage = false;
+      return true;
+    } else if (isInWideScreenPlayerPage) {
+      popRoot();
+      isInWideScreenPlayerPage = false;
+      return true;
+    }
+
+    if (innerDrawerKey.currentState?.isOpened == true) {
+      innerDrawerKey.currentState?.close();
+      return true;
     }
 
     if (MiniPlayerController.inst.ytMiniplayerKey.currentState?.isExpanded == true) {
-      MiniPlayerController.inst.ytMiniplayerKey.currentState?.animateToState(false);
-      return;
+      if (isQueueSheetOpen) {
+        ytQueueSheetKey.currentState?.dismissSheet();
+        isQueueSheetOpen = false;
+        return true;
+      } else if (isInYTCommentRepliesSubpage) {
+        ytMiniplayerCommentsPageKey.currentState?.pop();
+        isInYTCommentRepliesSubpage = false;
+        return true;
+      } else if (isInYTCommentsSubpage) {
+        ytMiniplayerCommentsPageKey.currentState?.pop();
+        isInYTCommentsSubpage = false;
+        return true;
+      } else if (!Dimensions.inst.miniplayerIsWideScreen) {
+        MiniPlayerController.inst.ytMiniplayerKey.currentState?.animateToState(false);
+        return true;
+      }
     }
 
-    final ytsnvks = ytLocalSearchNavigatorKey?.currentState;
-    if (ytsnvks != null) {
-      ytsnvks.pop();
+    final miniplayerAllowPop = MiniPlayerController.inst.onWillPop();
+    if (!miniplayerAllowPop) return true;
+
+    if (isytLocalSearchInFullPage) {
+      ytLocalSearchNavigatorKey.currentState?.pop();
       isytLocalSearchInFullPage = false;
+      return true;
+    }
+
+    return false;
+  }
+
+  Future<void> popPage({bool fromMainPage = false, bool waitForAnimation = false}) async {
+    if (!fromMainPage && _tryPopNonMainPageLayer()) return;
+
+    if (ScrollSearchController.inst.isGlobalSearchMenuShown.value || SettingsSearchController.inst.canShowSearch.value) {
+      _hideSearchMenusAndUnfocus();
       return;
     }
 
-    if (ScrollSearchController.inst.isGlobalSearchMenuShown.value) {
-      _hideSearchMenuAndUnfocus();
-      return;
-    }
-    if (SettingsSearchController.inst.canShowSearch) {
-      SettingsSearchController.inst.closeSearch();
-      return;
-    }
-
-    if (currentRoute?.route == RouteType.PAGE_folders) {
-      final canIgoBackPls = Folders.inst.onBackButton();
-      if (!canIgoBackPls) return;
-    }
-    if (_currentMenusNumber > 0) {
-      return;
+    final route = currentRoute?.route;
+    if (route != null) {
+      if (route == RouteType.PAGE_folders) {
+        final canIgoBackPls = FoldersController.tracksAndVideos.onBackButton();
+        if (!canIgoBackPls) return;
+      } else if (route == RouteType.PAGE_folders_music) {
+        final canIgoBackPls = FoldersController.tracks.onBackButton();
+        if (!canIgoBackPls) return;
+      } else if (route == RouteType.PAGE_folders_videos) {
+        final canIgoBackPls = FoldersController.videos.onBackButton();
+        if (!canIgoBackPls) return;
+      } else if (route == RouteType.SUBPAGE_playlistTracks || route == RouteType.SUBPAGE_favPlaylistTracks) {
+        PlaylistController.inst.resetCanReorder();
+      } else if (route == RouteType.YOUTUBE_PLAYLIST_SUBPAGE || route == RouteType.YOUTUBE_LIKED_SUBPAGE) {
+        YoutubePlaylistController.inst.resetCanReorder();
+      }
     }
 
     // pop only if not in root, otherwise show _doubleTapToExit().
     if (currentWidgetStack.length > 1) {
       currentWidgetStack.removeLast();
-      navKey?.currentState?.pop();
+      navKey.currentState?.pop();
+
+      if (waitForAnimation) await Future.delayed(const Duration(milliseconds: _defaultRouteAnimationDurMS));
+      if (_shouldUpdateSubpagesColors) currentRoute?.updateColorScheme();
+      _hideSearchMenusAndUnfocus();
     } else {
+      if (!settings.extra.autoLibraryTab.value) {
+        final defaultTab = settings.extra.staticLibraryTab.value;
+        if (currentRoute?.isSameRouteAs(defaultTab.toWidget()) == false) {
+          ScrollSearchController.inst.animatePageController(defaultTab);
+          return;
+        }
+      }
       await _doubleTapToExit();
     }
-    if (waitForAnimation) await Future.delayed(const Duration(milliseconds: _defaultRouteAnimationDurMS));
-    currentRoute?.updateColorScheme();
-    _hideSearchMenuAndUnfocus();
   }
 
   DateTime _currentBackPressTime = DateTime(0);
   Future<bool> _doubleTapToExit() async {
+    if (isDesktop) return false;
+
     final now = DateTime.now();
     if (now.difference(_currentBackPressTime) > const Duration(seconds: 2)) {
       _currentBackPressTime = now;
 
       snackyy(
         icon: Broken.logout,
-        message: lang.EXIT_APP_SUBTITLE,
+        message: lang.exitAppSubtitle,
         top: false,
-        margin: const EdgeInsets.all(8.0),
+        margin: const EdgeInsets.all(12.0),
         animationDurationMS: 500,
-        snackbarStatus: (status) {
+        onStatusChanged: (status) {
           // -- resets time
-          if (status == SnackbarStatus.CLOSED) {
+          if (status == SnackbarStatus.closing || status == SnackbarStatus.closed) {
             _currentBackPressTime = DateTime(0);
           }
         },
@@ -438,69 +731,131 @@ class NamidaNavigator {
   }
 }
 
-void snackyy({
-  IconData? icon,
-  Widget? iconWidget,
-  String title = '',
-  required String message,
-  bool top = true,
-  void Function(SnackbarStatus?)? snackbarStatus,
-  EdgeInsets margin = const EdgeInsets.symmetric(horizontal: 18.0, vertical: 4.0),
-  int animationDurationMS = 600,
-  int displaySeconds = 2,
-  double borderRadius = 12.0,
-  Color? leftBarIndicatorColor,
-  Widget? button,
-  bool? isError,
-  int? maxLinesMessage,
-}) {
-  isError ??= title == lang.ERROR;
-  final view = Get.context == null ? null : View.of(Get.context!);
-  Get.showSnackbar(
-    GetSnackBar(
-      maxWidth: view == null ? null : view.physicalSize.shortestSide / view.devicePixelRatio,
-      alignment: Alignment.centerLeft,
-      icon: iconWidget ??
-          (icon == null
-              ? null
-              : Center(
-                  child: Icon(icon),
-                )),
-      titleText: title == ''
-          ? null
-          : Text(
-              title,
-              style: Get.textTheme.displayLarge,
+class _OpenedNumbersManager {
+  int _currentDialogNumber = 0;
+  int _currentSheetNumber = 0;
+  int _currentMenusNumber = 0;
+
+  void incrementDialogs() {
+    _currentDialogNumber++;
+    // _reEvaluate();
+    if (kDebugMode) _printDialogs();
+  }
+
+  void decrementDialogs() {
+    _currentDialogNumber--;
+    // _reEvaluate();
+    if (kDebugMode) _printDialogs();
+  }
+
+  void incrementSheets() {
+    _currentSheetNumber++;
+    // _reEvaluate();
+    if (kDebugMode) _printSheets();
+  }
+
+  void decrementSheets() {
+    _currentSheetNumber--;
+    // _reEvaluate();
+    if (kDebugMode) _printSheets();
+  }
+
+  void incrementMenus() {
+    _currentMenusNumber++;
+    // _reEvaluate();
+    if (kDebugMode) _printMenus();
+  }
+
+  void decrementMenus() {
+    _currentMenusNumber--;
+    // _reEvaluate();
+    if (kDebugMode) _printMenus();
+  }
+
+  // void _reEvaluate() {
+  //   final blur = _currentDialogNumber > 0
+  //       ? 6.0
+  //       : _currentSheetNumber > 0
+  //           ? 4.0
+  //           : 0.0;
+  //   _appBlurValue.value = blur;
+  // }
+
+  void _printDialogs() => printy("|> Current Dialogs: $_currentDialogNumber");
+  void _printSheets() => printy("|> Current Sheets: $_currentSheetNumber");
+  void _printMenus() => printy("|> Current Menus: $_currentMenusNumber");
+}
+
+class _CustomModalBottomSheetRoute<T> extends ModalBottomSheetRoute<T> {
+  final double backgroundBlur;
+  final bool Function()? hasUnsavedChanges;
+
+  _CustomModalBottomSheetRoute({
+    this.backgroundBlur = 0,
+    required super.isScrollControlled,
+    super.showDragHandle,
+    super.isDismissible,
+    super.backgroundColor,
+    this.hasUnsavedChanges,
+    required super.builder,
+  });
+
+  bool _discardConfirmed = false;
+
+  @override
+  bool didPop(T? result) {
+    if (_discardConfirmed || hasUnsavedChanges?.call() != true) return super.didPop(result);
+    controller?.forward(); // -- a drag dismiss would have already started closing the sheet
+    scheduleMicrotask(() => _confirmDiscardThenPop(result)); // -- navigator is locked during didPop
+    return false;
+  }
+
+  Future<void> _confirmDiscardThenPop(T? result) async {
+    final discard = await NamidaNavigator.inst._confirmDiscardChanges();
+    if (!discard || !isCurrent) return;
+    _discardConfirmed = true;
+    navigator?.pop(result);
+  }
+
+  @override
+  Widget buildPage(
+    BuildContext context,
+    Animation<double> animation,
+    Animation<double> secondaryAnimation,
+  ) {
+    final child = super.buildPage(context, animation, secondaryAnimation);
+    final animationCompleter = Completer<void>();
+
+    void animationStatusListener(AnimationStatus status) {
+      if (status == AnimationStatus.completed || status == AnimationStatus.dismissed) {
+        animation.removeStatusListener(animationStatusListener);
+        animationCompleter.completeIfWasnt();
+      }
+    }
+
+    animationStatusListener(animation.status);
+    if (!animationCompleter.isCompleted) {
+      animation.addStatusListener(animationStatusListener);
+    }
+
+    if (backgroundBlur > 0) {
+      return FutureBuilder(
+        future: animationCompleter.future,
+        builder: (context, snapshot) {
+          final didAnimate = snapshot.connectionState == ConnectionState.done;
+          return TweenAnimationBuilder(
+            duration: const Duration(milliseconds: 300),
+            tween: DoubleTween(begin: 0, end: didAnimate ? 1 : 0),
+            builder: (context, value, _) => NamidaBgBlur(
+              enabled: true,
+              disableIfBlur0: false,
+              blur: backgroundBlur * (value ?? 0),
+              child: child,
             ),
-      messageText: Text(
-        message,
-        style: title != '' ? Get.textTheme.displaySmall : Get.textTheme.displayMedium,
-        maxLines: maxLinesMessage,
-        overflow: TextOverflow.ellipsis,
-      ),
-      mainButton: button,
-      margin: margin,
-      snackPosition: top ? SnackPosition.TOP : SnackPosition.BOTTOM,
-      leftBarIndicatorColor: leftBarIndicatorColor,
-      borderWidth: 1.5,
-      borderColor: isError ? Colors.red.withOpacity(0.2) : null,
-      boxShadows: isError
-          ? [
-              BoxShadow(
-                color: Colors.red.withAlpha(15),
-                blurRadius: 16.0,
-              )
-            ]
-          : null,
-      shouldIconPulse: false,
-      backgroundColor: Get.theme.scaffoldBackgroundColor.withOpacity(0.3),
-      borderRadius: borderRadius.multipliedRadius,
-      barBlur: 12.0,
-      animationDuration: Duration(milliseconds: animationDurationMS),
-      forwardAnimationCurve: Curves.fastLinearToSlowEaseIn,
-      reverseAnimationCurve: Curves.easeInOutQuart,
-      duration: Duration(seconds: displaySeconds),
-      snackbarStatus: snackbarStatus,
-    ),
-  );
+          );
+        },
+      );
+    }
+    return child;
+  }
 }

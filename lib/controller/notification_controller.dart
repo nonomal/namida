@@ -1,43 +1,71 @@
 import 'package:flutter/material.dart';
+
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
 import 'package:namida/controller/json_to_history_parser.dart';
+import 'package:namida/controller/platform/base.dart';
+import 'package:namida/controller/platform/permission_manager/permission_manager.dart';
+import 'package:namida/controller/settings_controller.dart';
+import 'package:namida/core/constants.dart';
+import 'package:namida/core/enums.dart';
 import 'package:namida/core/extensions.dart';
+import 'package:namida/youtube/class/download_task_base.dart';
 
-class NotificationService {
-  //Hanle displaying of notifications.
-  static final NotificationService _notificationService = NotificationService._internal();
-  final FlutterLocalNotificationsPlugin _flutterLocalNotificationsPlugin = FlutterLocalNotificationsPlugin();
+class NotificationManager {
+  static final instance = NotificationManager._platform();
+  const NotificationManager._();
 
-  factory NotificationService() => NotificationService._internal();
-
-  static NotificationService get inst => _notificationService;
-
-  NotificationService._internal() {
-    init();
-  }
-
-  final _historyImportID = 1;
-  final _historyImportPayload = 'history_import';
-  final _historyImportChannelName = 'History Import';
-  final _historyImportChannelDescription = 'Imports Tracks to History from a source';
-
-  final _youtubeDownloadID = 2;
-  final _youtubeDownloadPayload = 'youtube_download';
-  final _youtubeDownloadChannelName = 'Downloads';
-  final _youtubeDownloadChannelDescription = 'Downlaod content from youtube';
-
-  Future<void> init() async {
-    await _flutterLocalNotificationsPlugin.initialize(
-      const InitializationSettings(
-        android: AndroidInitializationSettings('ic_stat_musicnote'),
-      ),
-      onDidReceiveBackgroundNotificationResponse: (details) => _onDidReceiveLocalNotification(details),
-      onDidReceiveNotificationResponse: (details) => _onDidReceiveLocalNotification(details),
+  static NotificationManager _platform() {
+    return NamidaPlatformBuilder.initValue(
+      android: const NotificationManager._(),
+      windows: const _NotificationManagerSuppressed._(),
+      linux: const _NotificationManagerSuppressed._(),
     );
   }
 
-  void mediaNotification({
+  static final _flutterLocalNotificationsPlugin = FlutterLocalNotificationsPlugin();
+
+  static const _historyImportID = 1;
+  static const _historyImportPayload = 'history_import';
+  static const _historyImportChannelName = 'History Import';
+  static const _historyImportChannelDescription = 'Imports Tracks to History from a source';
+
+  static const _youtubeDownloadID = 2;
+  static const _youtubeDownloadPayload = 'youtube_download';
+  static const _youtubeDownloadChannelName = 'Downloads';
+  static const _youtubeDownloadChannelDescription = 'Downlaod content from youtube';
+
+  static const _serverCachePayload = 'server_cache';
+  static const _serverCacheTag = 'server_cache';
+
+  static Future<bool?> init() {
+    final didInit = _flutterLocalNotificationsPlugin.initialize(
+      settings: InitializationSettings(
+        android: AndroidInitializationSettings('ic_stat_musicnote'),
+        windows: WindowsInitializationSettings(
+          appName: 'Namida',
+          appUserModelId: 'namidaco.namida.notification',
+          guid: '51435cfe-f7be-4a73-82c1-50d53a8e7ae6',
+          iconPath: AppPaths.NAMIDA_LOGO_LAYER,
+        ),
+        linux: LinuxInitializationSettings(
+          defaultActionName: 'namidaco.namida.notification',
+        ),
+      ),
+      onDidReceiveBackgroundNotificationResponse: _onDidReceiveLocalNotification,
+      onDidReceiveNotificationResponse: _onDidReceiveLocalNotification,
+    );
+    _flutterLocalNotificationsPlugin.cancelAll();
+    return didInit;
+  }
+
+  Future<void> ensurePermissionGranted() async {
+    try {
+      await PermissionManager.platform.requestNotificationsPermission();
+    } catch (_) {}
+  }
+
+  static void mediaNotification({
     required String title,
     required String subText,
     required String subtitle,
@@ -51,10 +79,10 @@ class NotificationService {
     final pic = imagePath == null ? null : FilePathAndroidBitmap(imagePath);
 
     _flutterLocalNotificationsPlugin.show(
-      id,
-      title,
-      subtitle,
-      NotificationDetails(
+      id: id,
+      title: title,
+      body: subtitle,
+      notificationDetails: NotificationDetails(
         android: AndroidNotificationDetails(
           '$id',
           'media',
@@ -87,13 +115,14 @@ class NotificationService {
   }
 
   void downloadYoutubeNotification({
-    required String notificationID,
+    required DownloadTaskFilename filenameWrapper,
     required String title,
     required String Function(String progressText) subtitle,
     String? imagePath,
     required int progress,
     required int total,
     required DateTime displayTime,
+    required bool isRunning,
   }) {
     _createProgressNotification(
       id: _youtubeDownloadID,
@@ -106,19 +135,25 @@ class NotificationService {
       payload: _youtubeDownloadPayload,
       imagePath: imagePath,
       isInBytes: true,
-      tag: notificationID,
+      tag: filenameWrapper.key,
       displayTime: displayTime,
+      ongoing: isRunning,
     );
   }
 
+  Future<void> removeDownloadingYoutubeNotification({required DownloadTaskFilename filenameWrapper}) async {
+    await _flutterLocalNotificationsPlugin.cancel(id: _youtubeDownloadID, tag: filenameWrapper.key);
+  }
+
   void doneDownloadingYoutubeNotification({
-    required String notificationID,
+    required DownloadTaskFilename filenameWrapper,
     required String videoTitle,
     required String subtitle,
     required bool failed,
     String? imagePath,
   }) async {
-    await _flutterLocalNotificationsPlugin.cancel(_youtubeDownloadID, tag: notificationID);
+    final key = filenameWrapper.key;
+    await _flutterLocalNotificationsPlugin.cancel(id: _youtubeDownloadID, tag: key);
     _createNotification(
       id: _youtubeDownloadID,
       title: videoTitle,
@@ -129,17 +164,65 @@ class NotificationService {
       payload: _youtubeDownloadPayload,
       imagePath: imagePath,
       isInBytes: true,
-      tag: notificationID,
+      tag: key,
       displayTime: DateTime.now(),
     );
   }
 
-  void importHistoryNotification(int parsed, int total, DateTime displayTime) {
+  void serverCacheNotification({
+    required String title,
+    required String Function(String progressText) subtitle,
+    required int progress,
+    required int total,
+    required DateTime displayTime,
+    required bool isRunning,
+  }) {
+    _createProgressNotification(
+      id: _youtubeDownloadID,
+      progress: progress,
+      maxProgress: total,
+      title: title,
+      subtitle: subtitle,
+      channelName: _youtubeDownloadChannelName,
+      channelDescription: _youtubeDownloadChannelDescription,
+      payload: _serverCachePayload,
+      isInBytes: true,
+      tag: _serverCacheTag,
+      displayTime: displayTime,
+      ongoing: isRunning,
+    );
+  }
+
+  Future<void> removeServerCacheNotification() async {
+    await _flutterLocalNotificationsPlugin.cancel(id: _youtubeDownloadID, tag: _serverCacheTag);
+  }
+
+  void doneServerCacheNotification({
+    required String title,
+    required String subtitle,
+    required bool failed,
+  }) async {
+    await removeServerCacheNotification();
+    _createNotification(
+      id: _youtubeDownloadID,
+      title: title,
+      body: subtitle,
+      subText: failed ? 'error' : '100% ✓',
+      channelName: _youtubeDownloadChannelName,
+      channelDescription: _youtubeDownloadChannelDescription,
+      payload: _serverCachePayload,
+      isInBytes: false,
+      tag: _serverCacheTag,
+      displayTime: DateTime.now(),
+    );
+  }
+
+  void importHistoryNotification(String title, int parsed, int total, DateTime displayTime) {
     _createProgressNotification(
       id: _historyImportID,
       progress: parsed,
       maxProgress: total,
-      title: 'Importing History',
+      title: title,
       subtitle: (progressText) => progressText,
       channelName: _historyImportChannelName,
       channelDescription: _historyImportChannelDescription,
@@ -149,11 +232,11 @@ class NotificationService {
     );
   }
 
-  void doneImportingHistoryNotification(int totalParsed, int totalAdded) {
+  void doneImportingHistoryNotification(String title, String resultsText) {
     _createNotification(
       id: _historyImportID,
-      title: 'Done importing history',
-      body: '${totalParsed.formatDecimal()} parsed, ${totalAdded.formatDecimal()} added',
+      title: title,
+      body: resultsText,
       channelName: _historyImportChannelName,
       channelDescription: _historyImportChannelDescription,
       subText: '100% ✓',
@@ -163,7 +246,21 @@ class NotificationService {
     );
   }
 
-  void _onDidReceiveLocalNotification(NotificationResponse details) async {
+  void failedImportingHistoryNotification(String title, String error) {
+    _createNotification(
+      id: _historyImportID,
+      title: title,
+      body: error,
+      channelName: _historyImportChannelName,
+      channelDescription: _historyImportChannelDescription,
+      subText: 'error',
+      payload: '',
+      isInBytes: false,
+      displayTime: DateTime.now(),
+    );
+  }
+
+  static void _onDidReceiveLocalNotification(NotificationResponse details) async {
     if (details.payload == _historyImportPayload) {
       JsonToHistoryParser.inst.showParsingProgressDialog();
     }
@@ -184,10 +281,10 @@ class NotificationService {
   }) {
     final pic = imagePath == null ? null : BigPictureStyleInformation(FilePathAndroidBitmap(imagePath));
     _flutterLocalNotificationsPlugin.show(
-      id,
-      title,
-      body,
-      NotificationDetails(
+      id: id,
+      title: title,
+      body: body,
+      notificationDetails: NotificationDetails(
         android: AndroidNotificationDetails(
           '$id',
           channelName,
@@ -211,7 +308,7 @@ class NotificationService {
     );
   }
 
-  void _createProgressNotification({
+  static void _createProgressNotification({
     required int id,
     required int progress,
     required int maxProgress,
@@ -224,6 +321,7 @@ class NotificationService {
     String? imagePath,
     String? tag,
     required DateTime? displayTime,
+    bool ongoing = true,
   }) {
     final p = progress / maxProgress;
     final sub = isInBytes ? '${progress.fileSizeFormatted} / ${maxProgress.fileSizeFormatted}' : '${progress.formatDecimal()} / ${maxProgress.formatDecimal()}';
@@ -231,10 +329,10 @@ class NotificationService {
     final pic = imagePath == null ? null : FilePathAndroidBitmap(imagePath);
 
     _flutterLocalNotificationsPlugin.show(
-      id,
-      title,
-      subtitle(sub),
-      NotificationDetails(
+      id: id,
+      title: title,
+      body: subtitle(sub),
+      notificationDetails: NotificationDetails(
         android: AndroidNotificationDetails(
           '$id',
           channelName,
@@ -247,7 +345,7 @@ class NotificationService {
           priority: Priority.high,
           onlyAlertOnce: true,
           showProgress: true,
-          ongoing: true,
+          ongoing: ongoing,
           visibility: NotificationVisibility.public,
           styleInformation: BigTextStyleInformation(subtitle(sub)), // this gets displayed instead of subtitle
           largeIcon: pic,
@@ -262,5 +360,76 @@ class NotificationService {
       ),
       payload: payload,
     );
+  }
+}
+
+class _NotificationManagerSuppressed extends NotificationManager {
+  const _NotificationManagerSuppressed._() : super._();
+
+  DownloadNotifications get _downloadNotifications => settings.youtube.downloadNotifications.value;
+
+  @override
+  void downloadYoutubeNotification({
+    required DownloadTaskFilename filenameWrapper,
+    required String title,
+    required String Function(String progressText) subtitle,
+    String? imagePath,
+    required int progress,
+    required int total,
+    required DateTime displayTime,
+    required bool isRunning,
+  }) {
+    return;
+  }
+
+  @override
+  void doneDownloadingYoutubeNotification({
+    required DownloadTaskFilename filenameWrapper,
+    required String videoTitle,
+    required String subtitle,
+    required bool failed,
+    String? imagePath,
+  }) async {
+    if (_downloadNotifications == DownloadNotifications.disableAll) return;
+    if (_downloadNotifications == DownloadNotifications.showFailedOnly && !failed) return;
+    super.doneDownloadingYoutubeNotification(
+      filenameWrapper: filenameWrapper,
+      videoTitle: videoTitle,
+      subtitle: subtitle,
+      failed: failed,
+      imagePath: imagePath,
+    );
+  }
+
+  @override
+  void serverCacheNotification({
+    required String title,
+    required String Function(String progressText) subtitle,
+    required int progress,
+    required int total,
+    required DateTime displayTime,
+    required bool isRunning,
+  }) {
+    return;
+  }
+
+  @override
+  void doneServerCacheNotification({
+    required String title,
+    required String subtitle,
+    required bool failed,
+  }) async {
+    if (_downloadNotifications == DownloadNotifications.disableAll) return;
+    if (_downloadNotifications == DownloadNotifications.showFailedOnly && !failed) return;
+    super.doneServerCacheNotification(
+      title: title,
+      subtitle: subtitle,
+      failed: failed,
+    );
+  }
+
+  @override
+  void importHistoryNotification(String title, int parsed, int total, DateTime displayTime) {
+    return;
   }
 }

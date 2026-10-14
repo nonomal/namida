@@ -11,7 +11,7 @@ bool isScrollbarThumbDragging = false;
 
 class BouncingScrollPhysicsModified extends ScrollPhysics {
   const BouncingScrollPhysicsModified({
-    super.parent = const BouncingScrollPhysics(),
+    super.parent = const BouncingScrollPhysics(parent: RangeMaintainingScrollPhysics()),
     this.decelerationRate = ScrollDecelerationRate.normal,
   });
 
@@ -25,12 +25,9 @@ class BouncingScrollPhysicsModified extends ScrollPhysics {
 
   @override
   bool recommendDeferredLoading(double velocity, ScrollMetrics metrics, BuildContext context) {
-    if (parent == null) {
-      final double maxPhysicalPixels = View.of(context).physicalSize.longestSide;
-      final finalVelocity = isScrollbarThumbDragging ? velocity.abs() * 20 : velocity.abs() * 0.6;
-      return finalVelocity > maxPhysicalPixels;
-    }
-    return parent!.recommendDeferredLoading(velocity, metrics, context);
+    final double maxPhysicalPixels = View.of(context).physicalSize.longestSide;
+    final finalVelocity = isScrollbarThumbDragging ? velocity.abs() * 40 : velocity.abs() * 0.6;
+    return finalVelocity > maxPhysicalPixels;
   }
 
   double frictionFactor(double overscrollFraction) {
@@ -93,14 +90,26 @@ class BouncingScrollPhysicsModified extends ScrollPhysics {
         case ScrollDecelerationRate.normal:
           constantDeceleration = 200;
       }
+
+      // --- smoothes overscroll
+      final double overscrollPastStart = math.max(position.minScrollExtent - position.pixels, 0.0);
+      final double overscrollPastEnd = math.max(position.pixels - position.maxScrollExtent, 0.0);
+      final bool easing = (overscrollPastStart > 0.0 && position.pixels < 0.0) || (overscrollPastEnd > 0.0 && position.pixels > 0.0);
+      if (easing) {
+        double dampingFactor = 0.7; // Damping coefficient
+        double distance = (overscrollPastStart > 0.0) ? overscrollPastStart : overscrollPastEnd;
+        velocity *= math.exp(-dampingFactor * distance);
+      }
+
       return BouncingScrollSimulation(
-          spring: spring,
-          position: position.pixels,
-          velocity: velocity,
-          leadingExtent: position.minScrollExtent,
-          trailingExtent: position.maxScrollExtent,
-          tolerance: tolerance,
-          constantDeceleration: constantDeceleration);
+        spring: spring,
+        position: position.pixels,
+        velocity: velocity,
+        leadingExtent: position.minScrollExtent,
+        trailingExtent: position.maxScrollExtent,
+        tolerance: tolerance,
+        constantDeceleration: constantDeceleration,
+      );
     }
     return null;
   }
@@ -145,7 +154,7 @@ class BouncingScrollPhysicsModified extends ScrollPhysics {
 }
 
 class ClampingScrollPhysicsModified extends ScrollPhysics {
-  const ClampingScrollPhysicsModified({super.parent = const ClampingScrollPhysics()});
+  const ClampingScrollPhysicsModified({super.parent = const ClampingScrollPhysics(parent: RangeMaintainingScrollPhysics())});
 
   @override
   ClampingScrollPhysicsModified applyTo(ScrollPhysics? ancestor) {
@@ -154,12 +163,9 @@ class ClampingScrollPhysicsModified extends ScrollPhysics {
 
   @override
   bool recommendDeferredLoading(double velocity, ScrollMetrics metrics, BuildContext context) {
-    if (parent == null) {
-      final double maxPhysicalPixels = View.of(context).physicalSize.longestSide;
-      final finalVelocity = isScrollbarThumbDragging ? velocity.abs() * 20 : velocity.abs() * 0.6;
-      return finalVelocity > maxPhysicalPixels;
-    }
-    return parent!.recommendDeferredLoading(velocity, metrics, context);
+    final double maxPhysicalPixels = View.of(context).physicalSize.longestSide;
+    final finalVelocity = isScrollbarThumbDragging ? velocity.abs() * 20 : velocity.abs() * 0.6;
+    return finalVelocity > maxPhysicalPixels;
   }
 
   @override

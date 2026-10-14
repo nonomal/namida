@@ -1,72 +1,120 @@
-import 'dart:io';
-
-import 'package:get/get.dart';
-
+// ignore_for_file: avoid_rx_value_getter_outside_obx
+import 'package:namida/class/route.dart';
 import 'package:namida/class/track.dart';
 import 'package:namida/controller/miniplayer_controller.dart';
 import 'package:namida/controller/navigator_controller.dart';
 import 'package:namida/controller/player_controller.dart';
 import 'package:namida/controller/scroll_search_controller.dart';
 import 'package:namida/controller/search_sort_controller.dart';
+import 'package:namida/core/dimensions.dart';
 import 'package:namida/core/enums.dart';
 import 'package:namida/core/extensions.dart';
+import 'package:namida/core/functions.dart';
 import 'package:namida/core/namida_converter_ext.dart';
+import 'package:namida/core/utils.dart';
 
 class SelectedTracksController {
   static SelectedTracksController get inst => _instance;
   static final SelectedTracksController _instance = SelectedTracksController._internal();
   SelectedTracksController._internal();
 
-  List<Selectable> get selectedTracks => _tracksOrTwdList;
+  RxBaseCore<List<Selectable>> get selectedTracks => _tracksOrTwdList;
+  RxBaseCore<Map<Track, bool>> get existingTracksMap => _allTracksHashCodes;
 
   final selectedPlaylistsNames = <Track, String>{};
+
+  QueueSourceBase? _selectionSource;
+  bool _hasMixedSelectionSources = false;
+
+  bool get isSelectedFromPlayerQueue => !_hasMixedSelectionSources && _selectionSource == QueueSource.playerQueue;
+
+  void _onSelectingFrom(QueueSourceBase? source) {
+    if (_tracksOrTwdList.value.isEmpty) {
+      _selectionSource = source;
+      _hasMixedSelectionSources = false;
+    } else if (source != _selectionSource) {
+      _hasMixedSelectionSources = true;
+    }
+  }
 
   final _tracksOrTwdList = <Selectable>[].obs;
   final _allTracksHashCodes = <Track, bool>{}.obs;
 
-  List<Selectable> get currentAllTracks {
-    if (MiniPlayerController.inst.isInQueue) {
-      return Player.inst.currentQueue;
-    } else if (ScrollSearchController.inst.isGlobalSearchMenuShown.value) {
-      return SearchSortController.inst.trackSearchTemp;
+  NamidaRoute? get _currentRoute => NamidaNavigator.inst.currentRoute;
+
+  Iterable<Selectable> getCurrentAllTracks({bool fallbackToQueue = true}) {
+    if (ScrollSearchController.inst.isGlobalSearchMenuShown.value) {
+      return SearchSortController.inst.trackSearchTemp.value;
     }
 
-    return NamidaNavigator.inst.currentRoute?.tracksInside ?? [];
+    final tracks = this._currentRoute?.tracksInside();
+    if (tracks != null) return tracks;
+
+    if (fallbackToQueue && MiniPlayerController.inst.isInQueue) {
+      return Player.inst.currentQueue.value.whereType<Selectable>();
+    }
+
+    return [];
   }
 
-  final RxBool isMenuMinimized = true.obs;
-  final RxBool isExpanded = false.obs;
+  final isMenuMinimized = true.obs;
+  final isPressed = false.obs;
 
-  final RxBool didInsertTracks = false.obs;
+  final didInsertTracks = false.obs;
 
-  final RxDouble bottomPadding = 0.0.obs;
+  final bottomPadding = 0.0.obs;
 
   // bool isTrackSelected(Selectable twd) => _tracksOrTwdList.contains(twd);
   bool isTrackSelected(Selectable twd) => _allTracksHashCodes[twd.track] != null;
 
-  void selectOrUnselect(Selectable track, QueueSource queueSource, String? playlistName) {
+  void selectOrUnselect(Selectable track, int index, QueueSourceBase source, String? playlistName, {bool ranged = false, List<Selectable>? tracksOverride}) {
     playlistName ??= '';
     final rawTrack = track.track;
     if (isTrackSelected(track)) {
       _allTracksHashCodes.remove(rawTrack);
-      final indexInList = _tracksOrTwdList.indexWhere((element) => element.track == rawTrack);
+      final indexInList = _tracksOrTwdList.value.indexWhere((element) => element.track == rawTrack);
       if (indexInList != -1) _tracksOrTwdList.removeAt(indexInList);
       selectedPlaylistsNames.remove(rawTrack);
     } else {
-      _allTracksHashCodes[rawTrack] = true;
-      _tracksOrTwdList.add(track);
-      selectedPlaylistsNames[rawTrack] = playlistName;
+      void selectSingle() {
+        _onSelectingFrom(source);
+        _allTracksHashCodes[rawTrack] = true;
+        _tracksOrTwdList.add(track);
+        selectedPlaylistsNames[rawTrack] = playlistName!;
+      }
+
+      if (ranged && _tracksOrTwdList.value.isNotEmpty) {
+        int largestSelectedIndex = -1;
+        final currentInfo = _getCurrentActiveTracksList(queueSource: source, tracksOverride: tracksOverride);
+        final tracks = currentInfo.$1 ?? [];
+        final queueSource = currentInfo.$2;
+        // -- find the largest selected index by reverse looping tracks list and breaking on first match
+        final startIndex = index.withMaximum(tracks.length - 1);
+        for (int i = startIndex; i >= 0; i--) {
+          final tr = tracks[i].track;
+          final isSelected = _allTracksHashCodes[tr] != null;
+          if (isSelected && i > largestSelectedIndex) {
+            largestSelectedIndex = i;
+            break;
+          }
+        }
+        if (largestSelectedIndex > -1 && index > largestSelectedIndex) {
+          selectAllTracks(range: (largestSelectedIndex, index), source: queueSource, tracksOverride: tracksOverride);
+        } else {
+          selectSingle();
+        }
+      } else {
+        selectSingle();
+      }
     }
 
     bottomPadding.value = _tracksOrTwdList.isEmpty ? 0.0 : 102.0;
   }
 
   void reorderTracks(int oldIndex, int newIndex) {
-    if (newIndex > oldIndex) {
-      newIndex -= 1;
-    }
-    final item = _tracksOrTwdList.removeAt(oldIndex);
+    if (newIndex > oldIndex) newIndex -= 1;
 
+    final item = _tracksOrTwdList.value.removeAt(oldIndex);
     _tracksOrTwdList.insertSafe(newIndex, item);
   }
 
@@ -76,6 +124,8 @@ class SelectedTracksController {
   }
 
   void clearEverything() {
+    _selectionSource = null;
+    _hasMixedSelectionSources = false;
     _tracksOrTwdList.clear();
     _allTracksHashCodes.clear();
     selectedPlaylistsNames.clear();
@@ -84,22 +134,77 @@ class SelectedTracksController {
     bottomPadding.value = 0.0;
   }
 
-  void selectAllTracks() {
-    final tracks = currentAllTracks;
-    _tracksOrTwdList.addAll(tracks);
-    _tracksOrTwdList.removeDuplicates((element) => element.track);
-    tracks.loop((e, index) => _allTracksHashCodes[e.track] = true);
+  (List<Selectable>?, QueueSourceBase?, NamidaRoute?) _getCurrentActiveTracksList({QueueSourceBase? queueSource, List<Selectable>? tracksOverride}) {
+    List<Selectable>? tracks;
+
+    NamidaRoute? routeTracks; // if the tracks are obtained from route
+    if (tracksOverride != null) {
+      tracks = tracksOverride;
+    } else if (queueSource == QueueSource.playerQueue || (MiniPlayerController.inst.isInQueue && !Dimensions.inst.miniplayerIsWideScreen)) {
+      tracks = Player.inst.currentQueue.value.whereType<Selectable>().toList();
+      queueSource ??= QueueSource.playerQueue;
+    } else if (ScrollSearchController.inst.isGlobalSearchMenuShown.value) {
+      tracks = SearchSortController.inst.trackSearchTemp.value;
+      queueSource ??= QueueSource.search;
+    } else {
+      final currentRoute = this._currentRoute;
+      tracks = currentRoute?.tracksListInside();
+      routeTracks = currentRoute;
+      queueSource ??= currentRoute?.toQueueSource();
+    }
+    queueSource ??= QueueSource.others(ScrollSearchController.inst.searchTextEditingController.text);
+    return (tracks, queueSource, routeTracks);
+  }
+
+  void selectAllTracks({(int, int)? range, QueueSourceBase? source, List<Selectable>? tracksOverride}) {
+    final currentInfo = _getCurrentActiveTracksList(queueSource: source, tracksOverride: tracksOverride);
+    final tracks = currentInfo.$1;
+    final routeTracks = currentInfo.$3;
+
+    if (tracks == null || tracks.isEmpty) return;
+
+    String? playlistNameToAdd;
 
     // -- Adding playlist name if the current route is referring to a playlist
-    final cr = NamidaNavigator.inst.currentRoute;
-    if (cr?.route != null) {
-      if (cr!.route == RouteType.SUBPAGE_playlistTracks || cr.route == RouteType.SUBPAGE_historyTracks) {
-        cr.tracksInside.loop((e, index) {
-          selectedPlaylistsNames[e.track] = cr.name;
-        });
+    final cr = routeTracks;
+    if (cr != null) {
+      if (cr.route == RouteType.SUBPAGE_playlistTracks || cr.route == RouteType.SUBPAGE_favPlaylistTracks || cr.route == RouteType.SUBPAGE_historyTracks) {
+        playlistNameToAdd = cr.name;
       }
     }
     // ----------
+
+    _onSelectingFrom(currentInfo.$2);
+    final pln = playlistNameToAdd;
+    final hashMap = _allTracksHashCodes.value;
+    final trMainList = _tracksOrTwdList.value;
+    List<Selectable> finalTracks;
+    if (range != null) {
+      finalTracks = tracks.sublist(range.$1, range.$2 + 1);
+    } else {
+      finalTracks = tracks;
+    }
+    if (pln != null && pln != '') {
+      for (var twd in finalTracks) {
+        final tr = twd.track;
+        if (hashMap[tr] == null) {
+          trMainList.add(twd);
+          hashMap[tr] = true;
+          selectedPlaylistsNames[tr] = pln; // <-- difference here
+        }
+      }
+    } else {
+      for (var twd in finalTracks) {
+        final tr = twd.track;
+        if (hashMap[tr] == null) {
+          trMainList.add(twd);
+          hashMap[tr] = true;
+        }
+      }
+    }
+
+    _allTracksHashCodes.refresh();
+    _tracksOrTwdList.refresh();
   }
 
   void replaceThisTrack(Track oldTrack, Track newTrack) {
@@ -108,21 +213,23 @@ class SelectedTracksController {
     _allTracksHashCodes[newTrack] = true;
   }
 
-  void replaceTrackDirectory(String oldDir, String newDir, {Iterable<String>? forThesePathsOnly, bool ensureNewFileExists = false}) {
-    String getNewPath(String old) => old.replaceFirst(oldDir, newDir);
-
+  void replaceTrackDirectory(String normalizedOldDir, String normalizedNewDir, {Iterable<String>? forThesePathsOnly, bool ensureNewFileExists = false}) {
+    final pathsOnlySet = forThesePathsOnly?.toSet();
+    final existenceCache = <String, bool>{};
     _tracksOrTwdList.replaceWhere(
       (e) {
-        final trackPath = e.track.path;
-        if (ensureNewFileExists) {
-          if (!File(getNewPath(trackPath)).existsSync()) return false;
-        }
-        final firstC = forThesePathsOnly != null ? forThesePathsOnly.contains(e.track.path) : true;
-        final secondC = trackPath.startsWith(oldDir);
-        return firstC && secondC;
+        final tr = e.track;
+        return replaceFunctionForUpdatedPaths(
+          tr.path,
+          normalizedOldDir,
+          normalizedNewDir,
+          pathsOnlySet,
+          ensureNewFileExists,
+          existenceCache,
+        );
       },
       (old) {
-        final newtr = Track(getNewPath(old.track.path));
+        final newtr = Track.fromTypeParameter(old.track.runtimeType, replaceFunctionGetNewPath(old.track.path, normalizedOldDir, normalizedNewDir));
         if (old is TrackWithDate) {
           return TrackWithDate(
             dateAdded: old.dateAdded,
@@ -134,9 +241,10 @@ class SelectedTracksController {
         }
       },
     );
-    _allTracksHashCodes.clear();
-    _tracksOrTwdList.loop((e, index) {
-      _allTracksHashCodes[e.track] = true;
-    });
+    // -- either dont update stuff, or clear everything
+    // _allTracksHashCodes.clear();
+    // for (var e in _tracksOrTwdList.value) {
+    //   _allTracksHashCodes[e.track] = true;
+    // }
   }
 }

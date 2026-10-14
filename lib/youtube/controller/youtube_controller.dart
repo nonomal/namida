@@ -1,914 +1,672 @@
-// ignore_for_file: depend_on_referenced_packages
+// ignore_for_file: constant_identifier_names
 
 import 'dart:async';
 import 'dart:io';
 import 'dart:isolate';
 
-import 'package:dio/dio.dart';
-import 'package:flutter/widgets.dart';
-import 'package:flutter_html/flutter_html.dart';
-import 'package:get/get_rx/src/rx_types/rx_types.dart';
-import 'package:newpipeextractor_dart/newpipeextractor_dart.dart' hide EnumUtils;
+import 'package:flutter/foundation.dart';
 
+import 'package:intl/intl.dart';
+import 'package:namico_db_wrapper/namico_db_wrapper.dart';
+import 'package:youtipie/class/stream_info_item/stream_info_item.dart';
+import 'package:youtipie/class/streams/audio_stream.dart';
+import 'package:youtipie/class/streams/stream_base.dart';
+import 'package:youtipie/class/streams/stream_segments.dart';
+import 'package:youtipie/class/streams/video_stream.dart';
+import 'package:youtipie/class/streams/video_stream_info.dart';
+import 'package:youtipie/class/streams/video_streams_result.dart';
+import 'package:youtipie/class/videos/video_playability.dart';
+import 'package:youtipie/class/videos/video_result.dart';
+import 'package:youtipie/class/youtipie_description/youtipie_description.dart';
+import 'package:youtipie/class/youtipie_feed/playlist_basic_info.dart';
+import 'package:youtipie/core/enum.dart';
+import 'package:youtipie/core/url_utils.dart';
+import 'package:youtipie/youtipie.dart' hide ExecuteDelayedMinUtils, logger;
+
+import 'package:namida/class/audio_cache_detail.dart';
+import 'package:namida/class/faudiomodel.dart';
+import 'package:namida/class/media_chapter.dart';
+import 'package:namida/class/file_parts.dart';
+import 'package:namida/class/track.dart';
 import 'package:namida/class/video.dart';
+import 'package:namida/controller/audio_cache_controller.dart';
+import 'package:namida/controller/chapters_controller.dart';
 import 'package:namida/controller/connectivity.dart';
+import 'package:namida/controller/files_download_manager.dart';
 import 'package:namida/controller/ffmpeg_controller.dart';
+import 'package:namida/controller/indexer_controller.dart';
+import 'package:namida/controller/logs_controller.dart';
+import 'package:namida/controller/navigator_controller.dart';
 import 'package:namida/controller/notification_controller.dart';
-import 'package:namida/controller/player_controller.dart';
+import 'package:namida/controller/playlist_controller.dart';
 import 'package:namida/controller/settings_controller.dart';
+import 'package:namida/controller/tagger_controller.dart';
 import 'package:namida/controller/thumbnail_manager.dart';
+import 'package:namida/controller/video_controller.dart';
 import 'package:namida/core/constants.dart';
+import 'package:namida/core/enums.dart';
 import 'package:namida/core/extensions.dart';
 import 'package:namida/core/namida_converter_ext.dart';
+import 'package:namida/core/translations/language.dart';
+import 'package:namida/core/utils.dart';
+import 'package:namida/youtube/class/download_progress.dart';
+import 'package:namida/youtube/class/download_task_base.dart';
+import 'package:namida/youtube/class/youtube_id.dart';
+import 'package:namida/youtube/class/youtube_id_stats.dart';
 import 'package:namida/youtube/class/youtube_item_download_config.dart';
 import 'package:namida/youtube/controller/parallel_downloads_controller.dart';
+import 'package:namida/youtube/controller/sponsorblock_controller.dart';
+import 'package:namida/youtube/controller/youtube_info_controller.dart';
 import 'package:namida/youtube/controller/youtube_ongoing_finished_downloads.dart';
+import 'package:namida/youtube/widgets/yt_thumbnail.dart';
 import 'package:namida/youtube/yt_utils.dart';
 
-class YTThumbnail {
-  final String id;
-  const YTThumbnail(this.id);
-  String get maxResUrl => StreamThumbnail(id).maxresdefault;
-  String get hqdefault => StreamThumbnail(id).hqdefault;
-  String get mqdefault => StreamThumbnail(id).mqdefault;
-  String get sddefault => StreamThumbnail(id).sddefault;
-  String get lowres => StreamThumbnail(id).lowres;
-  List<String> get allQualitiesByHighest => [maxResUrl, hqdefault, mqdefault, sddefault, lowres];
-}
+part 'youtube_id_stats_manager.dart';
+part 'yt_filename_rebuilder.dart';
 
-class DownloadProgress {
-  final int progress;
-  final int totalProgress;
+class _YTNotificationDataHolder {
+  late final _speedMapVideo = <DownloadTaskFilename, int>{};
+  late final _speedMapAudio = <DownloadTaskFilename, int>{};
 
-  const DownloadProgress({
-    required this.progress,
-    required this.totalProgress,
-  });
+  late final _titlesLookupTemp = <DownloadTaskVideoId, String?>{};
+  late final _imagesLookupTemp = <DownloadTaskVideoId, File?>{};
+
+  FutureOr<String?> titleCallback(DownloadTaskVideoId videoId) {
+    final valInMap = _titlesLookupTemp[videoId];
+    if (valInMap != null) return valInMap;
+    return YoutubeInfoController.utils
+        .getVideoName(videoId.videoId)
+        .then(
+          (value) => _titlesLookupTemp[videoId] = value,
+        );
+  }
+
+  FutureOr<File?> imageCallback(DownloadTaskVideoId videoId) {
+    final valInMap = _imagesLookupTemp[videoId];
+    if (valInMap != null) return valInMap;
+    return ThumbnailManager.inst
+        .getYoutubeThumbnailFromCache(id: videoId.videoId, type: ThumbnailType.video)
+        .then(
+          (value) => _imagesLookupTemp[videoId] = value,
+        );
+  }
+
+  void clearAll() {
+    _speedMapVideo.clear();
+    _speedMapAudio.clear();
+    _titlesLookupTemp.clear();
+    _imagesLookupTemp.clear();
+  }
 }
 
 class YoutubeController {
   static YoutubeController get inst => _instance;
   static final YoutubeController _instance = YoutubeController._internal();
-  YoutubeController._internal() {
-    scrollController.addListener(() {
-      final pixels = scrollController.positions.lastOrNull?.pixels;
-      final hasScrolledEnough = pixels != null && pixels > 40;
-      _shouldShowGlowUnderVideo.value = hasScrolledEnough;
-    });
-  }
-  void resetGlowUnderVideo() => _shouldShowGlowUnderVideo.value = false;
+  YoutubeController._internal();
 
-  int get _defaultMiniplayerDimSeconds => settings.ytMiniplayerDimAfterSeconds.value;
-  double get _defaultMiniplayerOpacity => settings.ytMiniplayerDimOpacity.value;
-  bool get canDimMiniplayer => _canDimMiniplayer.value;
-  final _canDimMiniplayer = false.obs;
-  Timer? _dimTimer;
-  void cancelDimTimer() {
-    _dimTimer?.cancel();
-    _dimTimer = null;
-    _canDimMiniplayer.value = false;
-  }
+  final statsManager = _YoutubeIDStatsManager();
 
-  void startDimTimer() {
-    cancelDimTimer();
-    if (_defaultMiniplayerDimSeconds > 0 && _defaultMiniplayerOpacity > 0) {
-      _dimTimer = Timer(Duration(seconds: _defaultMiniplayerDimSeconds), () {
-        _canDimMiniplayer.value = true;
-      });
-    }
-  }
+  final isLoadingDownloadTasks = false.obs;
 
-  final scrollController = ScrollController();
-  bool get shouldShowGlowUnderVideo => _shouldShowGlowUnderVideo.value;
-  final _shouldShowGlowUnderVideo = false.obs;
+  final downloadsVideoProgressMap = <DownloadTaskVideoId, RxMap<DownloadTaskFilename, DownloadProgress>>{}.obs;
 
-  final homepageFeed = <YoutubeFeed>[].obs;
+  final downloadsAudioProgressMap = <DownloadTaskVideoId, RxMap<DownloadTaskFilename, DownloadProgress>>{}.obs;
 
-  final currentYoutubeMetadataVideo = Rxn<VideoInfo>();
-  final currentYoutubeMetadataChannel = Rxn<YoutubeChannel>();
-  final currentRelatedVideos = <YoutubeFeed?>[].obs;
-  final currentComments = <YoutubeComment?>[].obs;
-  final commentToParsedHtml = <String, String?>{};
-  final currentTotalCommentsCount = Rxn<int>();
-  final isLoadingComments = false.obs;
-  final isTitleExpanded = false.obs;
-  final currentYTQualities = <VideoOnlyStream>[].obs;
-  final currentYTAudioStreams = <AudioOnlyStream>[].obs;
+  final currentSpeedsInByte = <DownloadTaskVideoId, RxMap<DownloadTaskFilename, int>>{}.obs;
 
-  /// Used as a backup in case of no connection.
-  final currentCachedQualities = <NamidaVideo>[].obs;
+  final isDownloading = <DownloadTaskVideoId, RxMap<DownloadTaskFilename, bool>>{}.obs;
 
-  /// {id: <filename, DownloadProgress>{}}
-  final downloadsVideoProgressMap = <String, RxMap<String, DownloadProgress>>{}.obs;
+  final isFetchingData = <DownloadTaskVideoId, RxMap<DownloadTaskFilename, bool>>{}.obs;
 
-  /// {id: <filename, DownloadProgress>{}}
-  final downloadsAudioProgressMap = <String, RxMap<String, DownloadProgress>>{}.obs;
-
-  /// {id: <filename, int>{}}
-  final currentSpeedsInByte = <String, RxMap<String, int>>{}.obs;
-
-  /// {id: <filename, bool>{}}
-  final isDownloading = <String, RxMap<String, bool>>{}.obs;
-
-  /// {id: <filename, bool>{}}
-  final isFetchingData = <String, RxMap<String, bool>>{}.obs;
-
-  /// {groupName: <filename, Dio>{}}
-  final _downloadClientsMap = <String, Map<String, Dio>>{};
+  final _downloadClientsMap = <DownloadTaskGroupName, Map<DownloadTaskFilename, File>>{};
 
   /// {groupName: {filename: YoutubeItemDownloadConfig}}
-  final youtubeDownloadTasksMap = <String, Map<String, YoutubeItemDownloadConfig>>{}.obs;
+  final youtubeDownloadTasksMap = <DownloadTaskGroupName, Map<DownloadTaskFilename, YoutubeItemDownloadConfig>>{}.obs;
+
+  /// Mirrors [youtubeDownloadTasksMap] but keyed by video id, to allow O(1) lookups by id.
+  ///
+  /// a single video can have more than one task, ex. downloaded into 2 groups, or twice in the
+  /// same group with different qualities/filenames. so each id keeps all of its tasks, practically always one.
+  ///
+  /// {videoId: [(groupName, YoutubeItemDownloadConfig)]}
+  final _downloadTasksIdsMap = <DownloadTaskVideoId, List<(DownloadTaskGroupName, YoutubeItemDownloadConfig)>>{};
 
   /// {groupName: {filename: bool}}
   /// - `true` -> is in queue, will be downloaded when reached.
   /// - `false` -> is paused. will be skipped when reached.
   /// - `null` -> not specified.
-  final youtubeDownloadTasksInQueueMap = <String, Map<String, bool?>>{}.obs;
+  final youtubeDownloadTasksInQueueMap = <DownloadTaskGroupName, Map<DownloadTaskFilename, bool?>>{}.obs;
 
   /// {groupName: dateMS}
   ///
   /// used to sort group names by latest edited.
-  final latestEditedGroupDownloadTask = <String, int>{};
+  var latestEditedGroupDownloadTask = <DownloadTaskGroupName, int>{};
 
   /// Used to keep track of existing downloaded files, more performant than real-time checking.
   ///
   /// {groupName: {filename: File}}
-  final downloadedFilesMap = <String, Map<String, File?>>{}.obs;
+  final downloadedFilesMap = <DownloadTaskGroupName, Map<DownloadTaskFilename, File?>>{}.obs;
 
-  /// Temporarely saves StreamInfoItem info for flawless experience while waiting for real info.
-  final tempVideoInfosFromStreams = <String, StreamInfoItem>{}; // {id: StreamInfoItem()}
+  late final _notificationData = _YTNotificationDataHolder();
+  late final _downloadTasksMainDBManager = DBWrapperMain(AppDirs.YT_DOWNLOAD_TASKS);
 
-  /// Used for easily displaying title & channel inside history directly without needing to fetch or rely on cache.
-  /// This comes mainly after a youtube history import
-  var tempBackupVideoInfo = <String, YoutubeVideoHistory>{}; // {id: YoutubeVideoHistory()}
-
-  late var tempVideoInfo = <String, VideoInfo?>{};
-  late var tempChannelInfo = <String, YoutubeChannel?>{};
-
-  Future<void> loadInfoToMemory() async {
-    final res = await _loadInfoToMemoryIsolate.thready((AppDirs.YT_METADATA, AppDirs.YT_METADATA_CHANNELS));
-    if (res.$1.isNotEmpty) tempVideoInfo = res.$1;
-    if (res.$2.isNotEmpty) tempChannelInfo = res.$2;
-  }
-
-  static Future<(Map<String, VideoInfo?>, Map<String, YoutubeChannel?>)> _loadInfoToMemoryIsolate((String pv, String pc) paths) async {
-    final mv = <String, VideoInfo?>{};
-    final mc = <String, YoutubeChannel?>{};
-
-    final completer1 = Completer<void>();
-    final completer2 = Completer<void>();
-
-    Directory(paths.$1).listAllIsolate().then((value) {
-      value.loop((e, index) {
-        if (e is File) {
-          try {
-            final map = e.readAsJsonSync();
-            mv[e.path.getFilenameWOExt] = VideoInfo.fromMap(map);
-          } catch (_) {}
-        }
-      });
-      completer1.complete();
-    });
-    Directory(paths.$2).listAllIsolate().then((value) {
-      value.loop((e, index) {
-        if (e is File) {
-          try {
-            final map = e.readAsJsonSync();
-            mc[e.path.getFilenameWOExt] = YoutubeChannel.fromMap(map);
-          } catch (_) {}
-        }
-      });
-      completer2.complete();
-    });
-    await completer1.future;
-    await completer2.future;
-    return (mv, mc);
-  }
-
-  /// [renameCacheFiles] requires you to stop the download first, otherwise it might result in corrupted files.
   Future<void> renameConfigFilename({
     required YoutubeItemDownloadConfig config,
-    required String videoID,
     required String newFilename,
-    required String groupName,
-    required bool renameCacheFiles,
+    required DownloadTaskGroupName groupName,
   }) async {
-    final oldFilename = config.filename;
+    final oldFilename = config.filename.filename;
 
-    config.filename = newFilename;
+    // ignore: invalid_use_of_protected_member
+    config.rename(newFilename);
+    await _saveDownloadTaskConfig(groupName, config);
 
-    downloadsVideoProgressMap[videoID]?.reAssign(oldFilename, newFilename);
-    downloadsAudioProgressMap[videoID]?.reAssign(oldFilename, newFilename);
-    currentSpeedsInByte[videoID]?.reAssign(oldFilename, newFilename);
-    isDownloading[videoID]?.reAssign(oldFilename, newFilename);
-    isFetchingData[videoID]?.reAssign(oldFilename, newFilename);
-
-    downloadsVideoProgressMap.refresh();
-    downloadsAudioProgressMap.refresh();
-    currentSpeedsInByte.refresh();
-    isDownloading.refresh();
-    isFetchingData.refresh();
-
-    // =============
-
-    _downloadClientsMap[groupName]?.reAssign(oldFilename, newFilename);
-    youtubeDownloadTasksMap[groupName]?.reAssign(oldFilename, newFilename);
-    youtubeDownloadTasksInQueueMap[groupName]?.reAssignNullable(oldFilename, newFilename);
-    downloadedFilesMap[groupName]?.reAssignNullable(oldFilename, newFilename);
-
-    youtubeDownloadTasksMap.refresh();
-    youtubeDownloadTasksInQueueMap.refresh();
-    downloadedFilesMap.refresh();
-
-    final directory = Directory("${AppDirs.YOUTUBE_DOWNLOADS}$groupName");
-    final existingFile = File("${directory.path}/${config.filename}");
-    if (existingFile.existsSync()) {
-      try {
-        existingFile.renameSync("${directory.path}/$newFilename");
-      } catch (_) {}
-    }
-    if (renameCacheFiles) {
-      final aFile = File(_getTempAudioPath(groupName: groupName, fullFilename: oldFilename));
-      final vFile = File(_getTempVideoPath(groupName: groupName, fullFilename: oldFilename));
-
-      if (aFile.existsSync()) {
-        final newPath = _getTempAudioPath(groupName: groupName, fullFilename: newFilename);
-        aFile.renameSync(newPath);
-      }
-      if (vFile.existsSync()) {
-        final newPath = _getTempVideoPath(groupName: groupName, fullFilename: newFilename);
-        vFile.renameSync(newPath);
-      }
-    }
-
-    YTOnGoingFinishedDownloads.inst.refreshList();
-
-    await _writeTaskGroupToStorage(groupName: groupName);
+    final directoryPath = _getGroupDirectoryPath(groupName);
+    try {
+      await File(FileParts.joinPath(directoryPath, oldFilename)).rename(FileParts.joinPath(directoryPath, newFilename));
+    } catch (_) {}
   }
 
-  YoutubeVideoHistory? _getBackupVideoInfo(String id) => tempBackupVideoInfo[id];
-
-  Future<void> fillBackupInfoMap() async {
-    final map = await _fillBackupInfoMapIsolate.thready(AppDirs.YT_STATS);
-    tempBackupVideoInfo = map;
-    tempBackupVideoInfo.remove('');
+  /// skipped if the task was canceled/replaced meanwhile, to not bring it back.
+  Future<void> _saveDownloadTaskConfig(DownloadTaskGroupName groupName, YoutubeItemDownloadConfig config) async {
+    final downloadTasksGroupDB = await _downloadTasksMainDBManager.getDB(groupName.groupName);
+    if (!identical(youtubeDownloadTasksMap.value[groupName]?[config.filename], config)) return;
+    await downloadTasksGroupDB.put(config.filename.key, config.toJson());
   }
 
-  static Map<String, YoutubeVideoHistory> _fillBackupInfoMapIsolate(String dirPath) {
-    final map = <String, YoutubeVideoHistory>{};
-    for (final f in Directory(dirPath).listSyncSafe()) {
-      if (f is File) {
-        try {
-          final response = f.readAsJsonSync();
-          if (response != null) {
-            for (final r in response as List) {
-              final yvh = YoutubeVideoHistory.fromJson(r);
-              map[yvh.id] = yvh;
-            }
+  static String _getGroupDirectoryPath(DownloadTaskGroupName groupName) => FileParts.joinPath(AppDirs.YOUTUBE_DOWNLOADS, groupName.groupName);
+
+  static String _getTempDirectoryPath(DownloadTaskGroupName groupName, YoutubeItemDownloadConfig config) =>
+      config.cacheOnly ? AppDirs.VIDEOS_CACHE_TEMP : _getGroupDirectoryPath(groupName);
+
+  static String? getCacheTaskFilePath(YoutubeItemDownloadConfig config) =>
+      _getCacheTaskFilePath(config, audiosCacheDir: AppDirs.AUDIOS_CACHE, videosCacheDir: AppDirs.VIDEOS_CACHE);
+
+  static String? _getCacheTaskFilePath(YoutubeItemDownloadConfig config, {required String audiosCacheDir, required String videosCacheDir}) {
+    final videoId = config.id.videoId;
+    final audioStream = config.audioStream;
+    if (audioStream != null) return FileParts.joinPath(audiosCacheDir, audioStream.cacheKey(videoId));
+    final videoStream = config.videoStream;
+    if (videoStream != null) return FileParts.joinPath(videosCacheDir, videoStream.cacheKey(videoId));
+    return null;
+  }
+
+  /// webm only accepts opus/vorbis audio, while mp4 accepts everything youtube serves.
+  static String? getOutputContainer(VideoStream? videoStream, AudioStream? audioStream) {
+    final videoContainer = videoStream?.codecInfo.container;
+    final audioContainer = audioStream?.codecInfo.container;
+    if (videoContainer == null) return audioContainer;
+    if (audioContainer == null || audioContainer == videoContainer) return videoContainer;
+    return 'mp4';
+  }
+
+  static String _removeMediaContainerExtension(String filename) {
+    final dotIndex = filename.lastIndexOf('.');
+    if (dotIndex <= 0) return filename;
+    return switch (filename.substring(dotIndex + 1).toLowerCase()) {
+      'mp4' || 'webm' || 'm4a' || '3gp' || 'mp3' => filename.substring(0, dotIndex),
+      _ => filename,
+    };
+  }
+
+  // by claude
+  static AudioStream? matchAudioStreamOrSimilar(List<AudioStream>? streams, AudioStream? target, {String? prefferedItag}) {
+    if (streams == null || streams.isEmpty) return null;
+
+    final targetItag = prefferedItag == null ? target?.itag : int.tryParse(prefferedItag) ?? target?.itag;
+    final targetTrack = target?.audioTrack;
+    final targetTrackId = targetTrack?.id;
+    final targetLangCode = targetTrack?.langCode;
+
+    if (targetTrackId == null && targetLangCode == null) {
+      // -- single track target, the video may have got dubs since, sharing its itag
+      if (targetItag == null) return null;
+      AudioStream? sameItagAny;
+      for (final e in streams) {
+        if (e.itag != targetItag) continue;
+        final track = e.audioTrack;
+        if (track == null || track.isDefault == true) return e;
+        sameItagAny ??= e;
+      }
+      return sameItagAny;
+    }
+
+    final targetContainer = target?.codecInfo.container;
+    final targetBitrate = target?.bitrate ?? 0;
+
+    AudioStream? sameTrackClosestBitrate;
+    int? sameTrackClosestBitrateDiff;
+    AudioStream? sameTrackAny;
+    AudioStream? sameLangAny;
+
+    for (final e in streams) {
+      final track = e.audioTrack;
+      if (targetTrackId != null && track?.id == targetTrackId) {
+        if (targetItag != null && e.itag == targetItag) return e; // -- exact match
+        sameTrackAny ??= e;
+        if (e.codecInfo.container == targetContainer) {
+          final diff = (e.bitrate - targetBitrate).abs();
+          if (sameTrackClosestBitrateDiff == null || diff < sameTrackClosestBitrateDiff) {
+            sameTrackClosestBitrateDiff = diff;
+            sameTrackClosestBitrate = e;
           }
-        } catch (e) {
-          continue;
+        }
+      } else if (targetLangCode != null && track?.langCode == targetLangCode) {
+        sameLangAny ??= e;
+      }
+    }
+
+    return sameTrackClosestBitrate ?? sameTrackAny ?? sameLangAny;
+  }
+
+  // by claude
+  static VideoStream? matchVideoStreamOrSimilar(List<VideoStream>? streams, VideoStream? target, {String? prefferedItag}) {
+    if (streams == null || streams.isEmpty) return null;
+
+    final targetItag = prefferedItag == null ? target?.itag : int.tryParse(prefferedItag) ?? target?.itag;
+    if (targetItag != null) {
+      final exact = streams.firstWhereEff((e) => e.itag == targetItag);
+      if (exact != null) return exact;
+    }
+    if (target == null) return null;
+
+    final targetHeight = target.height;
+    final targetFps = target.fps;
+    final targetContainer = target.codecInfo.container;
+    final targetCodec = target.codecInfo.codecCleaned();
+
+    VideoStream? sameQualitySameCodec;
+    VideoStream? sameQualitySameContainer;
+    VideoStream? sameQualityAny;
+    VideoStream? closestQuality;
+    int? closestQualityDiff;
+
+    for (final e in streams) {
+      if (e.height == targetHeight) {
+        if (e.fps == targetFps) {
+          if (e.codecInfo.codecCleaned() == targetCodec) return e; // -- same quality & codec
+          sameQualitySameCodec ??= e;
+        }
+        if (e.codecInfo.container == targetContainer) sameQualitySameContainer ??= e;
+        sameQualityAny ??= e;
+      } else {
+        // -- lower qualities are preferred over higher ones
+        final diff = e.height < targetHeight ? targetHeight - e.height : (e.height - targetHeight) * 2;
+        if (closestQualityDiff == null || diff < closestQualityDiff) {
+          closestQualityDiff = diff;
+          closestQuality = e;
         }
       }
     }
-    return map;
+
+    return sameQualitySameCodec ?? sameQualitySameContainer ?? sameQualityAny ?? closestQuality;
   }
 
-  String getYoutubeLink(String id) => id.toYTUrl();
-
-  VideoInfo? getVideoInfo(String id, {bool checkFromStorage = false}) {
-    final info = _getTemporarelyVideoInfo(id, checkFromStorage: checkFromStorage) ?? _fetchVideoDetailsFromCacheSync(id, checkFromStorage: checkFromStorage);
-    if (info != null) return info;
-    final bk = _getBackupVideoInfo(id);
-    if (bk != null) return VideoInfo(id: id, name: bk.title, uploaderName: bk.channel, uploaderUrl: bk.channelUrl);
-    return null;
+  static bool isSameVideoStream(VideoStream? a, VideoStream? b) {
+    if (a == null || b == null) return false;
+    if (identical(a, b) || a.itag == b.itag) return true;
+    return a.height == b.height && a.fps == b.fps && a.codecInfo.codecCleaned() == b.codecInfo.codecCleaned();
   }
 
-  String? getVideoName(String id, {bool checkFromStorage = false}) {
-    return getTemporarelyStreamInfo(id)?.name ??
-        _getBackupVideoInfo(id)?.title ?? //
-        _fetchVideoDetailsFromCacheSync(id, checkFromStorage: checkFromStorage)?.name;
+  static void removeDuplicateCachedQualities(List<NamidaVideo> cachedVideos, Iterable<VideoStream>? streams, String? videoId) {
+    if (cachedVideos.isEmpty || streams == null) return;
+    final id = videoId != null && videoId.isNotEmpty ? videoId : null;
+
+    bool isSameVideo(VideoStream ytq, NamidaVideo cq) {
+      if (id != null && ytq.cachePath(id) == cq.path) return true;
+      if (ytq.sizeInBytes > 0 && ytq.sizeInBytes == cq.sizeInBytes) return true;
+      return cq.height > 0 && ytq.height == cq.height && ytq.bitrate == cq.bitrate;
+    }
+
+    cachedVideos.removeWhere((cq) => streams.any((ytq) => isSameVideo(ytq, cq)));
   }
 
-  String? getVideoChannelName(String id, {bool checkFromStorage = false}) {
-    return getTemporarelyStreamInfo(id)?.uploaderName ??
-        _getBackupVideoInfo(id)?.channel ?? //
-        _fetchVideoDetailsFromCacheSync(id, checkFromStorage: checkFromStorage)?.uploaderName;
-  }
+  static AudioStream? getPreferredAudioStream(List<AudioStream>? audiostreams) {
+    if (audiostreams == null) return null;
+    final preferOpusFormat = settings.youtube.preferOpusFormat.value;
 
-  DateTime? getVideoReleaseDate(String id, {bool checkFromStorage = false}) {
-    return getTemporarelyStreamInfo(id)?.date ?? //
-        _fetchVideoDetailsFromCacheSync(id, checkFromStorage: checkFromStorage)?.date;
-  }
-
-  VideoInfo? _getTemporarelyVideoInfo(String id, {bool checkFromStorage = false}) {
-    final r = getTemporarelyStreamInfo(id, checkFromStorage: checkFromStorage);
-    return r == null ? null : VideoInfo.fromStreamInfoItem(r);
-  }
-
-  StreamInfoItem? getTemporarelyStreamInfo(String id, {bool checkFromStorage = false}) {
-    final si = tempVideoInfosFromStreams[id];
-    if (si != null) return si;
-    if (checkFromStorage) {
-      final file = File('${AppDirs.YT_METADATA_TEMP}$id.txt');
-      final res = file.readAsJsonSync();
-      if (res != null) {
-        try {
-          final strInfo = StreamInfoItem.fromMap(res);
-          return strInfo;
-        } catch (_) {}
+    AudioStream? firstWhereEffIterable(Iterable<AudioStream> streams, bool Function(AudioStream s) test) {
+      for (final s in streams) {
+        if (test(s)) return s;
       }
-    }
-    return null;
-  }
-
-  /// Keeps the map at max 2000 items. maintained by least recently used.
-  void _fillTempVideoInfoMap(Iterable<StreamInfoItem>? items) async {
-    if (items != null) {
-      final map = tempVideoInfosFromStreams;
-
-      final entriesForStorage = <MapEntry<String, Map<String, String?>>>[];
-      for (final e in items) {
-        final id = e.id;
-        if (id != null) {
-          // -- adding to storage (later)
-          // -- we only add if it didnt exist in map before, to minimize writes
-          if (map[id] == null) entriesForStorage.add(MapEntry(id, e.toMap()));
-
-          // -- adding to memory (directly)
-          map.remove(id);
-          map[id] = e;
-        }
-      }
-      // -- clearing excess from map to keep it at 2000
-      final excess = map.length - 2000;
-      if (excess > 0) {
-        final excessKeys = map.keys.take(excess).toList();
-        excessKeys.loop((k, _) => map.remove(k));
-      }
-
-      await _saveTemporarelyVideoInfoIsolate.thready({
-        'dirPath': AppDirs.YT_METADATA_TEMP,
-        'entries': entriesForStorage,
-      });
-    }
-  }
-
-  static void _saveTemporarelyVideoInfoIsolate(Map p) {
-    final dirPath = p['dirPath'] as String;
-    final entries = p['entries'] as List<MapEntry<String, Map<String, String?>>>;
-
-    entries.loop((e, index) {
-      final file = File('$dirPath${e.key}.txt');
-      file.writeAsJsonSync(e.value);
-    });
-  }
-
-  /// Checks if the requested id is still playing, since most functions are async and will often
-  /// take time to fetch from internet, and user may have played other vids, this covers such cases.
-  bool _canSafelyModifyMetadata(String id) => Player.inst.nowPlayingVideoID?.id == id;
-
-  Future<void> prepareHomeFeed() async {
-    homepageFeed.clear();
-    final videos = await NewPipeExtractorDart.trending.getTrendingVideos();
-    _fillTempVideoInfoMap(videos);
-    homepageFeed.addAll([
-      ...videos,
-    ]);
-  }
-
-  Future<List> searchForItems(String text) async {
-    final videos = await NewPipeExtractorDart.search.searchYoutube(text, []);
-    _fillTempVideoInfoMap(videos.searchVideos);
-    return videos.dynamicSearchResultsList;
-  }
-
-  Future<List> searchNextPage() async {
-    final parsedList = await NewPipeExtractorDart.search.getNextPage();
-    final v = YoutubeSearch(
-      query: '',
-      searchVideos: parsedList[0],
-      searchPlaylists: parsedList[1],
-      searchChannels: parsedList[2],
-    );
-    _fillTempVideoInfoMap(v.searchVideos);
-    return v.dynamicSearchResultsList;
-  }
-
-  Future<void> fetchRelatedVideos(String id) async {
-    currentRelatedVideos.value = List.filled(20, null, growable: true);
-    final items = await NewPipeExtractorDart.videos.getRelatedStreams(id.toYTUrl());
-    _fillTempVideoInfoMap(items.whereType<StreamInfoItem>());
-    items.loop((p, index) {
-      if (p is YoutubePlaylist) {
-        YoutubeController.inst.getPlaylistStreams(p, forceInitial: true);
-      }
-    });
-    if (_canSafelyModifyMetadata(id)) {
-      currentRelatedVideos.value = [
-        ...items,
-      ];
-    }
-  }
-
-  /// For full list of items, use [streams] getter in [playlist].
-  Future<List<StreamInfoItem>> getPlaylistStreams(YoutubePlaylist? playlist, {bool forceInitial = false}) async {
-    if (playlist == null) return [];
-    final streams = forceInitial ? await playlist.getStreams() : await playlist.getStreamsNextPage();
-    _fillTempVideoInfoMap(streams);
-    return streams;
-  }
-
-  Future<YoutubePlaylist?> getPlaylistInfo(String playlistUrl, {bool forceInitial = false}) async {
-    return await NewPipeExtractorDart.playlists.getPlaylistDetails(playlistUrl);
-  }
-
-  Future<List<StreamInfoItem>> getChannelStreams(String channelID) async {
-    if (channelID == '') return [];
-    final url = 'https://www.youtube.com/channel/$channelID';
-    var streams = await NewPipeExtractorDart.channels.getChannelUploads(url);
-    int retries = 3;
-    while (streams.isEmpty && retries > 0) {
-      retries--;
-      streams = await NewPipeExtractorDart.channels.getChannelUploads(url);
-    }
-    _fillTempVideoInfoMap(streams);
-    return streams;
-  }
-
-  Future<List<StreamInfoItem>> getChannelStreamsNextPage() async {
-    final streams = await NewPipeExtractorDart.channels.getChannelNextUploads();
-    _fillTempVideoInfoMap(streams);
-    return streams;
-  }
-
-  Future<void> _fetchComments(String id, {bool forceRequest = false}) async {
-    currentTotalCommentsCount.value = null;
-    currentComments
-      ..clear()
-      ..addAll(List.filled(20, null));
-
-    // -- Fetching Comments.
-    final fetchedComments = <YoutubeComment>[];
-    final cachedFile = File("${AppDirs.YT_METADATA_COMMENTS}$id.txt");
-
-    // fetching cache
-    final userForceNewRequest = ConnectivityController.inst.hasConnection && settings.ytPreferNewComments.value;
-    if (!forceRequest && !userForceNewRequest && await cachedFile.exists()) {
-      final res = await cachedFile.readAsJson();
-      final commList = (res as List?)?.map((e) => YoutubeComment.fromMap(e));
-      if (commList != null && commList.isNotEmpty) {
-        fetchedComments.addAll(commList);
-      }
-      _isCurrentCommentsFromCache = true;
-    }
-    // fetching from yt, in case no comments were added, i.e: no cache.
-    if (fetchedComments.isEmpty) {
-      final comments = await NewPipeExtractorDart.comments.getComments(id.toYTUrl());
-      fetchedComments.addAll(comments);
-      _isCurrentCommentsFromCache = false;
-
-      if (comments.isNotEmpty) _saveCommentsToStorage(cachedFile, comments);
-    }
-    // -- Fetching Comments End.
-    if (_canSafelyModifyMetadata(id)) {
-      currentComments.clear();
-      _fillCommentsLists(fetchedComments);
-      currentTotalCommentsCount.value = fetchedComments.firstOrNull?.totalCommentsCount;
-    }
-  }
-
-  void _fillCommentsLists(List<YoutubeComment?> comments) {
-    for (final c in comments) {
-      final cid = c?.commentId;
-      final ctxt = c?.commentText;
-      if (cid != null && ctxt != null) {
-        commentToParsedHtml[cid] = removeCommentHTML(ctxt);
-      }
+      return null;
     }
 
-    currentComments.addAll(comments);
-  }
-
-  String removeCommentHTML(String htmlComment) {
-    return HtmlParser.parseHTML(htmlComment.replaceAll('<br>', '\n')).text;
-  }
-
-  Future<void> _fetchNextComments(String id) async {
-    if (_isCurrentCommentsFromCache) return;
-    final comments = await NewPipeExtractorDart.comments.getNextComments();
-    if (_canSafelyModifyMetadata(id)) {
-      _fillCommentsLists(comments);
-
-      // -- saving to cache
-      final cachedFile = File("${AppDirs.YT_METADATA_COMMENTS}$id.txt");
-      _saveCommentsToStorage(cachedFile, currentComments);
-    }
-  }
-
-  Future<void> _saveCommentsToStorage(File file, Iterable<YoutubeComment?> commListy) async {
-    await file.writeAsJson(commListy.map((e) => e?.toMap()).toList());
-  }
-
-  /// Used to keep track of current comments sources, mainly to
-  /// prevent fetching next comments when cached version is loaded.
-  bool get isCurrentCommentsFromCache => _isCurrentCommentsFromCache;
-  bool _isCurrentCommentsFromCache = false;
-
-  Future<void> updateCurrentComments(String id, {bool fetchNextOnly = false, bool forceRequest = false}) async {
-    isLoadingComments.value = true;
-    if (currentComments.isNotEmpty && fetchNextOnly && !forceRequest) {
-      await _fetchNextComments(id);
+    Iterable<AudioStream> filtered;
+    if (preferOpusFormat) {
+      filtered = audiostreams.where((e) => e.isWebm);
     } else {
-      await _fetchComments(id, forceRequest: forceRequest);
+      filtered = audiostreams.where((e) => !e.isWebm);
     }
-    isLoadingComments.value = false;
+    return firstWhereEffIterable(filtered, (e) => e.audioTrack?.isDefault == true) ?? //
+        firstWhereEffIterable(filtered, (e) => e.audioTrack?.langCode == 'en') ??
+        filtered.firstOrNull ??
+        audiostreams.firstOrNull;
   }
 
-  VideoStream getPreferredStreamQuality(List<VideoStream> streams, {List<String> qualities = const [], bool preferIncludeWebm = false}) {
-    final preferredQualities = (qualities.isNotEmpty ? qualities : settings.youtubeVideoQualities).map((element) => element.settingLabeltoVideoLabel());
-    VideoStream? plsLoop(bool webm) {
-      for (int i = 0; i < streams.length; i++) {
-        final q = streams[i];
-        final webmCondition = webm ? true : q.formatSuffix != 'webm';
-        if (webmCondition && preferredQualities.contains(q.resolution?.split('p').first)) {
+  static VideoStream? getPreferredStreamQuality(List<VideoStream> streams, {List<String> qualities = const [], bool preferIncludeWebm = false}) {
+    if (streams.isEmpty) return null;
+    final allowExperimentalCodecs = settings.youtube.allowExperimentalCodecs.value;
+
+    final preferredQualities = (qualities.isNotEmpty ? qualities : settings.youtubeVideoQualities.value);
+    VideoStream? plsLoop(bool webm, bool experimentalCodecs) {
+      for (final q in streams) {
+        if (!webm && q.isWebm) continue;
+        if (!experimentalCodecs && q.codecInfo.isExperimentalCodec()) continue;
+        if (preferredQualities.any((e) => e.settingLabeltoVideoLabel() == q.qualityLabel.splitFirst('p'))) {
           return q;
         }
       }
       return null;
     }
 
+    VideoStream? plsLoopMain(bool webm) {
+      if (allowExperimentalCodecs) {
+        return plsLoop(webm, true);
+      } else {
+        return plsLoop(webm, false) ?? plsLoop(webm, true);
+      }
+    }
+
     if (preferIncludeWebm) {
-      return plsLoop(true) ?? streams.last;
+      return plsLoopMain(true) ?? streams.last;
     } else {
-      return plsLoop(false) ?? plsLoop(true) ?? streams.last;
+      return plsLoopMain(false) ?? plsLoopMain(true) ?? streams.last;
     }
   }
 
-  Future<void> updateVideoDetails(String id, {bool forceRequest = false}) async {
-    if (scrollController.hasClients) {
-      scrollController.jumpTo(0);
-      resetGlowUnderVideo();
-    }
-    startDimTimer();
-    isTitleExpanded.value = false;
-
-    updateCurrentVideoMetadata(id, forceRequest: forceRequest);
-    if (settings.youtubeStyleMiniplayer.value) {
-      updateCurrentComments(id);
-      fetchRelatedVideos(id);
-    }
-  }
-
-  Future<void> updateCurrentVideoMetadata(String id, {bool forceRequest = false}) async {
-    currentYoutubeMetadataVideo.value = null;
-    currentYoutubeMetadataChannel.value = null;
-
-    void updateForCurrentID(void Function() fn) {
-      if (_canSafelyModifyMetadata(id)) {
-        fn();
-      }
-    }
-
-    final channelUrl = tempVideoInfosFromStreams[id]?.uploaderUrl;
-
-    if (channelUrl != null) {
-      await Future.wait([
-        fetchVideoDetails(id).then((info) {
-          updateForCurrentID(() {
-            currentYoutubeMetadataVideo.value = info;
-          });
-        }),
-        fetchChannelDetails(channelUrl).then((channel) {
-          updateForCurrentID(() {
-            currentYoutubeMetadataChannel.value = channel;
-          });
-        }),
-      ]);
-    } else {
-      final info = await fetchVideoDetails(id, forceRequest: forceRequest);
-      final channel = await fetchChannelDetails(info?.uploaderUrl, forceRequest: forceRequest);
-      updateForCurrentID(() {
-        currentYoutubeMetadataVideo.value = info;
-        currentYoutubeMetadataChannel.value = channel;
-      });
-    }
-  }
-
-  Future<VideoInfo?> fetchVideoDetails(String id, {bool forceRequest = false}) async {
-    final cachedFile = File("${AppDirs.YT_METADATA}$id.txt");
-    VideoInfo? vi;
-    if (forceRequest == false && await cachedFile.exists()) {
-      final res = await cachedFile.readAsJson();
-      vi = VideoInfo.fromMap(res);
-    } else {
-      final info = await NewPipeExtractorDart.videos.getInfo(id.toYTUrl());
-      vi = info;
-      _cacheVideoInfo(id, info);
-    }
-    return vi;
-  }
-
-  Future<void> _cacheVideoInfo(String id, VideoInfo? info) async {
-    if (info != null) {
-      tempVideoInfo[id] = info;
-      await File("${AppDirs.YT_METADATA}$id.txt").writeAsJson(info.toMap());
-    }
-  }
-
-  /// fetches cache version only.
-  VideoInfo? _fetchVideoDetailsFromCacheSync(String id, {bool checkFromStorage = false}) {
-    if (tempVideoInfo[id] != null) return tempVideoInfo[id]!;
-    if (checkFromStorage) {
-      final cachedFile = File("${AppDirs.YT_METADATA}$id.txt");
-      if (cachedFile.existsSync()) {
-        final res = cachedFile.readAsJsonSync();
-        if (res != null) {
-          try {
-            return VideoInfo.fromMap(res);
-          } catch (_) {}
-        }
-      }
-    }
-    return null;
-  }
-
-  YoutubeChannel? fetchChannelDetailsFromCacheSync(String? channelUrl, {bool checkFromStorage = false}) {
-    final channelId = channelUrl?.split('/').last;
-    if (tempChannelInfo[channelId] != null) return tempChannelInfo[channelId]!;
-    if (checkFromStorage) {
-      final cachedFile = File("${AppDirs.YT_METADATA_CHANNELS}$channelId.txt");
-      if (cachedFile.existsSync()) {
-        try {
-          final res = cachedFile.readAsJsonSync();
-          return YoutubeChannel.fromMap(res);
-        } catch (_) {}
-      }
-    }
-    return null;
-  }
-
-  Future<YoutubeChannel?> fetchChannelDetails(String? channelUrl, {bool forceRequest = false}) async {
-    final channelId = channelUrl?.split('/').last;
-    if (channelId == null) return null;
-    final cachedFile = File("${AppDirs.YT_METADATA_CHANNELS}$channelId.txt");
-    YoutubeChannel? vi;
-    if (!forceRequest && await cachedFile.exists()) {
-      final res = await cachedFile.readAsJson();
-      vi = YoutubeChannel.fromMap(res);
-    } else {
-      try {
-        final info = await NewPipeExtractorDart.channels.channelInfo(channelUrl);
-        vi = info;
-        tempChannelInfo[channelId] = info; // saves in memory
-        cachedFile.writeAsJson(info.toMap());
-      } catch (e) {
-        printy(e, isError: true);
-      }
-    }
-    return vi;
-  }
-
-  Future<List<VideoOnlyStream>> getAvailableVideoStreamsOnly(String id) async {
-    final videos = await NewPipeExtractorDart.videos.getVideoOnlyStreams(id.toYTUrl());
-    _sortVideoStreams(videos);
-    return videos;
-  }
-
-  Future<List<AudioOnlyStream>> getAvailableAudioOnlyStreams(String id) async {
-    final audios = await NewPipeExtractorDart.videos.getAudioOnlyStreams(id.toYTUrl());
-    _sortAudioStreams(audios);
-    return audios;
-  }
-
-  Future<YoutubeVideo> getAvailableStreams(String id) async {
-    final url = id.toYTUrl();
-    final video = await NewPipeExtractorDart.videos.getStream(url);
-    _cacheVideoInfo(id, video.videoInfo);
-
-    _sortVideoStreams(video.videoOnlyStreams);
-    _sortVideoStreams(video.videoStreams);
-    _sortAudioStreams(video.audioOnlyStreams);
-
-    return video;
-  }
-
-  void _sortVideoStreams(List<VideoStream>? streams) {
-    streams?.sortByReverseAlt(
-      (e) => e.width ?? (int.tryParse(e.resolution?.split('p').firstOrNull ?? '') ?? 0),
-      (e) => e.fps ?? 0,
-    );
-  }
-
-  void _sortAudioStreams(List<AudioOnlyStream>? streams) {
-    streams?.sortByReverseAlt(
-      (e) => e.bitrate ?? 0,
-      (e) => e.sizeInBytes ?? 0,
-    );
-  }
-
-  void _loopMapAndPostNotification({
-    required Map<String, Map<String, DownloadProgress>> bigMap,
-    required int Function(String key, int progress) speedInBytes,
-    required DateTime startTime,
+  void _postProgressNotification({
+    required DownloadTaskVideoId videoId,
+    required DownloadTaskFilename filename,
+    required DownloadProgress progressInfo,
+    required String? title,
+    required File? image,
     required bool isAudio,
+    required int? speedInBytes,
   }) {
-    final downloadingText = isAudio ? "Audio" : "Video";
-    for (final bigEntry in bigMap.entries.toList()) {
-      final map = bigEntry.value;
-      final videoId = bigEntry.key;
-      for (final entry in map.entries.toList()) {
-        final p = entry.value.progress;
-        final tp = entry.value.totalProgress;
-        final title = getVideoName(videoId) ?? videoId;
-        final speedB = speedInBytes(videoId, entry.value.progress);
-        currentSpeedsInByte[videoId] ??= <String, int>{}.obs;
-        currentSpeedsInByte[videoId]![entry.key] = speedB;
-        if (p / tp >= 1) {
-          map.remove(entry.key);
-        } else {
-          NotificationService.inst.downloadYoutubeNotification(
-            notificationID: entry.key,
-            title: "Downloading $downloadingText: $title",
-            progress: p,
-            total: tp,
-            subtitle: (progressText) => "$progressText (${speedB.fileSizeFormatted}/s)",
-            imagePath: ThumbnailManager.inst.getYoutubeThumbnailFromCacheSync(id: videoId)?.path,
-            displayTime: startTime,
-          );
-        }
+    final isRunning = speedInBytes != null;
+    NotificationManager.instance.downloadYoutubeNotification(
+      filenameWrapper: filename,
+      title: "${isRunning ? 'Downloading' : 'Paused'} ${isAudio ? 'Audio' : 'Video'}: ${title ?? videoId.videoId}",
+      progress: progressInfo.progress,
+      total: progressInfo.totalProgress,
+      subtitle: isRunning ? (progressText) => "$progressText (${speedInBytes.fileSizeFormatted}/s)" : (progressText) => progressText,
+      imagePath: image?.path,
+      displayTime: _downloadNotificationStartTime ?? DateTime.now(),
+      isRunning: isRunning,
+    );
+  }
+
+  Future<void> _postDownloadingNotifications({required bool isAudio}) async {
+    final progressMaps = isAudio ? downloadsAudioProgressMap.value : downloadsVideoProgressMap.value;
+    final speedMap = isAudio ? _notificationData._speedMapAudio : _notificationData._speedMapVideo;
+
+    final downloading = <(DownloadTaskVideoId, DownloadTaskFilename)>[];
+    for (final entry in isDownloading.value.entries) {
+      final progressMap = progressMaps[entry.key]?.value;
+      if (progressMap == null) continue;
+      for (final filename in entry.value.value.keys) {
+        if (progressMap.containsKey(filename)) downloading.add((entry.key, filename));
       }
+    }
+
+    for (final (videoId, filename) in downloading) {
+      final title = await _notificationData.titleCallback(videoId);
+      final image = await _notificationData.imageCallback(videoId);
+
+      // -- re-checking since it could have finished while awaiting
+      if (isDownloading.value[videoId]?.value[filename] != true) continue;
+      final progressInfo = progressMaps[videoId]?.value[filename];
+      if (progressInfo == null) continue;
+
+      final p = progressInfo.progress;
+      final percentage = p / progressInfo.totalProgress;
+      if (percentage >= 1 || percentage.isNaN || percentage.isInfinite) continue;
+
+      final previousProgress = speedMap[filename];
+      speedMap[filename] = p;
+      final speedB = previousProgress == null ? 0 : (p - previousProgress).withMinimum(0);
+
+      final speedsMap = currentSpeedsInByte.value[videoId];
+      if (speedsMap == null) {
+        currentSpeedsInByte.value[videoId] = <DownloadTaskFilename, int>{filename: speedB}.obs;
+        currentSpeedsInByte.refresh();
+      } else {
+        speedsMap[filename] = speedB;
+      }
+
+      _postProgressNotification(
+        videoId: videoId,
+        filename: filename,
+        progressInfo: progressInfo,
+        title: title,
+        image: image,
+        isAudio: isAudio,
+        speedInBytes: speedB,
+      );
     }
   }
 
   void _doneDownloadingNotification({
-    required String videoId,
-    required String videoTitle,
-    required String nameIdentifier,
+    required DownloadTaskVideoId videoId,
+    required DownloadTaskFilename filename,
     required File? downloadedFile,
-    required String filename,
-    required bool canceledByUser,
-  }) {
-    if (downloadedFile == null) {
-      if (!canceledByUser) {
-        NotificationService.inst.doneDownloadingYoutubeNotification(
-          notificationID: nameIdentifier,
-          videoTitle: videoTitle,
-          subtitle: 'Download Failed',
-          imagePath: ThumbnailManager.inst.getYoutubeThumbnailFromCacheSync(id: videoId)?.path,
-          failed: true,
-        );
-      }
-    } else {
+    required bool isPaused,
+    required bool isStopped,
+  }) async {
+    if (downloadedFile != null) {
       final size = downloadedFile.fileSizeFormatted();
-      NotificationService.inst.doneDownloadingYoutubeNotification(
-        notificationID: nameIdentifier,
-        videoTitle: downloadedFile.path.getFilenameWOExt,
+      final image = await _notificationData.imageCallback(videoId);
+      NotificationManager.instance.doneDownloadingYoutubeNotification(
+        filenameWrapper: filename,
+        videoTitle: filename.filename.getFilenameWOExt,
         subtitle: size == null ? '' : 'Downloaded: $size',
-        imagePath: ThumbnailManager.inst.getYoutubeThumbnailFromCacheSync(id: videoId)?.path,
+        imagePath: image?.path,
         failed: false,
       );
+      // -- remove progress only if succeeded.
+      _clearDownloadProgress(videoId, filename);
+    } else if (isPaused) {
+      final audioProgress = downloadsAudioProgressMap.value[videoId]?.value[filename];
+      final progressInfo = audioProgress ?? downloadsVideoProgressMap.value[videoId]?.value[filename];
+      if (progressInfo == null) {
+        NotificationManager.instance.removeDownloadingYoutubeNotification(filenameWrapper: filename);
+        return;
+      }
+      final title = await _notificationData.titleCallback(videoId);
+      final image = await _notificationData.imageCallback(videoId);
+      _postProgressNotification(
+        videoId: videoId,
+        filename: filename,
+        progressInfo: progressInfo,
+        title: title,
+        image: image,
+        isAudio: audioProgress != null,
+        speedInBytes: null,
+      );
+    } else if (isStopped) {
+      _clearDownloadProgress(videoId, filename);
+    } else {
+      final image = await _notificationData.imageCallback(videoId);
+      NotificationManager.instance.doneDownloadingYoutubeNotification(
+        filenameWrapper: filename,
+        videoTitle: filename.filename,
+        subtitle: 'Download Failed',
+        imagePath: image?.path,
+        failed: true,
+      );
     }
-    _tryCancelDownloadNotificationTimer();
-
-    // this removes progress when pausing.
-    // downloadsVideoProgressMap[videoId]?.remove(filename);
-    // downloadsAudioProgressMap[videoId]?.remove(filename);
   }
 
-  final _speedMapVideo = <String, int>{};
-  final _speedMapAudio = <String, int>{};
+  void _clearDownloadProgress(DownloadTaskVideoId videoId, DownloadTaskFilename filename) {
+    downloadsVideoProgressMap.value[videoId]?.remove(filename);
+    downloadsAudioProgressMap.value[videoId]?.remove(filename);
+  }
 
   Timer? _downloadNotificationTimer;
-  void _tryCancelDownloadNotificationTimer() {
-    if (downloadsVideoProgressMap.isEmpty && downloadsAudioProgressMap.isEmpty) {
-      _downloadNotificationTimer?.cancel();
-      _downloadNotificationTimer = null;
-    }
-  }
+  DateTime? _downloadNotificationStartTime;
+  final activeRawDownloadsCount = 0.obs;
 
   void _startNotificationTimer() {
-    if (_downloadNotificationTimer == null) {
-      final startTime = DateTime.now();
-      _downloadNotificationTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
-        _loopMapAndPostNotification(
-          startTime: startTime,
-          isAudio: false,
-          bigMap: downloadsVideoProgressMap,
-          speedInBytes: (key, newProgress) {
-            final previousProgress = _speedMapVideo[key] ?? 0;
-            final speed = newProgress - previousProgress;
-            _speedMapVideo[key] = newProgress;
-            return speed;
-          },
-        );
-        _loopMapAndPostNotification(
-          startTime: startTime,
-          isAudio: true,
-          bigMap: downloadsAudioProgressMap,
-          speedInBytes: (key, newProgress) {
-            final previousProgress = _speedMapAudio[key] ?? 0;
-            final speed = newProgress - previousProgress;
-            _speedMapAudio[key] = newProgress;
-            return speed;
-          },
-        );
-      });
-    }
+    if (_downloadNotificationTimer != null) return;
+    NotificationManager.instance.ensurePermissionGranted();
+    _downloadNotificationStartTime = DateTime.now();
+    _scheduleNotificationTick();
   }
 
-  Future<int?> _getContentSize(String url) async => await NewPipeExtractorDart.httpClient.getContentLength(url);
+  /// rescheduled after each tick instead of periodic, so a slow tick never overlaps the next one.
+  void _scheduleNotificationTick() {
+    _downloadNotificationTimer = Timer(const Duration(seconds: 1), _onNotificationTick);
+  }
 
-  String cleanupFilename(String filename) => filename.replaceAll(RegExp(r'[#\$|/\\!^:"]', caseSensitive: false), '_');
-
-  Future<void> loadDownloadTasksInfoFile() async {
-    await for (final f in Directory(AppDirs.YT_DOWNLOAD_TASKS).list()) {
-      if (f is File) {
-        final groupName = f.path.getFilename.split('.').first;
-        final res = await f.readAsJson() as Map<String, dynamic>?;
-        if (res != null) {
-          final fileModified = f.statSync().modified;
-          youtubeDownloadTasksMap[groupName] ??= {};
-          downloadedFilesMap[groupName] ??= {};
-          if (fileModified != DateTime(1970)) {
-            latestEditedGroupDownloadTask[groupName] ??= fileModified.millisecondsSinceEpoch;
-          }
-          for (final v in res.entries) {
-            final ytitem = YoutubeItemDownloadConfig.fromJson(v.value as Map<String, dynamic>);
-            final saveDirPath = "${AppDirs.YOUTUBE_DOWNLOADS}$groupName";
-            final file = File("$saveDirPath/${ytitem.filename}");
-            final fileExists = file.existsSync();
-            youtubeDownloadTasksMap[groupName]![v.key] = ytitem;
-            downloadedFilesMap[groupName]![v.key] = fileExists ? file : null;
-            if (!fileExists) {
-              final aFile = File("$saveDirPath/.tempa_${ytitem.filename}");
-              final vFile = File("$saveDirPath/.tempv_${ytitem.filename}");
-              if (aFile.existsSync()) {
-                downloadsAudioProgressMap[ytitem.id] ??= <String, DownloadProgress>{}.obs;
-                downloadsAudioProgressMap[ytitem.id]![ytitem.filename] = DownloadProgress(
-                  progress: aFile.fileSizeSync() ?? 0,
-                  totalProgress: 0,
-                );
-              }
-              if (vFile.existsSync()) {
-                downloadsVideoProgressMap[ytitem.id] ??= <String, DownloadProgress>{}.obs;
-                downloadsVideoProgressMap[ytitem.id]![ytitem.filename] = DownloadProgress(
-                  progress: vFile.fileSizeSync() ?? 0,
-                  totalProgress: 0,
-                );
-              }
-            }
-          }
-        }
+  Future<void> _onNotificationTick() async {
+    try {
+      await _postDownloadingNotifications(isAudio: false);
+      await _postDownloadingNotifications(isAudio: true);
+    } finally {
+      if (activeRawDownloadsCount.value > 0) {
+        _scheduleNotificationTick();
+      } else {
+        _downloadNotificationTimer = null;
+        _downloadNotificationStartTime = null;
+        _notificationData.clearAll();
       }
     }
-    youtubeDownloadTasksMap.refresh();
-    downloadedFilesMap.refresh();
   }
 
-  File? doesIDHasFileDownloaded(String id) {
-    for (final e in youtubeDownloadTasksMap.entries) {
-      for (final config in e.value.values) {
-        final groupName = e.key;
-        if (config.id == id) {
-          final file = downloadedFilesMap[groupName]?[config.filename];
-          if (file != null) {
-            return file;
-          }
-        }
+  void _onRawDownloadStarted(DownloadTaskVideoId id, DownloadTaskFilename filename) {
+    final map = isDownloading.value[id];
+    if (map == null) {
+      isDownloading.value[id] = <DownloadTaskFilename, bool>{filename: true}.obs;
+      isDownloading.refresh();
+    } else {
+      map[filename] = true;
+    }
+    activeRawDownloadsCount.value++;
+    _startNotificationTimer();
+  }
+
+  void _onRawDownloadEnded(DownloadTaskVideoId id, DownloadTaskFilename filename) {
+    activeRawDownloadsCount.value--;
+    final map = isDownloading.value[id];
+    if (map == null) return;
+    map.remove(filename);
+    if (map.value.isEmpty) isDownloading.value.remove(id);
+  }
+
+  RxMap<DownloadTaskFilename, DownloadProgress> _getOrCreateProgressMap(RxMap<DownloadTaskVideoId, RxMap<DownloadTaskFilename, DownloadProgress>> map, DownloadTaskVideoId id) {
+    var progressMap = map.value[id];
+    if (progressMap == null) {
+      progressMap = map.value[id] = <DownloadTaskFilename, DownloadProgress>{}.obs;
+      map.refresh();
+    }
+    return progressMap;
+  }
+
+  // -- things here are not refreshed. should be called in startup only.
+  Future<void> loadDownloadTasksInfoFileAsync() async {
+    isLoadingDownloadTasks.value = true;
+    final params = _DownloadTasksLoadParams(
+      tasksDatabasesPath: AppDirs.YT_DOWNLOAD_TASKS,
+      downloadLocation: AppDirs.YOUTUBE_DOWNLOADS,
+      audiosCacheDir: AppDirs.AUDIOS_CACHE,
+      videosCacheDir: AppDirs.VIDEOS_CACHE,
+      cacheTempDir: AppDirs.VIDEOS_CACHE_TEMP,
+    );
+    final res = await _IsolateFunctions.loadDownloadTasksInfoFileSync.thready(params);
+    // -- assign loaded data and update it with any modified data if any.
+    youtubeDownloadTasksMap.value = res.youtubeDownloadTasksMap.._addAllEntries(youtubeDownloadTasksMap.value);
+    downloadedFilesMap.value = res.downloadedFilesMap.._addAllEntries(downloadedFilesMap.value);
+    downloadsVideoProgressMap.value = res.downloadsVideoProgressMap.._addAllEntries(downloadsVideoProgressMap.value);
+    downloadsAudioProgressMap.value = res.downloadsAudioProgressMap.._addAllEntries(downloadsAudioProgressMap.value);
+    latestEditedGroupDownloadTask = res.latestEditedGroupDownloadTask..addAll(latestEditedGroupDownloadTask);
+    _rebuildTasksIdsIndex();
+    isLoadingDownloadTasks.value = false;
+  }
+
+  void _rebuildTasksIdsIndex() {
+    _downloadTasksIdsMap.clear();
+    for (final entry in youtubeDownloadTasksMap.value.entries) {
+      final groupName = entry.key;
+      for (final config in entry.value.values) {
+        (_downloadTasksIdsMap[config.id] ??= []).add((groupName, config));
+      }
+    }
+  }
+
+  void _indexAddTask(DownloadTaskGroupName groupName, YoutubeItemDownloadConfig config) {
+    final tasks = _downloadTasksIdsMap[config.id] ??= [];
+    final filenameKey = config.filename.key;
+    for (int i = 0; i < tasks.length; i++) {
+      if (tasks[i].$2.filename.key == filenameKey) {
+        tasks[i] = (groupName, config);
+        return;
+      }
+    }
+    tasks.add((groupName, config));
+  }
+
+  void _indexRemoveTask(YoutubeItemDownloadConfig config) {
+    final tasks = _downloadTasksIdsMap[config.id];
+    if (tasks == null) return;
+    final filenameKey = config.filename.key;
+    for (int i = 0; i < tasks.length; i++) {
+      if (tasks[i].$2.filename.key == filenameKey) {
+        tasks.removeAt(i);
+        break;
+      }
+    }
+    if (tasks.isEmpty) _downloadTasksIdsMap.remove(config.id);
+  }
+
+  File? doesIDHasFileDownloaded(DownloadTaskVideoId id) {
+    final tasks = _downloadTasksIdsMap[id];
+    if (tasks == null) return null;
+    for (int i = 0; i < tasks.length; i++) {
+      final task = tasks[i];
+      if (task.$2.cacheOnly) continue;
+      final file = downloadedFilesMap.value[task.$1]?[task.$2.filename];
+      if (file != null) return file;
+    }
+    return null;
+  }
+
+  File? doesIDHasFileDownloadedInGroup(DownloadTaskVideoId id, DownloadTaskGroupName groupName) {
+    final tasks = _downloadTasksIdsMap[id];
+    if (tasks == null) return null;
+    for (int i = 0; i < tasks.length; i++) {
+      final task = tasks[i];
+      if (task.$1 == groupName && !task.$2.cacheOnly) {
+        final file = downloadedFilesMap.value[groupName]?[task.$2.filename];
+        if (file != null) return file;
       }
     }
     return null;
   }
 
   void _matchIDsForItemConfig({
-    required List<String> videosIds,
-    required void Function(String groupName, YoutubeItemDownloadConfig config) onMatch,
+    required List<DownloadTaskVideoId> videosIds,
+    required void Function(DownloadTaskGroupName groupName, YoutubeItemDownloadConfig config) onMatch,
   }) {
-    for (final e in youtubeDownloadTasksMap.entries) {
-      for (final config in e.value.values) {
-        final groupName = e.key;
-        videosIds.loop((e, index) {
-          if (e == config.id) {
-            onMatch(groupName, config);
-          }
-        });
+    for (final id in videosIds) {
+      final tasks = _downloadTasksIdsMap[id];
+      if (tasks == null) continue;
+      // -- copied, [onMatch] can modify the list.
+      for (final task in tasks.toList()) {
+        onMatch(task.$1, task.$2);
       }
     }
   }
 
   void resumeDownloadTaskForIDs({
-    required String groupName,
-    List<String> videosIds = const [],
+    required DownloadTaskGroupName groupName,
+    List<DownloadTaskVideoId> videosIds = const [],
   }) {
     _matchIDsForItemConfig(
       videosIds: videosIds,
       onMatch: (groupName, config) {
         downloadYoutubeVideos(
           useCachedVersionsIfAvailable: true,
-          autoExtractTitleAndArtist: settings.ytAutoExtractVideoTagsFromInfo.value,
-          keepCachedVersionsIfDownloaded: settings.downloadFilesKeepCachedVersions.value,
-          downloadFilesWriteUploadDate: settings.downloadFilesWriteUploadDate.value,
           itemsConfig: [config],
           groupName: groupName,
         );
@@ -917,36 +675,84 @@ class YoutubeController {
   }
 
   Future<void> resumeDownloadTasks({
-    required String groupName,
+    required DownloadTaskGroupName groupName,
     List<YoutubeItemDownloadConfig> itemsConfig = const [],
     bool skipExistingFiles = true,
   }) async {
-    final finalItems = itemsConfig.isNotEmpty ? itemsConfig : youtubeDownloadTasksMap[groupName]?.values.toList() ?? [];
+    final finalItems = itemsConfig.isNotEmpty ? itemsConfig : youtubeDownloadTasksMap.value[groupName]?.values.toList() ?? [];
     if (skipExistingFiles) {
       finalItems.removeWhere((element) => YoutubeController.inst.downloadedFilesMap[groupName]?[element.filename] != null);
     }
     if (finalItems.isNotEmpty) {
       await downloadYoutubeVideos(
         useCachedVersionsIfAvailable: true,
-        autoExtractTitleAndArtist: settings.ytAutoExtractVideoTagsFromInfo.value,
-        keepCachedVersionsIfDownloaded: settings.downloadFilesKeepCachedVersions.value,
-        downloadFilesWriteUploadDate: settings.downloadFilesWriteUploadDate.value,
         itemsConfig: finalItems,
         groupName: groupName,
       );
     }
   }
 
+  final _pendingAutoResumeTasks = <DownloadTaskGroupName, Map<DownloadTaskFilename, YoutubeItemDownloadConfig>>{};
+  bool _autoResumeListenerRegistered = false;
+
+  /// schedules a task to be resumed once the connection is back.
+  /// only done when there is no connection at all, since shorter hiccups
+  /// are already retried internally by [_YTDownloadManager].
+  void _registerAutoResumeOnConnectionRestored(DownloadTaskGroupName groupName, YoutubeItemDownloadConfig config) {
+    if (ConnectivityController.inst.hasConnection) return;
+
+    (_pendingAutoResumeTasks[groupName] ??= {})[config.filename] = config;
+
+    if (_autoResumeListenerRegistered) return;
+    _autoResumeListenerRegistered = true;
+    ConnectivityController.inst.registerOnConnectionRestored(_onConnectionRestoredResumeTasks);
+  }
+
+  void _onConnectionRestoredResumeTasks() {
+    _autoResumeListenerRegistered = false; // the callback is fired only once
+
+    if (_pendingAutoResumeTasks.isEmpty) return;
+    final tasks = Map<DownloadTaskGroupName, Map<DownloadTaskFilename, YoutubeItemDownloadConfig>>.from(_pendingAutoResumeTasks);
+    _pendingAutoResumeTasks.clear();
+
+    for (final entry in tasks.entries) {
+      final groupName = entry.key;
+      final configs = <YoutubeItemDownloadConfig>[];
+      for (final config in entry.value.values) {
+        if (!_isTaskStopped(groupName, config)) configs.add(config);
+      }
+      if (configs.isNotEmpty) {
+        resumeDownloadTasks(
+          groupName: groupName,
+          itemsConfig: configs,
+        );
+      }
+    }
+  }
+
+  void _cancelAutoResume(DownloadTaskGroupName groupName, DownloadTaskFilename filename) {
+    final group = _pendingAutoResumeTasks[groupName];
+    if (group == null) return;
+    group.remove(filename);
+    if (group.isEmpty) _pendingAutoResumeTasks.remove(groupName);
+  }
+
+  /// paused, canceled or replaced by a newer config (restarted).
+  bool _isTaskStopped(DownloadTaskGroupName groupName, YoutubeItemDownloadConfig config) {
+    return !identical(youtubeDownloadTasksMap.value[groupName]?[config.filename], config) || youtubeDownloadTasksInQueueMap.value[groupName]?[config.filename] == false;
+  }
+
   void pauseDownloadTask({
     required List<YoutubeItemDownloadConfig> itemsConfig,
-    required String groupName,
-    List<String> videosIds = const [],
+    required DownloadTaskGroupName groupName,
+    List<DownloadTaskVideoId> videosIds = const [],
     bool allInGroupName = false,
   }) {
     youtubeDownloadTasksInQueueMap[groupName] ??= {};
-    void onMatch(String groupName, YoutubeItemDownloadConfig config) {
+    void onMatch(DownloadTaskGroupName groupName, YoutubeItemDownloadConfig config) {
       youtubeDownloadTasksInQueueMap[groupName]![config.filename] = false;
-      _downloadClientsMap[groupName]?[config.filename]?.close(force: true);
+      _cancelAutoResume(groupName, config.filename);
+      _downloadManager.stopDownload(file: _downloadClientsMap[groupName]?[config.filename]);
       _downloadClientsMap[groupName]?.remove(config.filename);
       _breakRetrievingInfoRequest(config);
     }
@@ -954,12 +760,10 @@ class YoutubeController {
     if (allInGroupName) {
       final groupClients = _downloadClientsMap[groupName];
       if (groupClients != null) {
-        for (final e in groupClients.values) {
-          e.close(force: true);
-        }
+        _downloadManager.stopDownloads(files: groupClients.values.toList());
         _downloadClientsMap.remove(groupName);
       }
-      final groupConfigs = youtubeDownloadTasksMap[groupName];
+      final groupConfigs = youtubeDownloadTasksMap.value[groupName];
       if (groupConfigs != null) {
         for (final c in groupConfigs.values) {
           onMatch(groupName, c);
@@ -971,596 +775,1332 @@ class YoutubeController {
         onMatch: onMatch,
       );
     } else {
-      itemsConfig.loop((c, _) => onMatch(groupName, c));
+      for (var c in itemsConfig) {
+        onMatch(groupName, c);
+      }
     }
     youtubeDownloadTasksInQueueMap.refresh();
   }
 
   void _breakRetrievingInfoRequest(YoutubeItemDownloadConfig c) {
-    final err = Exception('Download was canceled by the user');
-    _completersVAI[c]?.$1.completeErrorIfWasnt(err);
-    _completersVAI[c]?.$2.completeErrorIfWasnt(err);
-    _completersVAI[c]?.$3.completeErrorIfWasnt(err);
+    _completersVAI.remove(c)?.completeErrorIfWasnt(const DownloadCanceledException());
   }
 
   Future<void> cancelDownloadTask({
     required List<YoutubeItemDownloadConfig> itemsConfig,
-    required String groupName,
+    required DownloadTaskGroupName groupName,
     bool allInGroupName = false,
+    bool keepInList = false,
+    required bool delete,
   }) async {
     await _updateDownloadTask(
       itemsConfig: itemsConfig,
       groupName: groupName,
       remove: true,
+      delete: delete,
+      keepInListIfRemoved: keepInList,
       allInGroupName: allInGroupName,
+    );
+  }
+
+  /// partial files live in the group folder, so they are only reused when [newGroupName] is the same.
+  Future<void> restartDownloadTask({
+    required DownloadTaskGroupName groupName,
+    required YoutubeItemDownloadConfig oldConfig,
+    required DownloadTaskGroupName newGroupName,
+    required YoutubeItemDownloadConfig newConfig,
+    Future<void> Function(File? downloadedFile)? onOldFileDeleted,
+    Future<void> Function(File? deletedFile)? onFileDownloaded,
+  }) async {
+    await cancelDownloadTask(itemsConfig: [oldConfig], groupName: groupName, keepInList: newGroupName == groupName, delete: true);
+    await downloadYoutubeVideos(
+      useCachedVersionsIfAvailable: true,
+      itemsConfig: [newConfig],
+      groupName: newGroupName,
+      onOldFileDeleted: onOldFileDeleted,
+      onFileDownloaded: onFileDownloaded,
     );
   }
 
   Future<void> _updateDownloadTask({
     required List<YoutubeItemDownloadConfig> itemsConfig,
-    required String groupName,
+    required DownloadTaskGroupName groupName,
     bool remove = false,
+    bool delete = false,
+    bool keepInListIfRemoved = false,
     bool allInGroupName = false,
   }) async {
-    youtubeDownloadTasksMap[groupName] ??= {};
+    final downloadTasksGroupDB = await _downloadTasksMainDBManager.getDB(
+      groupName.groupName,
+      config: const DBConfig(createIfNotExist: true),
+    );
+
+    youtubeDownloadTasksMap.value[groupName] ??= {};
     youtubeDownloadTasksInQueueMap[groupName] ??= {};
     if (remove) {
-      final directory = Directory("${AppDirs.YOUTUBE_DOWNLOADS}$groupName");
-      final itemsToCancel = allInGroupName ? youtubeDownloadTasksMap[groupName]!.values.toList() : itemsConfig;
-      await itemsToCancel.loopFuture((c, _) async {
-        _downloadClientsMap[groupName]?[c.filename]?.close(force: true);
+      final itemsToCancel = allInGroupName
+          ? youtubeDownloadTasksMap.value[groupName]!.values.toFixedList()
+          : List<YoutubeItemDownloadConfig>.from(itemsConfig); // copy bcz we can remove if from original list
+      for (final c in itemsToCancel) {
+        _downloadManager.stopDownload(file: _downloadClientsMap[groupName]?[c.filename]);
         _downloadClientsMap[groupName]?.remove(c.filename);
-        youtubeDownloadTasksMap[groupName]?.remove(c.filename);
-        youtubeDownloadTasksInQueueMap[groupName]?.remove(c.filename);
         _breakRetrievingInfoRequest(c);
-        YTOnGoingFinishedDownloads.inst.youtubeDownloadTasksTempList.remove((groupName, c));
-        await File("$directory/${c.filename}").deleteIfExists();
-        downloadedFilesMap[groupName]?[c.filename] = null;
-      });
+        NotificationManager.instance.removeDownloadingYoutubeNotification(filenameWrapper: c.filename);
+        _clearDownloadProgress(c.id, c.filename); // -- a canceled task would otherwise keep showing its last progress
+        downloadTasksGroupDB.delete(c.filename.key);
+        if (!keepInListIfRemoved) {
+          youtubeDownloadTasksMap.value[groupName]?.remove(c.filename);
+          youtubeDownloadTasksInQueueMap[groupName]?.remove(c.filename);
+          _indexRemoveTask(c);
+        }
+        final isDone = downloadedFilesMap.value[groupName]?[c.filename] != null;
+        if (delete) {
+          if (c.cacheOnly) {
+            // -- the cache may have existed before the task, only a finished task owns it
+            if (isDone) _deleteCacheTaskFiles(c);
+          } else {
+            final outputFilePath = FileParts.joinPath(_getGroupDirectoryPath(groupName), c.filename.filename);
+            File(outputFilePath).tryDeleting();
+            if (c.splitByChapters == true) Directory(_getChaptersDirectoryPath(outputFilePath)).delete(recursive: true).ignoreError();
+          }
+        }
+        if (isDone) {
+          downloadedFilesMap[groupName]?[c.filename] = null;
+        } else if (!keepInListIfRemoved) {
+          _deleteTempFiles(_getTempDirectoryPath(groupName, c), c);
+        }
+      }
+      if (keepInListIfRemoved) {
+        YTOnGoingFinishedDownloads.inst.onTasksStatusChanged(groupName, itemsToCancel);
+      } else {
+        YTOnGoingFinishedDownloads.inst.onTasksRemoved(groupName, itemsToCancel);
+      }
+      // downloadTasksGroupDB.claimFreeSpaceAndCheckpoint();
 
       // -- remove groups if emptied.
-      if (youtubeDownloadTasksMap[groupName]?.isEmpty == true) {
-        youtubeDownloadTasksMap.remove(groupName);
+      if (youtubeDownloadTasksMap.value[groupName]?.isEmpty == true) {
+        youtubeDownloadTasksMap.value.remove(groupName);
+        downloadTasksGroupDB.deleteEverything();
+        // await downloadTasksGroupDB.fileInfo.file.delete(); // db.deleteEverything() leaves leftovers.
       }
     } else {
-      itemsConfig.loop((c, _) {
-        youtubeDownloadTasksMap[groupName]![c.filename] = c;
-        youtubeDownloadTasksInQueueMap[groupName]![c.filename] = true;
-      });
+      await downloadTasksGroupDB.putAllIterable(
+        itemsConfig,
+        (c) {
+          final groupTasks = youtubeDownloadTasksMap.value[groupName]!;
+          final previousConfig = groupTasks[c.filename];
+          if (previousConfig != null && !identical(previousConfig, c)) {
+            // -- replaced (restarted with edits), partial files are kept if the same streams are still used
+            final directoryPath = _getTempDirectoryPath(groupName, c);
+            _deleteTempFileIfStreamChanged(directoryPath, _kTempVideoPrefix, c.filename, previousConfig.videoStream, c.videoStream);
+            _deleteTempFileIfStreamChanged(directoryPath, _kTempAudioPrefix, c.filename, previousConfig.audioStream, c.audioStream);
+          }
+          groupTasks[c.filename] = c;
+          youtubeDownloadTasksInQueueMap[groupName]![c.filename] = true; // hehe
+          _indexAddTask(groupName, c);
+          final key = c.filename.key;
+          return MapEntry(key, c.toJson());
+        },
+      );
+      YTOnGoingFinishedDownloads.inst.onTasksStatusChanged(groupName, itemsConfig);
     }
 
     youtubeDownloadTasksMap.refresh();
     downloadedFilesMap.refresh();
 
     latestEditedGroupDownloadTask[groupName] = DateTime.now().millisecondsSinceEpoch;
-
-    await _writeTaskGroupToStorage(groupName: groupName);
   }
 
-  Future<void> _writeTaskGroupToStorage({required String groupName}) async {
-    final mapToWrite = youtubeDownloadTasksMap[groupName];
-    final file = File("${AppDirs.YT_DOWNLOAD_TASKS}$groupName.json");
-    if (mapToWrite?.isNotEmpty == true) {
-      await file.writeAsJson(mapToWrite);
-    } else {
-      await file.tryDeleting();
-    }
-  }
-
-  final _completersVAI = <YoutubeItemDownloadConfig, (Completer<void>, Completer<void>, Completer<void>)>{};
+  final _completersVAI = <YoutubeItemDownloadConfig, Completer<VideoStreamsResult?>>{};
 
   Future<void> downloadYoutubeVideos({
     required List<YoutubeItemDownloadConfig> itemsConfig,
-    String groupName = '',
-    int parallelDownloads = 1,
+    DownloadTaskGroupName groupName = const DownloadTaskGroupName.defaulty(),
     required bool useCachedVersionsIfAvailable,
-    required bool downloadFilesWriteUploadDate,
-    required bool keepCachedVersionsIfDownloaded,
-    required bool autoExtractTitleAndArtist,
-    bool deleteOldFile = true,
-    bool addAudioToLocalLibrary = true,
-    bool audioOnly = false,
     List<String> preferredQualities = const [],
     Future<void> Function(File? downloadedFile)? onOldFileDeleted,
     Future<void> Function(File? deletedFile)? onFileDownloaded,
-    Directory? saveDirectory,
+    PlaylistBasicInfo? playlistInfo,
   }) async {
-    _updateDownloadTask(groupName: groupName, itemsConfig: itemsConfig);
-    YoutubeParallelDownloadsHandler.inst.setMaxParalellDownloads(parallelDownloads);
+    await _updateDownloadTask(groupName: groupName, itemsConfig: itemsConfig);
 
     Future<void> downloady(YoutubeItemDownloadConfig config) async {
+      _cancelAutoResume(groupName, config.filename); // it's being started, no longer pending
+
+      final addAudioToLocalLibrary = config.addAudioToLocalLibrary ?? settings.downloadAddAudioToLocalLibrary.value;
+      final autoExtractTitleAndArtist = config.autoExtractTitleAndArtist ?? settings.youtube.autoExtractVideoTagsFromInfo.value;
+      final keepCachedVersionsIfDownloaded = config.keepCachedVersionsIfDownloaded ?? settings.downloadFilesKeepCachedVersions.value;
+      final downloadFilesWriteUploadDate = config.downloadFilesWriteUploadDate ?? settings.downloadFilesWriteUploadDate.value;
+      final deleteOldFile = config.deleteOldFile ?? settings.downloadOverrideOldFiles.value;
+      final removeSponsorSegments = config.removeSponsorSegments ?? settings.youtube.sponsorBlockSettings.value.removeSegmentsFromDownloads;
+      final chapter = config.chapter;
+      final splitByChapters = chapter == null && (config.splitByChapters ?? settings.youtube.splitDownloadsByChapters.value);
+
       final videoID = config.id;
 
-      _completersVAI[config] = (Completer<void>(), Completer<void>(), Completer<void>());
+      final completer = _completersVAI[config] = Completer<VideoStreamsResult?>();
+      // pls dont try to refactor this
+      YoutubeInfoController.video.fetchVideoStreams(videoID.videoId, forceRequest: true).catchError((_) => null).then((value) => _completersVAI[config]?.completeIfWasnt(value));
 
-      final completerV = _completersVAI[config]!.$1;
-      final completerA = _completersVAI[config]!.$2;
-      final completerI = _completersVAI[config]!.$3;
+      if (isFetchingData.value[videoID] == null) {
+        isFetchingData.value[videoID] = <DownloadTaskFilename, bool>{}.obs;
+        isFetchingData.refresh();
+      }
+      isFetchingData.value[videoID]![config.filename] = true;
 
-      isFetchingData[videoID] ??= <String, bool>{}.obs;
-      isFetchingData[videoID]![config.filename] = true;
+      VideoStreamsResult? streams;
 
       try {
-        final dummyVideoUrl = (config.videoStream?.url == null || config.videoStream?.url == '');
-        final dummyAudioUrl = (config.audioStream?.url == null || config.audioStream?.url == '');
-        final fetchMissing = config.fetchMissingStreams || (dummyVideoUrl && dummyAudioUrl);
-        // -- we are using url cuz we remove it when reading from json
-        if (!audioOnly && (fetchMissing || config.prefferedVideoQualityID != null) && dummyVideoUrl) {
-          getAvailableVideoStreamsOnly(videoID).then((availableVideos) {
-            _sortVideoStreams(availableVideos);
-            if (config.prefferedVideoQualityID != null) {
-              config.videoStream = availableVideos.firstWhereEff((e) => e.id == config.prefferedVideoQualityID);
-            }
-            if (config.videoStream == null || config.videoStream?.url == null || config.videoStream?.url == '') {
-              final webm = config.filename.endsWith('.webm') || config.filename.endsWith('.WEBM');
-              config.videoStream = getPreferredStreamQuality(availableVideos, qualities: preferredQualities, preferIncludeWebm: webm);
-            }
-            completerV.completeIfWasnt();
-          });
-        } else {
-          completerV.completeIfWasnt();
-        }
-        if ((fetchMissing || config.prefferedAudioQualityID != null) && dummyAudioUrl) {
-          getAvailableAudioOnlyStreams(videoID).then((audios) {
-            _sortAudioStreams(audios);
-            if (config.prefferedAudioQualityID != null) {
-              config.audioStream = audios.firstWhereEff((e) => e.id == config.prefferedAudioQualityID);
-            }
-            if (config.audioStream == null || config.audioStream?.url == null || config.audioStream?.url == '') {
-              config.audioStream = audios.firstWhereEff((e) => e.formatSuffix != 'webm') ?? audios.firstOrNull;
-            }
-            completerA.completeIfWasnt();
-          });
-        } else {
-          completerA.completeIfWasnt();
+        if (!YoutubeInfoController.video.jsPreparedIfRequired) await YoutubeInfoController.video.ensureJSPlayerInitialized();
+
+        streams = await completer.future;
+        _completersVAI.remove(config);
+        if (streams == null) throw Exception('null streams result');
+
+        final previousVideoStream = config.videoStream;
+        final previousAudioStream = config.audioStream;
+
+        // -- video
+        if (config.fetchMissingVideo == true) {
+          final videos = streams.videoStreams;
+
+          // -- refresh the current video stream (vip to avoid outdated links after restarts/etc)
+          config.videoStream = matchVideoStreamOrSimilar(videos, config.videoStream, prefferedItag: config.prefferedVideoQualityID);
+
+          // `config.videoStream?.buildUrl()?.host.isNotEmpty != true` means if null || empty || fkedup then assign
+          if (config.videoStream == null || config.videoStream?.buildUrl()?.host.isNotEmpty != true) {
+            final webm = config.filename.filename.endsWith('.webm') || config.filename.filename.endsWith('.WEBM');
+            config.videoStream = getPreferredStreamQuality(videos, qualities: preferredQualities, preferIncludeWebm: webm);
+          }
         }
 
-        if (config.ffmpegTags.isEmpty) {
-          fetchVideoDetails(videoID).then((info) {
-            final meta = YTUtils.getMetadataInitialMap(videoID, info, autoExtract: autoExtractTitleAndArtist);
+        if (config.fetchMissingAudio == true) {
+          // -- audio
+          final audios = streams.audioStreams;
 
-            config.ffmpegTags.addAll(meta);
-            config.fileDate = info?.date;
-            completerI.completeIfWasnt();
-          });
-        } else {
-          completerI.completeIfWasnt();
+          // -- refresh the current audio stream (vip to avoid outdated links after restarts/etc)
+          config.audioStream = matchAudioStreamOrSimilar(audios, config.audioStream, prefferedItag: config.prefferedAudioQualityID);
+
+          if (config.audioStream == null || config.audioStream?.buildUrl()?.host.isNotEmpty != true) {
+            config.audioStream = getPreferredAudioStream(audios) ?? audios.firstOrNull;
+          }
         }
 
-        await completerV.future;
-        await completerA.future;
-        await completerI.future;
+        final directoryPath = _getTempDirectoryPath(groupName, config);
+        _deleteTempFileIfStreamChanged(directoryPath, _kTempVideoPrefix, config.filename, previousVideoStream, config.videoStream);
+        _deleteTempFileIfStreamChanged(directoryPath, _kTempAudioPrefix, config.filename, previousAudioStream, config.audioStream);
+
+        if (config.fetchMissingVideo == true && config.videoStream == null && config.audioStream != null) {
+          // -- otherwise an audio-only file is silently downloaded while video was requested
+          snackyy(
+            title: lang.warning,
+            message: 'No video streams available for "${config.filename.filename}", downloading audio only',
+            top: false,
+          );
+        }
+
+        // -- meta info
+        if (!config.cacheOnly && (config.ffmpegTags.isEmpty || config.ffmpegTags.values.any((element) => element != null && filenameBuilder.paramRegex.hasMatch(element)))) {
+          final info = streams.info;
+          final meta = await YTUtils.getMetadataInitialMap(
+            videoID.videoId,
+            config.streamInfoItem,
+            config.videoStream,
+            config.audioStream,
+            streams,
+            playlistInfo ?? config.playlistInfo,
+            playlistInfo?.id ?? config.playlistId,
+            config.originalIndex,
+            config.totalLength,
+            autoExtract: autoExtractTitleAndArtist,
+            initialBuilding: config.ffmpegTags,
+          );
+          config.ffmpegTags.addAll(meta);
+          config.fileDate = info?.publishDate.date ?? info?.uploadDate.date;
+        }
       } catch (e) {
-        isFetchingData[videoID]?[config.filename] = false;
+        _completersVAI.remove(config);
+        isFetchingData.value[videoID]?[config.filename] = false;
+        if (e is DownloadCanceledException) {
+          // -- resumed again while the canceled request was still awaited
+          if (!_isTaskStopped(groupName, config)) return downloady(config);
+          return;
+        }
+        printy(e, isError: true);
+        snackyy(title: lang.error, message: e.toString(), isError: true);
+        _registerAutoResumeOnConnectionRestored(groupName, config);
         return;
       }
 
-      isFetchingData[videoID]?[config.filename] = false;
-      _updateDownloadTask(groupName: groupName, itemsConfig: [config]); // to refresh with new data
+      isFetchingData.value[videoID]?[config.filename] = false;
+
+      // -- paused/canceled while building metadata, nothing was there to stop it
+      if (_isTaskStopped(groupName, config)) return;
+
+      _saveDownloadTaskConfig(groupName, config); // to save refreshed streams & tags
+      youtubeDownloadTasksMap.refresh();
+
+      if (config.cacheOnly) {
+        final cachedFile = await _cacheYoutubeVideoRaw(groupName: groupName, config: config, streams: streams);
+        if (cachedFile == null && !_isTaskStopped(groupName, config)) _registerAutoResumeOnConnectionRestored(groupName, config);
+        return _onTaskFinished(groupName, config, cachedFile, onFileDownloaded);
+      }
+
+      final pageResult = await YoutubeInfoController.video.fetchVideoPage(videoID.videoId).catchError((_) => null);
+      Completer<File?>? thumbnailCompleter;
+      bool isTempThumbnail = false;
+      Future<File?> getEffectiveThumbnail() async {
+        if (thumbnailCompleter != null) return thumbnailCompleter!.future;
+        thumbnailCompleter = Completer<File?>();
+
+        final videoId = videoID.videoId;
+        File? thumbnailFile;
+        try {
+          // -- try getting cropped version if required
+          final channelName = await YoutubeInfoController.utils.getVideoChannelName(videoId);
+          const topic = '- Topic';
+          if (channelName != null && channelName.endsWith(topic)) {
+            final thumbFilePath = FileParts.joinPath(Directory.systemTemp.path, '${videoId}_${config.filename.key}.png');
+            final thumbFile = await YoutubeInfoController.video.fetchMusicVideoThumbnailToFile(videoId, thumbFilePath);
+            if (thumbFile != null) {
+              thumbnailFile = thumbFile;
+              isTempThumbnail = true;
+            }
+          }
+        } catch (_) {}
+        thumbnailFile ??= await ThumbnailManager.inst.getYoutubeThumbnailAndCache(
+          id: videoId,
+          isImportantInCache: true,
+          type: ThumbnailType.video,
+        );
+
+        thumbnailCompleter!.complete(thumbnailFile);
+
+        return thumbnailFile;
+      }
+
+      FTags? cachedTags;
+      List<File>? chapterFiles;
+      // -- split & trimmed outputs are one chapter each
+      final embeddedChapters = splitByChapters || chapter != null ? null : ChaptersController.fromStreamSegments(pageResult?.streamSegments);
 
       final downloadedFile = await _downloadYoutubeVideoRaw(
         groupName: groupName,
         id: videoID,
         config: config,
         useCachedVersionsIfAvailable: useCachedVersionsIfAvailable,
-        saveDirectory: saveDirectory,
-        filename: config.filename,
-        fileExtension: config.videoStream?.formatSuffix ?? config.audioStream?.formatSuffix ?? '',
+        streams: streams,
+        pageResult: pageResult,
         videoStream: config.videoStream,
         audioStream: config.audioStream,
-        merge: true,
         deleteOldFile: deleteOldFile,
         onOldFileDeleted: onOldFileDeleted,
         keepCachedVersionsIfDownloaded: keepCachedVersionsIfDownloaded,
-        videoDownloadingStream: (downloadedBytes) {},
-        audioDownloadingStream: (downloadedBytes) {},
-        onInitialVideoFileSize: (initialFileSize) {},
-        onInitialAudioFileSize: (initialFileSize) {},
-        ffmpegTags: config.ffmpegTags,
         onAudioFileReady: (audioFile) async {
-          final thumbnailFile = await ThumbnailManager.inst.getYoutubeThumbnailAndCache(
-            id: videoID,
-            channelUrlOrID: null,
-            isImportantInCache: true,
-          );
-          await YTUtils.writeAudioMetadata(
-            videoId: videoID,
-            audioFile: audioFile,
-            thumbnailFile: thumbnailFile,
-            tagsMap: config.ffmpegTags,
+          final path = audioFile.path;
+          final thumbnailFile = await getEffectiveThumbnail();
+          final newTags = cachedTags ??= config.buildTagsValues(path: path, thumbnailFile: thumbnailFile, chapters: embeddedChapters);
+          await NamidaTaggerController.inst.writeTagsRaw(
+            path: path,
+            newTags: newTags,
           );
         },
         onVideoFileReady: (videoFile) async {
-          await NamidaFFMPEG.inst.editMetadata(
-            path: videoFile.path,
-            tagsMap: config.ffmpegTags,
+          final path = videoFile.path;
+          final thumbnailFile = await getEffectiveThumbnail();
+          final newTags = cachedTags ??= config.buildTagsValues(path: path, thumbnailFile: thumbnailFile, chapters: embeddedChapters);
+          await NamidaTaggerController.inst.writeTagsRaw(
+            path: path,
+            newTags: newTags,
           );
         },
+        onOutputFileReady: removeSponsorSegments || splitByChapters || chapter != null
+            ? (outputFile) async {
+                final sponsorRanges = removeSponsorSegments
+                    ? await SponsorBlockController.inst.getDownloadRemovalRangesMS(videoID.videoId, categoriesNamesOverride: config.sponsorSegmentsCategories)
+                    : null;
+                final cutStartPaddingMS = config.videoStream != null ? _kVideoCutPaddingMS : 0;
+
+                if (chapter != null) {
+                  await _trimFileToChapter(
+                    outputFile: outputFile,
+                    chapter: chapter,
+                    sponsorRangesMS: sponsorRanges,
+                    config: config,
+                    thumbnailFile: await getEffectiveThumbnail(),
+                    cutStartPaddingMS: cutStartPaddingMS,
+                  );
+                  return null;
+                }
+
+                final chapters = splitByChapters ? pageResult?.streamSegments : null;
+                if (chapters != null && chapters.length > 1) {
+                  final parts = await _splitFileByChapters(
+                    outputFile: outputFile,
+                    chapters: chapters,
+                    sponsorRangesMS: sponsorRanges,
+                    config: config,
+                    thumbnailFile: await getEffectiveThumbnail(),
+                    cutStartPaddingMS: cutStartPaddingMS,
+                  );
+                  if (parts != null && parts.isNotEmpty) {
+                    chapterFiles = parts;
+                    return parts.first;
+                  }
+                }
+
+                if (sponsorRanges == null) return null;
+
+                final path = outputFile.path;
+                final didRemove = await NamidaFFMPEG.inst.removeSegments(
+                  path: path,
+                  sortedCutRangesMS: sponsorRanges,
+                  cutStartPaddingMS: cutStartPaddingMS,
+                );
+                if (!didRemove) return null;
+
+                // -- cutting drops the cover art & can drop tags depending on the container
+                final thumbnailFile = await getEffectiveThumbnail();
+                final chaptersAfterCuts = embeddedChapters == null ? null : _chaptersAfterCuts(embeddedChapters, sponsorRanges);
+                final newTags = config.buildTagsValues(path: path, thumbnailFile: thumbnailFile, chapters: chaptersAfterCuts);
+                await NamidaTaggerController.inst.writeTagsRaw(
+                  path: path,
+                  newTags: newTags,
+                );
+                return null;
+              }
+            : null,
       );
 
-      if (downloadFilesWriteUploadDate) {
-        final d = config.fileDate;
-        if (d != null && d != DateTime(0)) {
-          try {
-            await downloadedFile?.setLastAccessed(d);
-            await downloadedFile?.setLastModified(d);
-          } catch (_) {}
+      if (isTempThumbnail) {
+        if (thumbnailCompleter != null && thumbnailCompleter!.isCompleted) {
+          final thumbnailFile = await thumbnailCompleter!.future;
+          thumbnailFile?.tryDeleting();
         }
       }
 
-      // -- adding to library, only if audio downloaded
-      if (addAudioToLocalLibrary && config.audioStream != null && config.videoStream == null) {
-        downloadedFile?.path.removeTrackThenExtract();
+      final outputFiles = downloadedFile == null ? null : (chapterFiles ?? [downloadedFile]);
+
+      if (downloadFilesWriteUploadDate && outputFiles != null) {
+        final d = config.fileDate;
+        if (d != null) {
+          for (final file in outputFiles) {
+            try {
+              await file.setLastAccessed(d);
+              await file.setLastModified(d);
+            } catch (_) {}
+          }
+        }
       }
 
-      downloadedFilesMap[groupName]?[config.filename] = downloadedFile;
-      downloadedFilesMap.refresh();
-      YTOnGoingFinishedDownloads.inst.refreshList();
-      await onFileDownloaded?.call(downloadedFile);
-    }
-
-    bool checkIfCanSkip(YoutubeItemDownloadConfig config) {
-      final isCanceled = youtubeDownloadTasksMap[groupName]?[config.filename] == null;
-      final isPaused = youtubeDownloadTasksInQueueMap[groupName]?[config.filename] == false;
-      if (isCanceled || isPaused) {
-        printy('Download Skipped for "${config.filename}" bcz: canceled? $isCanceled, paused? $isPaused');
-        return true;
+      if (outputFiles != null) {
+        // -- adding to library, if audio or audio+video downloaded
+        final addToLocalLibrary = addAudioToLocalLibrary && config.audioStream != null;
+        final tracksFutures = <Future<Track?>>[];
+        for (final file in outputFiles) {
+          if (addToLocalLibrary) tracksFutures.add(Indexer.inst.convertPathToTracksAndAddToListsSingle(file.path));
+          Indexer.inst.scanMediaStore(file.path);
+        }
+        final localPlaylistName = config.localPlaylistName;
+        if (localPlaylistName != null && tracksFutures.isNotEmpty) {
+          _addDownloadedTracksToLocalPlaylist(localPlaylistName, groupName, config.originalIndex, tracksFutures);
+        }
+      } else if (!_isTaskStopped(groupName, config)) {
+        _registerAutoResumeOnConnectionRestored(groupName, config);
       }
-      return false;
+
+      await _onTaskFinished(groupName, config, downloadedFile, onFileDownloaded);
     }
 
-    for (final config in itemsConfig) {
-      // if paused, or removed (canceled), we skip it
-      if (checkIfCanSkip(config)) continue;
-
-      await YoutubeParallelDownloadsHandler.inst.waitForParallelCompleter;
-
-      // we check again bcz we been waiting...
-      if (checkIfCanSkip(config)) continue;
-
-      YoutubeParallelDownloadsHandler.inst.inc();
-      await downloady(config).then((value) {
-        YoutubeParallelDownloadsHandler.inst.dec();
-      });
+    bool shouldSkip(YoutubeItemDownloadConfig config) {
+      final skip = _isTaskStopped(groupName, config);
+      if (skip && kDebugMode) printy('Download Skipped for "${config.filename.filename}" bcz: paused, canceled or restarted');
+      return skip;
     }
-  }
 
-  String _getTempAudioPath({
-    required String groupName,
-    required String fullFilename,
-    Directory? saveDir,
-  }) {
-    return _getTempDownloadPath(
-      groupName: groupName,
-      fullFilename: fullFilename,
-      prefix: '.tempa_',
-      saveDir: saveDir,
+    await Future.wait(
+      itemsConfig.map(
+        (config) => YoutubeParallelDownloadsHandler.inst.add(
+          config: config,
+          shouldSkip: shouldSkip,
+          download: downloady,
+        ),
+      ),
     );
   }
 
-  String _getTempVideoPath({
-    required String groupName,
-    required String fullFilename,
-    Directory? saveDir,
+  Future<void> _onTaskFinished(
+    DownloadTaskGroupName groupName,
+    YoutubeItemDownloadConfig config,
+    File? downloadedFile,
+    Future<void> Function(File? downloadedFile)? onFileDownloaded,
+  ) async {
+    final dfmg = downloadedFilesMap.value[groupName] ??= {};
+    dfmg[config.filename] = downloadedFile;
+    downloadedFilesMap.refresh();
+    final dtqmg = youtubeDownloadTasksInQueueMap.value[groupName] ??= {};
+    dtqmg[config.filename] = null;
+    youtubeDownloadTasksInQueueMap.refresh();
+    YTOnGoingFinishedDownloads.inst.onTasksStatusChanged(groupName, [config]);
+    await onFileDownloaded?.call(downloadedFile);
+  }
+
+  /// an existing cache task in the same group is resumed instead of creating a duplicate.
+  Future<void> cacheYoutubeVideos({
+    required DownloadTaskGroupName groupName,
+    required Iterable<String> videoIds,
+    required Map<String, StreamInfoItem> infoLookup,
+    required bool audioOnly,
+    required List<String> preferredQualities,
   }) {
-    return _getTempDownloadPath(
+    final itemsConfig = <YoutubeItemDownloadConfig>[];
+    for (final videoId in videoIds) {
+      final id = DownloadTaskVideoId(videoId: videoId);
+      final existingTask = _downloadTasksIdsMap[id]?.firstWhereEff((e) => e.$1 == groupName && e.$2.cacheOnly);
+      if (existingTask != null) {
+        itemsConfig.add(existingTask.$2);
+        continue;
+      }
+      final info = infoLookup[videoId];
+      itemsConfig.add(
+        YoutubeItemDownloadConfig.cache(
+          id: id,
+          groupName: groupName,
+          title: info?.title ?? YoutubeInfoController.utils.getVideoNameSync(videoId) ?? videoId,
+          streamInfoItem: info,
+          audioOnly: audioOnly,
+        ),
+      );
+    }
+    return downloadYoutubeVideos(
       groupName: groupName,
-      fullFilename: fullFilename,
-      prefix: '.tempv_',
-      saveDir: saveDir,
+      itemsConfig: itemsConfig,
+      useCachedVersionsIfAvailable: true,
+      preferredQualities: preferredQualities,
     );
   }
 
-  /// [directoryPath] must NOT end with `/`
-  String _getTempDownloadPath({
-    required String groupName,
-    required String fullFilename,
-    required String prefix,
-    Directory? saveDir,
-  }) {
-    final saveDirPath = saveDir?.path ?? "${AppDirs.YOUTUBE_DOWNLOADS}$groupName";
-    return "$saveDirPath/$prefix$fullFilename";
+  static const _kTempVideoPrefix = '.tempv_';
+  static const _kTempAudioPrefix = '.tempa_';
+
+  /// serializes parallel downloads adding to the same playlist.
+  Future<void> _localPlaylistAddChain = Future.value();
+
+  /// keeps the source playlist order, whichever download finishes first.
+  void _addDownloadedTracksToLocalPlaylist(String playlistName, DownloadTaskGroupName groupName, int? originalIndex, List<Future<Track?>> tracksFutures) {
+    _localPlaylistAddChain = _localPlaylistAddChain
+        .then((_) async {
+          final tracksToAdd = (await Future.wait(tracksFutures)).whereType<Track>().toSet();
+          final playlist = PlaylistController.inst.getPlaylist(playlistName);
+          if (playlist == null) {
+            if (tracksToAdd.isNotEmpty) await PlaylistController.inst.addNewPlaylist(playlistName, tracks: tracksToAdd.toList());
+            return;
+          }
+
+          Map<String, int>? originalIndexByPath;
+          if (originalIndex != null) {
+            final groupFiles = downloadedFilesMap.value[groupName];
+            final groupConfigs = youtubeDownloadTasksMap.value[groupName];
+            if (groupFiles != null && groupConfigs != null) {
+              originalIndexByPath = <String, int>{};
+              for (final c in groupConfigs.values) {
+                final index = c.originalIndex;
+                final file = groupFiles[c.filename];
+                if (index != null && file != null) originalIndexByPath[file.path] = index;
+              }
+            }
+          }
+
+          final existing = playlist.tracks;
+          int? insertIndex;
+          for (int i = 0; i < existing.length; i++) {
+            final track = existing[i].track;
+            tracksToAdd.remove(track);
+            if (insertIndex == null && originalIndexByPath != null) {
+              final index = originalIndexByPath[track.path];
+              if (index != null && index > originalIndex!) insertIndex = i;
+            }
+          }
+          if (tracksToAdd.isEmpty) return;
+
+          int dateAdded = currentTimeMS;
+          await PlaylistController.inst.insertTracksInPlaylist(
+            playlist,
+            tracksToAdd.map((e) => TrackWithDate(dateAdded: dateAdded++, track: e)).toList(),
+            insertIndex ?? existing.length,
+          );
+        })
+        .catchError((Object e, StackTrace st) {
+          logger.error('YoutubeController._addDownloadedTracksToLocalPlaylist', e: e, st: st);
+        });
+  }
+
+  /// keyed by the task & stream size, so a different stream never resumes into another's partial file.
+  static String _getTempDownloadPath(String directoryPath, String prefix, DownloadTaskFilename filename, StreamBase stream) {
+    return FileParts.joinPath(directoryPath, '$prefix${filename.key}_${stream.sizeInBytes}.${stream.codecInfo.container}');
+  }
+
+  /// temp files used to be named after the filename.
+  static String _getLegacyTempDownloadPath(String directoryPath, String prefix, String filename, StreamBase stream) {
+    final container = stream.codecInfo.container;
+    final name = '$prefix$filename';
+    return FileParts.joinPath(directoryPath, name.endsWith(container) ? name : '$name.$container');
+  }
+
+  void _deleteCacheTaskFiles(YoutubeItemDownloadConfig config) {
+    final videoId = config.id.videoId;
+    final videoStream = config.videoStream;
+    if (videoStream != null) File(videoStream.cachePath(videoId)).tryDeleting();
+    final audioStream = config.audioStream;
+    if (audioStream != null) {
+      final audioPath = audioStream.cachePath(videoId);
+      File(audioPath).tryDeleting();
+      AudioCacheController.inst.removeFromCacheMap(videoId, audioPath);
+    }
+  }
+
+  void _deleteTempFiles(String directoryPath, YoutubeItemDownloadConfig config) {
+    final videoStream = config.videoStream;
+    if (videoStream != null) FilesDownloadManager.deleteDownloadFiles(File(_getTempDownloadPath(directoryPath, _kTempVideoPrefix, config.filename, videoStream)));
+    final audioStream = config.audioStream;
+    if (audioStream != null) FilesDownloadManager.deleteDownloadFiles(File(_getTempDownloadPath(directoryPath, _kTempAudioPrefix, config.filename, audioStream)));
+  }
+
+  void _deleteTempFileIfStreamChanged(String directoryPath, String prefix, DownloadTaskFilename filename, StreamBase? oldStream, StreamBase? newStream) {
+    if (oldStream == null) return;
+    if (newStream != null && oldStream.sizeInBytes == newStream.sizeInBytes && oldStream.codecInfo.container == newStream.codecInfo.container) return;
+    FilesDownloadManager.deleteDownloadFiles(File(_getTempDownloadPath(directoryPath, prefix, filename, oldStream)));
+  }
+
+  static const _kMinimumChapterDurationMS = 1000;
+
+  /// video cuts land on keyframes, so the packets right before one can go unplayed & the cut feels early.
+  static const _kVideoCutPaddingMS = 200;
+
+  /// the folder holding the per chapter parts of a download, derived from the output file so it can be found again on a rescan.
+  static String _getChaptersDirectoryPath(String outputFilePath) {
+    final dotIndex = outputFilePath.lastIndexOf('.');
+    return dotIndex > 0 ? outputFilePath.substring(0, dotIndex) : '$outputFilePath chapters';
+  }
+
+  static File? _findFirstChapterFileSync(String outputFilePath) {
+    File? first;
+    try {
+      final entities = Directory(_getChaptersDirectoryPath(outputFilePath)).listSync();
+      for (final entity in entities) {
+        if (entity is File && (first == null || entity.path.compareTo(first.path) < 0)) first = entity;
+      }
+    } catch (_) {}
+    return first;
+  }
+
+  static List<(int, int, String)> _buildChapterRanges(List<StreamSegment> chapters, int totalDurationMS) {
+    final ranges = <(int, int, String)>[];
+    for (final chapter in chapters) {
+      final startSeconds = chapter.startSeconds;
+      if (startSeconds == null) continue;
+      final startMS = startSeconds * 1000;
+      final previousIndex = ranges.length - 1;
+      if (previousIndex >= 0) {
+        final previous = ranges[previousIndex];
+        if (startMS - previous.$1 < _kMinimumChapterDurationMS) continue;
+        ranges[previousIndex] = (previous.$1, startMS, previous.$3);
+      }
+      ranges.add((startMS, totalDurationMS, chapter.title));
+    }
+    final lastIndex = ranges.length - 1;
+    if (lastIndex >= 0 && ranges[lastIndex].$2 - ranges[lastIndex].$1 < _kMinimumChapterDurationMS) {
+      ranges.removeLast();
+      // -- the dropped tail belongs to the chapter before it rather than to nothing
+      if (lastIndex > 0) {
+        final newLast = ranges[lastIndex - 1];
+        ranges[lastIndex - 1] = (newLast.$1, totalDurationMS, newLast.$3);
+      }
+    }
+    return ranges;
+  }
+
+  /// sponsor ranges translated into a chapter's own timeline, clipped to it. empty when the chapter is untouched.
+  static List<(int, int)> _cutRangesWithinChapter(List<(int, int)>? sortedCutRangesMS, int chapterStartMS, int chapterEndMS) {
+    if (sortedCutRangesMS == null) return const [];
+    final ranges = <(int, int)>[];
+    for (final cut in sortedCutRangesMS) {
+      if (cut.$2 <= chapterStartMS) continue;
+      if (cut.$1 >= chapterEndMS) break;
+      final startMS = cut.$1.withMinimum(chapterStartMS) - chapterStartMS;
+      final endMS = cut.$2.withMaximum(chapterEndMS) - chapterStartMS;
+      if (endMS > startMS) ranges.add((startMS, endMS));
+    }
+    return ranges;
+  }
+
+  /// shifts each chapter back by what was cut before it, one starting inside a cut moves to where the cut was.
+  static List<MediaChapter>? _chaptersAfterCuts(List<MediaChapter> chapters, List<(int, int)> sortedCutRangesMS) {
+    final shifted = <MediaChapter>[];
+    for (final chapter in chapters) {
+      final startMS = chapter.startMS;
+      int removedMS = 0;
+      for (final cut in sortedCutRangesMS) {
+        if (cut.$1 >= startMS) break;
+        removedMS += cut.$2.withMaximum(startMS) - cut.$1;
+      }
+      final newStartMS = startMS - removedMS;
+      // -- the previous chapter was cut entirely
+      if (shifted.isNotEmpty && shifted.last.startMS >= newStartMS) shifted.removeLast();
+      shifted.add(MediaChapter(startMS: newStartMS, title: chapter.title));
+    }
+    return shifted.length < 2 ? null : shifted;
+  }
+
+  /// Splits [outputFile] into one file per youtube chapter inside [_getChaptersDirectoryPath], removing
+  /// [sponsorRangesMS] from each part afterwards so the chapter bounds stay exact.
+  ///
+  /// Returns the produced parts & deletes [outputFile], or `null` when nothing was split.
+  Future<List<File>?> _splitFileByChapters({
+    required File outputFile,
+    required List<StreamSegment> chapters,
+    required List<(int, int)>? sponsorRangesMS,
+    required YoutubeItemDownloadConfig config,
+    required File? thumbnailFile,
+    required int cutStartPaddingMS,
+  }) async {
+    final path = outputFile.path;
+    final totalDuration = await NamidaFFMPEG.inst.getMediaDuration(path);
+    if (totalDuration == null) return null;
+
+    final ranges = _buildChapterRanges(chapters, totalDuration.inMilliseconds);
+    if (ranges.length < 2) return null;
+
+    String ext = '';
+    try {
+      ext = path.getExtension;
+    } catch (_) {}
+
+    final partsDirPath = _getChaptersDirectoryPath(path);
+    final partsDir = Directory(partsDirPath);
+    final albumTitle = config.ffmpegTags[FFMPEGTagField.title.tagKey] ?? '';
+    final trackTotal = ranges.length.toString();
+    final numberPadding = trackTotal.length;
+    final parts = <File>[];
+    bool didSplitAll = true;
+
+    try {
+      // -- a previous split of the same task can hold parts under now outdated chapter names
+      await partsDir.delete(recursive: true).ignoreError();
+      await partsDir.create(recursive: true);
+
+      for (int i = 0; i < ranges.length; i++) {
+        final range = ranges[i];
+        final number = (i + 1).toString().padLeft(numberPadding, '0');
+        final partName = DownloadTaskFilename.cleanupFilename('$number. ${range.$3}.$ext', parentDirPath: partsDirPath);
+        final partPath = FileParts.joinPath(partsDirPath, partName);
+
+        final didExtract = await NamidaFFMPEG.inst.extractRange(
+          path: path,
+          startMS: range.$1,
+          endMS: range.$2,
+          outputPath: partPath,
+        );
+        if (!didExtract) {
+          didSplitAll = false;
+          break;
+        }
+
+        final cutRanges = _cutRangesWithinChapter(sponsorRangesMS, range.$1, range.$2);
+        if (cutRanges.isNotEmpty) {
+          await NamidaFFMPEG.inst.removeSegments(
+            path: partPath,
+            sortedCutRangesMS: cutRanges,
+            cutStartPaddingMS: cutStartPaddingMS,
+          );
+        }
+
+        await NamidaTaggerController.inst.writeTagsRaw(
+          path: partPath,
+          newTags: config.buildTagsValues(
+            path: partPath,
+            thumbnailFile: thumbnailFile,
+            chapterOverrides: (title: range.$3, album: albumTitle, trackNumber: '${i + 1}', trackTotal: trackTotal),
+          ),
+        );
+        parts.add(File(partPath));
+      }
+    } catch (_) {
+      didSplitAll = false;
+    }
+
+    if (!didSplitAll) {
+      partsDir.delete(recursive: true).ignoreError();
+      return null;
+    }
+
+    await outputFile.tryDeleting();
+    return parts;
+  }
+
+  /// trims before removing [sponsorRangesMS], same as a [_splitFileByChapters] part, so the chapter bounds stay exact.
+  Future<void> _trimFileToChapter({
+    required File outputFile,
+    required YoutubeDownloadChapter chapter,
+    required List<(int, int)>? sponsorRangesMS,
+    required YoutubeItemDownloadConfig config,
+    required File? thumbnailFile,
+    required int cutStartPaddingMS,
+  }) async {
+    final path = outputFile.path;
+    final endMS = chapter.endMS ?? (await NamidaFFMPEG.inst.getMediaDuration(path))?.inMilliseconds;
+    if (endMS == null || endMS <= chapter.startMS) return;
+
+    String ext = '';
+    try {
+      ext = path.getExtension;
+    } catch (_) {}
+
+    final tempFile = FileParts.join(path.getDirectoryPath, '.tempchapter_${path.hashCode}.$ext');
+    final didExtract = await NamidaFFMPEG.inst.extractRange(
+      path: path,
+      startMS: chapter.startMS,
+      endMS: endMS,
+      outputPath: tempFile.path,
+    );
+    if (!didExtract || await tempFile.move(path) == null) {
+      await tempFile.tryDeleting();
+      return;
+    }
+
+    final cutRanges = _cutRangesWithinChapter(sponsorRangesMS, chapter.startMS, endMS);
+    if (cutRanges.isNotEmpty) {
+      await NamidaFFMPEG.inst.removeSegments(
+        path: path,
+        sortedCutRangesMS: cutRanges,
+        cutStartPaddingMS: cutStartPaddingMS,
+      );
+    }
+
+    await NamidaTaggerController.inst.writeTagsRaw(
+      path: path,
+      newTags: config.buildTagsValues(
+        path: path,
+        thumbnailFile: thumbnailFile,
+        chapterOverrides: (
+          title: chapter.title,
+          album: config.ffmpegTags[FFMPEGTagField.title.tagKey] ?? '',
+          trackNumber: '${chapter.number}',
+          trackTotal: '${chapter.total}',
+        ),
+      ),
+    );
+  }
+
+  /// lowercased since android & windows storages are case insensitive.
+  static String _getActiveOutputKey(DownloadTaskGroupName groupName, String filename) => '${groupName.groupName}/${filename.toLowerCase()}';
+
+  /// outputs of the currently downloading tasks, to prevent parallel tasks writing to the same file.
+  final _activeOutputFilenames = <String>{};
+
+  static final filenameBuilder = _YtFilenameRebuilder();
+
+  Future<File?> _cacheYoutubeVideoRaw({
+    required DownloadTaskGroupName groupName,
+    required YoutubeItemDownloadConfig config,
+    required VideoStreamsResult streams,
+  }) async {
+    final id = config.id;
+    final videoId = id.videoId;
+    final filename = config.filename;
+    File? cachedFile;
+    _onRawDownloadStarted(id, filename);
+    try {
+      final videoStream = config.videoStream;
+      if (videoStream != null) {
+        cachedFile = await _downloadStreamToCache(groupName, config, videoStream, _kTempVideoPrefix, videoStream.cachePath(videoId), downloadsVideoProgressMap);
+        final info = streams.info;
+        VideoController.inst.addYTVideoToCacheMap(
+          videoId,
+          NamidaVideo(
+            path: cachedFile.path,
+            ytID: videoId,
+            height: videoStream.height,
+            width: videoStream.width,
+            sizeInBytes: videoStream.sizeInBytes,
+            frameratePrecise: videoStream.fps.toDouble(),
+            creationTimeMS: (info?.publishedAt.accurateDate ?? info?.publishDate.accurateDate)?.millisecondsSinceEpoch ?? 0,
+            durationMS: videoStream.duration?.inMilliseconds ?? 0,
+            bitrate: videoStream.bitrate,
+          ),
+        );
+      }
+      final audioStream = config.audioStream;
+      if (audioStream != null) {
+        downloadsVideoProgressMap.value[id]?.remove(filename); // remove video progress so that audio progress is shown
+        cachedFile = await _downloadStreamToCache(groupName, config, audioStream, _kTempAudioPrefix, audioStream.cachePath(videoId), downloadsAudioProgressMap);
+        AudioCacheController.inst.removeFromCacheMap(videoId, cachedFile.path);
+        AudioCacheController.inst.addToCacheMap(
+          videoId,
+          AudioCacheDetails(
+            youtubeId: videoId,
+            bitrate: audioStream.bitrate,
+            langaugeCode: audioStream.audioTrack?.langCode,
+            langaugeName: audioStream.audioTrack?.displayName,
+            file: cachedFile,
+          ),
+        );
+      }
+    } on DownloadCanceledException catch (_) {
+      cachedFile = null;
+    } catch (e, st) {
+      cachedFile = null;
+      snackyy(title: 'Error Caching', message: e.toString(), isError: true);
+      logger.error('YoutubeController._cacheYoutubeVideoRaw', e: e, st: st);
+    }
+
+    _onRawDownloadEnded(id, filename);
+    _doneDownloadingNotification(
+      videoId: id,
+      filename: filename,
+      downloadedFile: cachedFile,
+      isPaused: youtubeDownloadTasksInQueueMap.value[groupName]?[filename] == false,
+      isStopped: _isTaskStopped(groupName, config),
+    );
+    return cachedFile;
+  }
+
+  Future<File> _downloadStreamToCache(
+    DownloadTaskGroupName groupName,
+    YoutubeItemDownloadConfig config,
+    StreamBase stream,
+    String tempPrefix,
+    String cachePath,
+    RxMap<DownloadTaskVideoId, RxMap<DownloadTaskFilename, DownloadProgress>> progressMaps,
+  ) async {
+    final cacheFile = File(cachePath);
+    if (await cacheFile.exists()) return cacheFile;
+
+    final filename = config.filename;
+    final progressMap = _getOrCreateProgressMap(progressMaps, config.id);
+    final totalSize = stream.sizeInBytes;
+    int bytesLength = 0;
+    final tempFile = await _checkFileAndDownload(
+      groupName: groupName,
+      url: stream.buildUrl(),
+      targetSize: totalSize,
+      config: config,
+      destinationFilePath: _getTempDownloadPath(_getTempDirectoryPath(groupName, config), tempPrefix, filename, stream),
+      onInitialFileSize: (initialFileSize) => bytesLength = initialFileSize,
+      downloadingStream: (downloadedBytesLength) {
+        bytesLength += downloadedBytesLength;
+        progressMap[filename] = DownloadProgress(progress: bytesLength, totalProgress: totalSize);
+      },
+    );
+    final size = await tempFile.fileSize();
+    if (size == null || size < totalSize) {
+      throw _DownloadErrorDescriptionsWrapper.createOrAdd(null, _DownloadErrorDescription.nonQualifiedFileSize(size, totalSize));
+    }
+    return tempFile.rename(cachePath);
   }
 
   Future<File?> _downloadYoutubeVideoRaw({
-    required String id,
-    required String groupName,
+    required DownloadTaskVideoId id,
+    required DownloadTaskGroupName groupName,
     required YoutubeItemDownloadConfig config,
     required bool useCachedVersionsIfAvailable,
-    required Directory? saveDirectory,
-    required String filename,
-    required String fileExtension,
+    required VideoStreamsResult? streams,
+    required YoutiPieVideoPageResult? pageResult,
     required VideoStream? videoStream,
-    required AudioOnlyStream? audioStream,
-    required Map<String, String?> ffmpegTags,
-    required bool merge,
+    required AudioStream? audioStream,
     required bool keepCachedVersionsIfDownloaded,
     required bool deleteOldFile,
-    required void Function(int downloadedBytesLength) videoDownloadingStream,
-    required void Function(int downloadedBytesLength) audioDownloadingStream,
-    required void Function(int initialFileSize) onInitialVideoFileSize,
-    required void Function(int initialFileSize) onInitialAudioFileSize,
     required Future<void> Function(File videoFile) onVideoFileReady,
     required Future<void> Function(File audioFile) onAudioFileReady,
     required Future<void> Function(File? deletedFile)? onOldFileDeleted,
+    required Future<File?> Function(File outputFile)? onOutputFileReady,
   }) async {
-    if (id == '') return null;
+    if (id.videoId.isEmpty) return null;
 
-    if (filename.split('.').last != fileExtension) filename = "$filename.$fileExtension";
+    VideoStreamInfo? streamInfo = streams?.info;
+    try {
+      streamInfo = await YoutubeInfoController.utils.buildOrUseVideoStreamInfo(config.id.videoId, streams);
+      pageResult ??= await YoutubeInfoController.video.fetchVideoPage(config.id.videoId);
+      streams ??= await YoutubeInfoController.video.fetchVideoStreams(config.id.videoId);
+    } catch (_) {}
 
-    final filenameClean = cleanupFilename(filename);
-    renameConfigFilename(
-      videoID: id,
-      groupName: groupName,
-      config: config,
-      newFilename: filenameClean,
-      renameCacheFiles: false, // no worries we still gonna do the job.
-    );
+    var playlistInfo = config.playlistInfo;
+    final playlistId = config.playlistId;
 
-    isDownloading[id] ??= <String, bool>{}.obs;
-    isDownloading[id]![filenameClean] = true;
-
-    _startNotificationTimer();
-
-    saveDirectory ??= Directory("${AppDirs.YOUTUBE_DOWNLOADS}$groupName");
-    await saveDirectory.create(recursive: true);
-
-    if (deleteOldFile) {
-      final file = File("${saveDirectory.path}/$filenameClean");
+    if (playlistInfo == null && playlistId != null && playlistId.isNotEmpty) {
       try {
-        if (await file.exists()) {
-          await file.delete();
-          onOldFileDeleted?.call(file);
-        }
+        final pl = await YoutubeInfoController.playlist.fetchPlaylist(playlistId: playlistId);
+        playlistInfo = pl?.info;
       } catch (_) {}
     }
 
+    final filenameWrapper = config.filename;
+    final fileExtension = getOutputContainer(videoStream, audioStream) ?? 'm4a';
+    final directoryPath = _getGroupDirectoryPath(groupName);
+    String finalFilenameTemp = filenameWrapper.filename;
+    bool requiresRenaming = false;
+    String? reservedOutputKey;
+    bool didStartDownloading = false;
+
     File? df;
-    Future<bool> fileSizeQualified({
-      required File file,
-      required int targetSize,
-      int allowanceBytes = 1024,
-    }) async {
-      final fileStats = await file.stat();
-      final ok = fileStats.size >= targetSize - allowanceBytes; // it can be bigger cuz metadata and artwork may be added later
-      return ok;
-    }
-
-    File? videoFile;
-    File? audioFile;
-
-    bool isVideoFileCached = false;
-    bool isAudioFileCached = false;
-
     try {
-      // --------- Downloading Choosen Video.
-      if (videoStream != null) {
-        final filecache = videoStream.getCachedFile(id);
-        if (useCachedVersionsIfAvailable && filecache != null && await fileSizeQualified(file: filecache, targetSize: videoStream.sizeInBytes ?? 0)) {
-          videoFile = filecache;
-          isVideoFileCached = true;
-        } else {
-          if (videoStream.sizeInBytes == null || videoStream.sizeInBytes == 0) {
-            videoStream.sizeInBytes = await _getContentSize(videoStream.url ?? '');
+      if (finalFilenameTemp.isEmpty || finalFilenameTemp == fileExtension || finalFilenameTemp == '.$fileExtension') {
+        finalFilenameTemp = settings.youtube.defaultFilenameBuilder;
+        requiresRenaming = true;
+      }
+
+      final finalFilenameTempRebuilt = filenameBuilder.rebuildFilenameWithDecodedParams(
+        finalFilenameTemp,
+        id.videoId,
+        streamInfo,
+        pageResult,
+        config.streamInfoItem,
+        playlistInfo,
+        videoStream,
+        audioStream,
+        config.originalIndex,
+        config.totalLength,
+      );
+      if (finalFilenameTempRebuilt != null && finalFilenameTempRebuilt.isNotEmpty) {
+        finalFilenameTemp = finalFilenameTempRebuilt;
+        requiresRenaming = true;
+      }
+
+      if (!finalFilenameTemp.endsWith('.$fileExtension')) {
+        finalFilenameTemp = '${_removeMediaContainerExtension(finalFilenameTemp)}.$fileExtension';
+        requiresRenaming = true;
+      }
+
+      await Directory(directoryPath).create(recursive: true);
+
+      final filenameCleanTemp = DownloadTaskFilename.cleanupFilename(finalFilenameTemp, parentDirPath: directoryPath);
+      if (filenameCleanTemp != finalFilenameTemp) {
+        finalFilenameTemp = filenameCleanTemp;
+        requiresRenaming = true;
+      }
+
+      final unsuffixedFilename = finalFilenameTemp;
+      String outputKey = _getActiveOutputKey(groupName, finalFilenameTemp);
+      for (int i = 1; !_activeOutputFilenames.add(outputKey); i++) {
+        finalFilenameTemp = DownloadTaskFilename.withNumberSuffix(unsuffixedFilename, i, parentDirPath: directoryPath);
+        outputKey = _getActiveOutputKey(groupName, finalFilenameTemp);
+        requiresRenaming = true;
+      }
+      reservedOutputKey = outputKey;
+
+      if (requiresRenaming) {
+        // ignore: invalid_use_of_protected_member
+        config.rename(finalFilenameTemp);
+        await _saveDownloadTaskConfig(groupName, config);
+      }
+
+      File? videoFile;
+      File? audioFile;
+
+      bool isVideoFileCached = false;
+      bool isAudioFileCached = false;
+
+      _DownloadErrorDescriptionsWrapper? downloadErrorDescription;
+
+      _onRawDownloadStarted(id, filenameWrapper);
+      didStartDownloading = true;
+
+      if (streams != null && streams.playability.status != VideoPlayabiltyStatus.ok) {
+        final missingStreams = config.fetchMissingVideo != false && config.fetchMissingAudio == false
+            ? streams.videoStreams.isEmpty && streams.mixedStreams.isEmpty
+            : streams.audioStreams.isEmpty && streams.mixedStreams.isEmpty;
+        if (missingStreams) {
+          final info = {
+            'info': streamInfo?.toMap(),
+            'page': pageResult?.toMap(),
+            'streams': streams.toMap()..remove('info'),
+          };
+          final infoFile = FileParts.join(directoryPath, "${filenameWrapper.filename}.json");
+          await infoFile.writeAsJson(info);
+
+          useCachedVersionsIfAvailable = true;
+          final audioExisting = await AudioCacheController.inst.getCachedAudioForId(config.id.videoId);
+
+          if (audioExisting != null) {
+            audioFile = audioExisting.file;
+            isAudioFileCached = true;
           }
 
-          int bytesLength = 0;
+          final allCachedVideos = await VideoController.inst.getNVFromIDSorted(config.id.videoId);
+          final videoExisting = await allCachedVideos.firstWhereEffAsync((e) => File(e.path).exists());
+          if (videoExisting != null) {
+            videoFile = File(videoExisting.path);
+            isVideoFileCached = true;
+          }
 
-          downloadsVideoProgressMap[id] ??= <String, DownloadProgress>{}.obs;
-          final downloadedFile = await _checkFileAndDownload(
-            groupName: groupName,
-            url: videoStream.url ?? '',
-            targetSize: videoStream.sizeInBytes ?? 0,
-            filename: filenameClean,
-            destinationFilePath: _getTempVideoPath(
-              groupName: groupName,
-              fullFilename: filenameClean,
-              saveDir: saveDirectory,
+          VideoController.inst.videosPriorityManager.setVideoPriority(config.id.videoId, CacheVideoPriority.VIP);
+
+          downloadErrorDescription = _DownloadErrorDescriptionsWrapper.createOrAdd(
+            downloadErrorDescription,
+            _DownloadErrorDescription.videoIsNotAvailable(
+              playabilty: streams.playability,
+              videoId: streams.videoId,
+              videoTitle: streams.info?.title ?? pageResult?.videoInfo?.title ?? '?',
+              infoFile: infoFile,
+              cachedAudio: audioFile,
+              cachedVideo: videoFile,
             ),
-            onInitialFileSize: (initialFileSize) {
-              onInitialVideoFileSize(initialFileSize);
-              bytesLength = initialFileSize;
-            },
-            downloadingStream: (downloadedBytesLength) {
-              videoDownloadingStream(downloadedBytesLength);
-              bytesLength += downloadedBytesLength;
-              downloadsVideoProgressMap[id]![filename] = DownloadProgress(
-                progress: bytesLength,
-                totalProgress: videoStream.sizeInBytes ?? 0,
-              );
-            },
           );
-          videoFile = downloadedFile;
-        }
-
-        final qualified = await fileSizeQualified(file: videoFile, targetSize: videoStream.sizeInBytes ?? 0);
-        if (qualified) {
-          await onVideoFileReady(videoFile);
-
-          // if we should keep as a cache, we copy the downloaded file to cache dir
-          // -- [!isVideoFileCached] is very important, otherwise it will copy to itself (0 bytes result).
-          if (isVideoFileCached == false && keepCachedVersionsIfDownloaded) {
-            await videoFile.copy(videoStream.cachePath(id));
-          }
-        } else {
-          videoFile = null;
         }
       }
-      // -----------------------------------
 
-      // --------- Downloading Choosen Audio.
-      if (audioStream != null) {
-        final filecache = audioStream.getCachedFile(id);
-        if (useCachedVersionsIfAvailable && filecache != null && await fileSizeQualified(file: filecache, targetSize: audioStream.sizeInBytes ?? 0)) {
-          audioFile = filecache;
-          isAudioFileCached = true;
+      final file = FileParts.join(directoryPath, finalFilenameTemp);
+      final fileAlreadyDownloaded = await file.exists();
+
+      if (fileAlreadyDownloaded) {
+        if (deleteOldFile) {
+          try {
+            await file.delete();
+            onOldFileDeleted?.call(file);
+          } catch (_) {}
         } else {
-          if (audioStream.sizeInBytes == null || audioStream.sizeInBytes == 0) {
-            audioStream.sizeInBytes = await _getContentSize(audioStream.url ?? '');
-          }
-          int bytesLength = 0;
-
-          downloadsAudioProgressMap[id] ??= <String, DownloadProgress>{}.obs;
-          final downloadedFile = await _checkFileAndDownload(
-            groupName: groupName,
-            url: audioStream.url ?? '',
-            targetSize: audioStream.sizeInBytes ?? 0,
-            filename: filenameClean,
-            destinationFilePath: _getTempAudioPath(
-              groupName: groupName,
-              fullFilename: filenameClean,
-              saveDir: saveDirectory,
-            ),
-            onInitialFileSize: (initialFileSize) {
-              onInitialAudioFileSize(initialFileSize);
-              bytesLength = initialFileSize;
-            },
-            downloadingStream: (downloadedBytesLength) {
-              audioDownloadingStream(downloadedBytesLength);
-              bytesLength += downloadedBytesLength;
-              downloadsAudioProgressMap[id]![filename] = DownloadProgress(
-                progress: bytesLength,
-                totalProgress: audioStream.sizeInBytes ?? 0,
-              );
-            },
-          );
-          audioFile = downloadedFile;
-        }
-        final qualified = await fileSizeQualified(file: audioFile, targetSize: audioStream.sizeInBytes ?? 0);
-
-        if (qualified) {
-          await onAudioFileReady(audioFile);
-
-          // if we should keep as a cache, we copy the downloaded file to cache dir
-          // -- [!isAudioFileCached] is very important, otherwise it will copy to itself (0 bytes result).
-          if (isAudioFileCached == false && keepCachedVersionsIfDownloaded) {
-            await audioFile.copy(audioStream.cachePath(id));
-          }
-        } else {
-          audioFile = null;
+          df = file;
         }
       }
-      // -----------------------------------
 
-      // ----- merging if both video & audio were downloaded
-      final output = "${saveDirectory.path}/$filenameClean";
-      if (merge && videoFile != null && audioFile != null) {
-        bool didMerge = await NamidaFFMPEG.inst.mergeAudioAndVideo(
-          videoPath: videoFile.path,
-          audioPath: audioFile.path,
-          outputPath: output,
-        );
-        if (!didMerge) {
-          // -- sometimes, no extension is specified, which causes failure
-          didMerge = await NamidaFFMPEG.inst.mergeAudioAndVideo(
-            videoPath: videoFile.path,
-            audioPath: audioFile.path,
-            outputPath: "$output.mp4",
-          );
+      if (df == null) {
+        // -- only download if file wasnt downloaded before
+
+        Future<bool> fileSizeQualified({
+          required File file,
+          required int targetSize,
+          int allowanceBytes = 1024,
+        }) async {
+          final fileSize = await file.fileSize();
+          return fileSize != null && fileSize >= targetSize - allowanceBytes; // it can be bigger cuz metadata and artwork may be added later
         }
-        if (didMerge) {
-          Future.wait([
-            if (isVideoFileCached == false) videoFile.tryDeleting(),
-            if (isAudioFileCached == false) audioFile.tryDeleting(),
-          ]); // deleting temp files since they got merged
-        }
-        df = File(output);
-      } else {
-        // -- renaming files, or copying if cached
-        Future<void> renameOrCopy({required File file, required String path, required bool isCachedVersion}) async {
-          if (isCachedVersion) {
-            await file.copy(path);
+
+        // -- a requested stream that failed must not end up as a (partial) final file
+        bool streamFailed = false;
+
+        if (!YoutubeInfoController.video.jsPreparedIfRequired) await YoutubeInfoController.video.ensureJSPlayerInitialized();
+
+        // --------- Downloading Choosen Video.
+        if (videoStream != null) {
+          final filecache = await videoStream.getCachedFile(id.videoId);
+          if (useCachedVersionsIfAvailable && filecache != null && await fileSizeQualified(file: filecache, targetSize: videoStream.sizeInBytes)) {
+            videoFile = filecache;
+            isVideoFileCached = true;
           } else {
-            await file.rename(path);
+            final progressMap = _getOrCreateProgressMap(downloadsVideoProgressMap, id);
+            final totalSize = videoStream.sizeInBytes;
+            int bytesLength = 0;
+            videoFile = await _checkFileAndDownload(
+              groupName: groupName,
+              url: videoStream.buildUrl(),
+              targetSize: totalSize,
+              config: config,
+              destinationFilePath: _getTempDownloadPath(directoryPath, _kTempVideoPrefix, filenameWrapper, videoStream),
+              onInitialFileSize: (initialFileSize) => bytesLength = initialFileSize,
+              downloadingStream: (downloadedBytesLength) {
+                bytesLength += downloadedBytesLength;
+                progressMap[filenameWrapper] = DownloadProgress(
+                  progress: bytesLength,
+                  totalProgress: totalSize,
+                );
+              },
+            );
+          }
+
+          final qualified = await fileSizeQualified(file: videoFile, targetSize: videoStream.sizeInBytes);
+          if (qualified) {
+            await onVideoFileReady(videoFile);
+
+            // if we should keep as a cache, we copy the downloaded file to cache dir
+            // -- [!isVideoFileCached] is very important, otherwise it will copy to itself (0 bytes result).
+            if (isVideoFileCached == false && keepCachedVersionsIfDownloaded) {
+              await videoFile.copy(videoStream.cachePath(id.videoId));
+            }
+          } else {
+            downloadErrorDescription = _DownloadErrorDescriptionsWrapper.createOrAdd(
+              downloadErrorDescription,
+              _DownloadErrorDescription.nonQualifiedFileSize(
+                await videoFile.fileSize(),
+                videoStream.sizeInBytes,
+              ),
+            );
+            streamFailed = true;
+          }
+        }
+        // -----------------------------------
+
+        // --------- Downloading Choosen Audio.
+        if (!streamFailed && audioStream != null) {
+          downloadsVideoProgressMap.value[id]?.remove(filenameWrapper); // remove video progress so that audio progress is shown
+
+          final filecache = await audioStream.getCachedFile(id.videoId);
+          if (useCachedVersionsIfAvailable && filecache != null && await fileSizeQualified(file: filecache, targetSize: audioStream.sizeInBytes)) {
+            audioFile = filecache;
+            isAudioFileCached = true;
+          } else {
+            final progressMap = _getOrCreateProgressMap(downloadsAudioProgressMap, id);
+            final totalSize = audioStream.sizeInBytes;
+            int bytesLength = 0;
+            audioFile = await _checkFileAndDownload(
+              groupName: groupName,
+              url: audioStream.buildUrl(),
+              targetSize: totalSize,
+              config: config,
+              destinationFilePath: _getTempDownloadPath(directoryPath, _kTempAudioPrefix, filenameWrapper, audioStream),
+              onInitialFileSize: (initialFileSize) => bytesLength = initialFileSize,
+              downloadingStream: (downloadedBytesLength) {
+                bytesLength += downloadedBytesLength;
+                progressMap[filenameWrapper] = DownloadProgress(
+                  progress: bytesLength,
+                  totalProgress: totalSize,
+                );
+              },
+            );
+          }
+          final qualified = await fileSizeQualified(file: audioFile, targetSize: audioStream.sizeInBytes);
+
+          if (qualified) {
+            await onAudioFileReady(audioFile);
+
+            // if we should keep as a cache, we copy the downloaded file to cache dir
+            // -- [!isAudioFileCached] is very important, otherwise it will copy to itself (0 bytes result).
+            if (isAudioFileCached == false && keepCachedVersionsIfDownloaded) {
+              await audioFile.copy(audioStream.cachePath(id.videoId));
+            }
+          } else {
+            downloadErrorDescription = _DownloadErrorDescriptionsWrapper.createOrAdd(
+              downloadErrorDescription,
+              _DownloadErrorDescription.nonQualifiedFileSize(
+                await audioFile.fileSize(),
+                audioStream.sizeInBytes,
+              ),
+            );
+            streamFailed = true;
+          }
+        }
+        // -----------------------------------
+
+        if (!streamFailed) {
+          final output = FileParts.joinPath(directoryPath, filenameWrapper.filename);
+          if (videoFile != null && audioFile != null) {
+            final didMerge = await NamidaFFMPEG.inst.mergeAudioAndVideo(
+              videoPath: videoFile.path,
+              audioPath: audioFile.path,
+              outputPath: output,
+            );
+            if (didMerge) {
+              df = File(output);
+              if (!isVideoFileCached) videoFile.delete().ignoreError();
+              if (!isAudioFileCached) audioFile.delete().ignoreError();
+            } else {
+              File(output).delete().ignoreError(); // -- a failed merge can leave an empty/partial output
+              downloadErrorDescription = _DownloadErrorDescriptionsWrapper.createOrAdd(
+                downloadErrorDescription,
+                _DownloadErrorDescription.mergeError(
+                  videoPath: videoFile.path,
+                  audioPath: audioFile.path,
+                  outputPath: output,
+                ),
+              );
+            }
+          } else {
+            // -- renaming files, or copying if cached
+            final sourceFile = videoFile ?? audioFile;
+            if (sourceFile != null) {
+              final isCachedVersion = videoFile != null ? isVideoFileCached : isAudioFileCached;
+              try {
+                df = isCachedVersion ? await sourceFile.copy(output) : await sourceFile.move(output);
+              } catch (_) {}
+            }
+            if (df == null) {
+              downloadErrorDescription = _DownloadErrorDescriptionsWrapper.createOrAdd(
+                downloadErrorDescription,
+                _DownloadErrorDescription.fileDoesNotExistAfterRenameOrCopy(
+                  vfile: videoFile,
+                  vpath: output,
+                  visCachedVersion: isVideoFileCached,
+                  afile: audioFile,
+                  apath: output,
+                  aisCachedVersion: isAudioFileCached,
+                ),
+              );
+            }
           }
         }
 
-        await Future.wait([
-          if (videoFile != null && videoStream != null)
-            renameOrCopy(
-              file: videoFile,
-              path: output,
-              isCachedVersion: isVideoFileCached,
-            ),
-          if (audioFile != null && audioStream != null)
-            renameOrCopy(
-              file: audioFile,
-              path: output,
-              isCachedVersion: isAudioFileCached,
-            ),
-        ]);
-        df = File(output);
+        if (df != null && onOutputFileReady != null) df = await onOutputFileReady(df) ?? df;
+
+        // -- [df] can still be valid here, ex: video is unavailable but cached files were used.
+        if (downloadErrorDescription != null && downloadErrorDescription.exceptions.isNotEmpty) {
+          throw downloadErrorDescription;
+        }
       }
-    } catch (e) {
+    } on DownloadCanceledException catch (_) {
+    } catch (e, st) {
       printy('Error Downloading YT Video: $e', isError: true);
+      snackyy(title: 'Error Downloading', message: e.toString(), isError: true);
+      logger.error('YoutubeController.downloadYoutubeVideoRaw: Error Downloading', e: e, st: st);
     }
 
-    isDownloading[id]![filenameClean] = false;
+    if (reservedOutputKey != null) _activeOutputFilenames.remove(reservedOutputKey);
+    if (didStartDownloading) _onRawDownloadEnded(id, filenameWrapper);
 
-    final wasPaused = youtubeDownloadTasksInQueueMap[groupName]?[filenameClean] == false;
     _doneDownloadingNotification(
       videoId: id,
-      videoTitle: filename,
-      nameIdentifier: filenameClean,
-      filename: filenameClean,
+      filename: filenameWrapper,
       downloadedFile: df,
-      canceledByUser: wasPaused,
+      isPaused: youtubeDownloadTasksInQueueMap.value[groupName]?[filenameWrapper] == false,
+      isStopped: _isTaskStopped(groupName, config),
     );
     return df;
   }
 
   /// the file returned may not be complete if the client was closed.
   Future<File> _checkFileAndDownload({
-    required String url,
+    required Uri? url,
     required int targetSize,
-    required String groupName,
-    required String filename,
+    required DownloadTaskGroupName groupName,
+    required YoutubeItemDownloadConfig config,
     required String destinationFilePath,
     required void Function(int initialFileSize) onInitialFileSize,
     required void Function(int downloadedBytesLength) downloadingStream,
   }) async {
-    int downloadStartRange = 0;
+    // -- stopped while preparing/writing tags etc, where there was no download client to stop.
+    if (_isTaskStopped(groupName, config)) throw const DownloadCanceledException();
 
-    final file = await File(destinationFilePath).create(); // retrieving the temp file (or creating a new one).
-    int initialFileSizeOnDisk = 0;
-    try {
-      initialFileSizeOnDisk = await file.length(); // fetching current size to be used as a range bytes for download request
-    } catch (_) {}
+    final filename = config.filename;
+
+    final file = File(destinationFilePath); // -- created by the download isolate if needed
+    final fileStat = await file.stat();
+    final initialFileSizeOnDisk = fileStat.type == FileSystemEntityType.notFound ? 0 : fileStat.size; // used as a range bytes for download request
     onInitialFileSize(initialFileSizeOnDisk);
     // only download if the download is incomplete, useful sometimes when file 'moving' fails.
+    Object? downloadException;
     if (initialFileSizeOnDisk < targetSize) {
-      downloadStartRange = initialFileSizeOnDisk;
-      _downloadClientsMap[groupName] ??= {};
-      _downloadClientsMap[groupName]?[filename]?.close(force: true);
-      _downloadClientsMap[groupName]?[filename] = Dio(BaseOptions(headers: {HttpHeaders.rangeHeader: 'bytes=$downloadStartRange-'}));
-      final downloadStream = await _downloadClientsMap[groupName]![filename]!
-          .get<ResponseBody>(
-            url,
-            options: Options(responseType: ResponseType.stream),
-          )
-          .then((value) => value.data);
-
-      if (downloadStream != null) {
-        final fileStream = file.openWrite(mode: FileMode.append);
-        await for (final data in downloadStream.stream) {
-          fileStream.add(data);
-          downloadingStream(data.length);
-        }
-        await fileStream.flush();
-        await fileStream.close(); // closing file.
-      }
+      (_downloadClientsMap[groupName] ??= {})[filename] = file;
+      downloadException = await _downloadManager.download(
+        url: url,
+        file: file,
+        totalBytes: targetSize,
+        threads: settings.youtube.downloadThreadsCount.value,
+        downloadingStream: downloadingStream,
+      );
     }
-    _downloadClientsMap[groupName]?[filename]?.close(force: true);
     _downloadClientsMap[groupName]?.remove(filename);
-    return File(destinationFilePath);
+    if (downloadException != null) {
+      throw downloadException;
+    }
+    return file;
   }
 
-  SendPort? downloadDisposePort;
+  final _downloadManager = FilesDownloadManager.inst;
+  File? _latestSingleDownloadingFile;
   Future<NamidaVideo?> downloadYoutubeVideo({
     required String id,
-    VideoStream? stream,
-    required void Function(List<VideoOnlyStream> availableStreams) onAvailableQualities,
-    required void Function(VideoOnlyStream choosenStream) onChoosingQuality,
+    required VideoStream stream,
+    required DateTime? creationDate,
+    required void Function(List<VideoStream> availableStreams) onAvailableQualities,
+    required void Function(VideoStream choosenStream) onChoosingQuality,
     required void Function(int downloadedBytesLength) downloadingStream,
     required void Function(int initialFileSize) onInitialFileSize,
     required bool Function() canStartDownloading,
@@ -1569,33 +2109,17 @@ class YoutubeController {
     NamidaVideo? dv;
     try {
       // --------- Getting Video to Download.
-      late VideoOnlyStream erabaretaStream;
-      if (stream != null) {
-        erabaretaStream = stream;
-      } else {
-        final availableVideos = await getAvailableVideoStreamsOnly(id);
-
-        _sortVideoStreams(availableVideos);
-
-        onAvailableQualities(availableVideos);
-
-        erabaretaStream = availableVideos.last; // worst quality
-
-        if (stream == null) {
-          erabaretaStream = getPreferredStreamQuality(availableVideos);
-        }
-      }
+      VideoStream erabaretaStream = stream;
 
       onChoosingQuality(erabaretaStream);
       // ------------------------------------
 
       // --------- Downloading Choosen Video.
       String getVPath(bool isTemp) {
-        final dir = isTemp ? AppDirs.VIDEOS_CACHE_TEMP : null;
-        return erabaretaStream.cachePath(id, directory: dir);
+        return isTemp ? erabaretaStream.cachePathTemp(id) : erabaretaStream.cachePath(id);
       }
 
-      final erabaretaStreamSizeInBytes = erabaretaStream.sizeInBytes ?? 0;
+      final erabaretaStreamSizeInBytes = erabaretaStream.sizeInBytes;
 
       final file = await File(getVPath(true)).create(); // retrieving the temp file (or creating a new one).
       int initialFileSizeOnDisk = 0;
@@ -1603,115 +2127,392 @@ class YoutubeController {
         initialFileSizeOnDisk = await file.length(); // fetching current size to be used as a range bytes for download request
       } catch (_) {}
       onInitialFileSize(initialFileSizeOnDisk);
-      // only download if the download is incomplete, useful sometimes when file 'moving' fails.
-      if (initialFileSizeOnDisk < erabaretaStreamSizeInBytes) {
+
+      bool downloaded = false;
+      final newFilePath = getVPath(false);
+      if (initialFileSizeOnDisk >= erabaretaStreamSizeInBytes) {
+        try {
+          final movedFile = await file.move(
+            newFilePath,
+            goodBytesIfCopied: (newFileLength) async => (await file.length()) > newFileLength - 1024,
+          );
+          downloaded = movedFile != null;
+        } catch (_) {}
+      } else {
+        // only download if the download is incomplete, useful sometimes when file 'moving' fails.
         if (!canStartDownloading()) return null;
-        final downloadStartRange = initialFileSizeOnDisk;
 
-        downloadDisposePort?.send(null); // disposing old download process
+        _downloadManager.stopDownload(file: _latestSingleDownloadingFile); // disposing old download process
+        _latestSingleDownloadingFile = file;
 
-        final progressPort = ReceivePort();
-        final commPort = ReceivePort();
-        progressPort.listen((message) {
-          downloadingStream(message as int);
-        });
-        commPort.listen((message) {
-          if (message is SendPort) {
-            downloadDisposePort = message;
-          }
-        });
+        if (!YoutubeInfoController.video.jsPreparedIfRequired) await YoutubeInfoController.video.ensureJSPlayerInitialized();
 
-        final downloaded = await _downloadStreamToFile.thready({
-          'url': erabaretaStream.url ?? '',
-          'file': file,
-          'downloadStartRange': downloadStartRange,
-          'commPort': commPort.sendPort,
-          'progressPort': progressPort.sendPort,
-        });
-        progressPort.close();
-        commPort.close();
-        if (!downloaded) return null;
+        final downloadException = await _downloadManager.download(
+          url: erabaretaStream.buildUrl(),
+          file: file,
+          totalBytes: erabaretaStreamSizeInBytes,
+          threads: settings.youtube.downloadThreadsCount.value,
+          downloadingStream: downloadingStream,
+          moveTo: newFilePath,
+          moveToRequiredBytes: erabaretaStreamSizeInBytes,
+        );
+        downloaded = downloadException == null;
+
+        if (downloadException != null) {
+          throw downloadException;
+        }
       }
 
-      // ------------------------------------
-
-      // -- ensuring the file is downloaded completely before moving.
-      final fileStats = await file.stat();
-      const allowance = 1024; // 1KB allowance
-      if (fileStats.size >= erabaretaStreamSizeInBytes - allowance) {
-        final newfile = await file.rename(getVPath(false));
+      if (downloaded) {
         dv = NamidaVideo(
-          path: newfile.path,
+          path: newFilePath,
           ytID: id,
-          nameInCache: newfile.path.getFilenameWOExt,
-          height: erabaretaStream.height ?? 0,
-          width: erabaretaStream.width ?? 0,
+          nameInCache: newFilePath.getFilenameWOExt,
+          height: erabaretaStream.height,
+          width: erabaretaStream.width,
           sizeInBytes: erabaretaStreamSizeInBytes,
-          frameratePrecise: erabaretaStream.fps?.toDouble() ?? 0.0,
-          creationTimeMS: 0, // TODO: get using metadata
-          durationMS: erabaretaStream.durationMS ?? 0,
-          bitrate: erabaretaStream.bitrate ?? 0,
+          frameratePrecise: erabaretaStream.fps.toDouble(),
+          creationTimeMS: creationDate?.millisecondsSinceEpoch ?? 0,
+          durationMS: erabaretaStream.duration?.inMilliseconds ?? 0,
+          bitrate: erabaretaStream.bitrate,
         );
       }
-    } catch (e) {
+    } on DownloadCanceledException catch (_) {
+    } catch (e, st) {
       printy('Error Downloading YT Video: $e', isError: true);
+      snackyy(title: 'Error Downloading', message: e.toString(), isError: true);
+      logger.error('YoutubeController.downloadYoutubeVideo: Error Downloading', e: e, st: st);
     }
 
     return dv;
   }
 
-  static Future<bool> _downloadStreamToFile(Map params) async {
-    final url = params['url'] as String;
-    final file = params['file'] as File;
-    final downloadStartRange = params['downloadStartRange'] as int;
-    final commPort = params['commPort'] as SendPort;
-    final progressPort = params['progressPort'] as SendPort;
-
-    final client = HttpClient();
-
-    final disposeReciever = ReceivePort();
-    disposeReciever.listen((message) {
-      client.close(force: true);
-      disposeReciever.close();
-    });
-    commPort.send(disposeReciever.sendPort);
-
-    try {
-      final request = await client.getUrl(Uri.parse(url));
-      request.headers.set('range', 'bytes=$downloadStartRange-');
-      final response = await request.close();
-      final downloadStream = response.asBroadcastStream();
-
-      final fileStream = file.openWrite(mode: FileMode.append);
-      await for (final data in downloadStream) {
-        fileStream.add(data);
-        progressPort.send(data.length);
-      }
-      await fileStream.flush();
-      await fileStream.close(); // closing file.
-      client.close(force: true);
-      return true;
-    } catch (_) {
-      return false;
-    }
+  void stopLatestSingleDownload() {
+    _downloadManager.stopDownload(file: _latestSingleDownloadingFile);
   }
 
   void dispose({bool closeCurrentDownloadClient = true, bool closeAllClients = false}) {
     if (closeCurrentDownloadClient) {
-      downloadDisposePort?.send(null);
-      downloadDisposePort = null;
+      stopLatestSingleDownload();
     }
 
     if (closeAllClients) {
       for (final c in _downloadClientsMap.values) {
-        for (final client in c.values) {
-          client.close(force: true);
+        for (final file in c.values) {
+          _downloadManager.stopDownload(file: file);
         }
       }
     }
   }
 }
 
-extension _IDToUrlConvert on String {
-  String toYTUrl() => 'https://www.youtube.com/watch?v=$this';
+class _IsolateFunctions {
+  static Future<_DownloadTaskInitWrapper> loadDownloadTasksInfoFileSync(_DownloadTasksLoadParams params) async {
+    late final downloadTasksMainDBManager = DBWrapperMainSync(params.tasksDatabasesPath);
+
+    final youtubeDownloadTasksMap = <DownloadTaskGroupName, Map<DownloadTaskFilename, YoutubeItemDownloadConfig>>{};
+    final downloadedFilesMap = <DownloadTaskGroupName, Map<DownloadTaskFilename, File?>>{};
+    final downloadsVideoProgressMap = <DownloadTaskVideoId, RxMap<DownloadTaskFilename, DownloadProgress>>{};
+    final downloadsAudioProgressMap = <DownloadTaskVideoId, RxMap<DownloadTaskFilename, DownloadProgress>>{};
+    final latestEditedGroupDownloadTask = <DownloadTaskGroupName, int>{};
+
+    final allFiles = Directory(params.tasksDatabasesPath).listSyncSafe();
+    final oldJsonFiles = <File>[];
+    final newDBFiles = <File>[];
+    for (var item in allFiles) {
+      if (item is File) item.path.endsWith('.json') ? oldJsonFiles.add(item) : newDBFiles.add(item);
+    }
+
+    /// also migrates legacy temp files to the new naming.
+    int? getTempFileSize(String directoryPath, String prefix, DownloadTaskFilename filename, StreamBase stream) {
+      final path = YoutubeController._getTempDownloadPath(directoryPath, prefix, filename, stream);
+      final stat = File(path).statSync();
+      if (stat.type != FileSystemEntityType.notFound) return stat.size + FilesDownloadManager.chunksSizeSync(path);
+
+      final legacyFile = File(YoutubeController._getLegacyTempDownloadPath(directoryPath, prefix, filename.filename, stream));
+      final legacyStat = legacyFile.statSync();
+      if (legacyStat.type == FileSystemEntityType.notFound) return null;
+      try {
+        legacyFile.renameSync(path);
+        return legacyStat.size;
+      } catch (_) {
+        return null;
+      }
+    }
+
+    DownloadTaskGroupName fileToGroupName(File file) {
+      final filenameWOExt = file.path.getFilenameWOExt;
+      return filenameWOExt.startsWith('.') ? DownloadTaskGroupName.defaulty() : DownloadTaskGroupName(groupName: filenameWOExt);
+    }
+
+    // -- migrating old .json files to .db
+    for (final file in oldJsonFiles) {
+      final group = fileToGroupName(file);
+
+      try {
+        final res = file.readAsJsonSync(ensureExists: false) as Map<String, dynamic>?;
+        if (res != null) {
+          final downloadTasksGroupDB = await downloadTasksMainDBManager.getDB(
+            group.groupName,
+            config: const DBConfig(createIfNotExist: true, autoDisposeTimerDuration: null),
+          );
+          for (final r in res.entries) {
+            downloadTasksGroupDB.put(r.key, r.value);
+          }
+          final downloadTasksGroupDBFile = downloadTasksGroupDB.fileInfo.file;
+          final dbWasJustCreated = newDBFiles.firstWhereEff((f) => f.path == downloadTasksGroupDBFile.path) == null;
+          if (dbWasJustCreated) newDBFiles.add(downloadTasksGroupDBFile);
+          try {
+            final originalFileDates = file.statSync();
+            downloadTasksGroupDBFile.setLastModifiedSync(originalFileDates.modified);
+            downloadTasksGroupDBFile.setLastAccessedSync(originalFileDates.accessed);
+          } catch (_) {}
+        }
+      } catch (_) {}
+
+      try {
+        file.deleteSync();
+      } catch (_) {}
+    }
+
+    bool hadEmptyGroups = false;
+    final dbsThatHadError = <DownloadTaskGroupName, bool>{};
+
+    for (final dbFile in newDBFiles) {
+      final group = fileToGroupName(dbFile);
+
+      if (youtubeDownloadTasksMap[group] == null) {
+        final fileModified = dbFile.statSync().modified;
+        youtubeDownloadTasksMap[group] = {};
+        downloadedFilesMap[group] = {};
+        if (fileModified != DateTime(1970)) {
+          latestEditedGroupDownloadTask[group] ??= fileModified.millisecondsSinceEpoch;
+        }
+      }
+
+      try {
+        final downloadTasksGroupDB = await downloadTasksMainDBManager.getDB(group.groupName, config: const DBConfig(autoDisposeTimerDuration: null));
+        downloadTasksGroupDB.loadEverything((itemMap) {
+          final ytitem = YoutubeItemDownloadConfig.fromJson(itemMap);
+          final String saveDirPath;
+          File? existingFile;
+          if (ytitem.cacheOnly) {
+            saveDirPath = params.cacheTempDir;
+            final cachePath = YoutubeController._getCacheTaskFilePath(ytitem, audiosCacheDir: params.audiosCacheDir, videosCacheDir: params.videosCacheDir);
+            final cacheFile = cachePath == null ? null : File(cachePath);
+            if (cacheFile != null && cacheFile.existsSync()) existingFile = cacheFile;
+          } else {
+            saveDirPath = FileParts.joinPath(params.downloadLocation, group.groupName);
+            final file = FileParts.join(saveDirPath, ytitem.filename.filename);
+            existingFile = file.existsSync() ? file : null;
+            // -- a split download leaves no merged file behind, its chapters folder is what marks it as done
+            if (existingFile == null && ytitem.splitByChapters == true) existingFile = YoutubeController._findFirstChapterFileSync(file.path);
+          }
+          final fileExists = existingFile != null;
+          final itemFileName = ytitem.filename;
+          youtubeDownloadTasksMap[group]![itemFileName] = ytitem;
+          downloadedFilesMap[group]![itemFileName] = existingFile;
+          if (!fileExists) {
+            final audioStream = ytitem.audioStream;
+            final audioSize = audioStream == null ? null : getTempFileSize(saveDirPath, YoutubeController._kTempAudioPrefix, itemFileName, audioStream);
+            if (audioSize != null) {
+              (downloadsAudioProgressMap[ytitem.id] ??= <DownloadTaskFilename, DownloadProgress>{}.obs).value[itemFileName] = DownloadProgress(
+                progress: audioSize,
+                totalProgress: audioStream!.sizeInBytes,
+              );
+            }
+            final videoStream = ytitem.videoStream;
+            final videoSize = videoStream == null ? null : getTempFileSize(saveDirPath, YoutubeController._kTempVideoPrefix, itemFileName, videoStream);
+            if (videoSize != null) {
+              (downloadsVideoProgressMap[ytitem.id] ??= <DownloadTaskFilename, DownloadProgress>{}.obs).value[itemFileName] = DownloadProgress(
+                progress: videoSize,
+                totalProgress: videoStream!.sizeInBytes,
+              );
+            }
+          }
+        });
+      } catch (_) {
+        dbsThatHadError[group] = true;
+      }
+      if (!hadEmptyGroups && (youtubeDownloadTasksMap[group]?.isEmpty ?? true)) {
+        hadEmptyGroups = true;
+      }
+    }
+
+    // we loop again to give a chance for duplicated groups, if any.
+    if (hadEmptyGroups) {
+      for (var dbFile in newDBFiles) {
+        final group = fileToGroupName(dbFile);
+        if (dbsThatHadError[group] != true && (youtubeDownloadTasksMap[group]?.isEmpty ?? true)) {
+          // db is empty, delete it. we don't delete immediately at runtime bcz it might be accessed again after deleting and many bad things would happen.
+          youtubeDownloadTasksMap.remove(group);
+          downloadedFilesMap.remove(group);
+          latestEditedGroupDownloadTask.remove(group);
+          try {
+            dbFile.deleteSync();
+          } catch (_) {}
+        }
+      }
+    }
+
+    downloadTasksMainDBManager.closeAll();
+
+    return _DownloadTaskInitWrapper(
+      youtubeDownloadTasksMap: youtubeDownloadTasksMap,
+      downloadedFilesMap: downloadedFilesMap,
+      downloadsVideoProgressMap: downloadsVideoProgressMap,
+      downloadsAudioProgressMap: downloadsAudioProgressMap,
+      latestEditedGroupDownloadTask: latestEditedGroupDownloadTask,
+    );
+  }
+}
+
+class _DownloadTaskInitWrapper {
+  final Map<DownloadTaskGroupName, Map<DownloadTaskFilename, YoutubeItemDownloadConfig>> youtubeDownloadTasksMap;
+  final Map<DownloadTaskGroupName, Map<DownloadTaskFilename, File?>> downloadedFilesMap;
+  final Map<DownloadTaskVideoId, RxMap<DownloadTaskFilename, DownloadProgress>> downloadsVideoProgressMap;
+  final Map<DownloadTaskVideoId, RxMap<DownloadTaskFilename, DownloadProgress>> downloadsAudioProgressMap;
+  final Map<DownloadTaskGroupName, int> latestEditedGroupDownloadTask;
+
+  const _DownloadTaskInitWrapper({
+    required this.youtubeDownloadTasksMap,
+    required this.downloadedFilesMap,
+    required this.downloadsVideoProgressMap,
+    required this.downloadsAudioProgressMap,
+    required this.latestEditedGroupDownloadTask,
+  });
+}
+
+class _DownloadTasksLoadParams {
+  final String tasksDatabasesPath;
+  final String downloadLocation;
+  final String audiosCacheDir;
+  final String videosCacheDir;
+  final String cacheTempDir;
+
+  const _DownloadTasksLoadParams({
+    required this.tasksDatabasesPath,
+    required this.downloadLocation,
+    required this.audiosCacheDir,
+    required this.videosCacheDir,
+    required this.cacheTempDir,
+  });
+}
+
+extension _MapUtils<MK, K, V> on Map<MK, Map<K, V>> {
+  void _addAllEntries(Map<MK, Map<K, V>> other) {
+    final mainMap = this;
+    for (final entry in other.entries) {
+      for (final e in entry.value.entries) {
+        mainMap[entry.key] ??= <K, V>{};
+        mainMap[entry.key]![e.key] = e.value;
+      }
+    }
+  }
+}
+
+extension _RxMapUtils<MK, K, V> on Map<MK, RxMap<K, V>> {
+  void _addAllEntries(Map<MK, RxMap<K, V>> other) {
+    final mainMap = this;
+    for (final entry in other.entries) {
+      for (final e in entry.value.entries) {
+        mainMap[entry.key] ??= <K, V>{}.obs;
+        mainMap[entry.key]![e.key] = e.value;
+      }
+    }
+  }
+}
+
+class _DownloadErrorDescriptionsWrapper implements Exception {
+  _DownloadErrorDescriptionsWrapper._();
+
+  final exceptions = <_DownloadErrorDescription>[];
+
+  void add(_DownloadErrorDescription error) {
+    exceptions.add(error);
+  }
+
+  static _DownloadErrorDescriptionsWrapper createOrAdd(_DownloadErrorDescriptionsWrapper? original, _DownloadErrorDescription error) {
+    original ??= _DownloadErrorDescriptionsWrapper._();
+    if (error.type == _DownloadErrorType.file_does_not_exist_after_rename_or_copy || error.type == _DownloadErrorType.non_qualified_file_size) {
+      if (original.exceptions.any((element) => element.type == _DownloadErrorType.video_is_not_available)) {
+        return original; // dont add these errors if video not available
+      }
+    }
+    original.add(error);
+    return original;
+  }
+
+  @override
+  String toString() {
+    return exceptions.map((e) => e.toString()).join('\n\n');
+  }
+}
+
+class _DownloadErrorDescription implements Exception {
+  final _DownloadErrorType type;
+  final String message;
+  const _DownloadErrorDescription._(this.type, this.message);
+
+  factory _DownloadErrorDescription.nonQualifiedFileSize(int? size, int requiredSize) {
+    final msg = 'size: $size | requiredSize $requiredSize | diff ${requiredSize - (size ?? 0)}';
+    return _DownloadErrorDescription._(
+      _DownloadErrorType.non_qualified_file_size,
+      msg,
+    );
+  }
+
+  factory _DownloadErrorDescription.mergeError({required String videoPath, required String audioPath, required String outputPath}) {
+    final msg = 'videoPath: $videoPath | audioPath: $audioPath | outputPath: $outputPath';
+    return _DownloadErrorDescription._(
+      _DownloadErrorType.merge_error,
+      msg,
+    );
+  }
+
+  factory _DownloadErrorDescription.videoIsNotAvailable({
+    required String videoId,
+    required String videoTitle,
+    required VideoPlayabilty playabilty,
+    required File infoFile,
+    required File? cachedAudio,
+    required File? cachedVideo,
+  }) {
+    final extraReasons = [playabilty.reason, ...?playabilty.messages].whereType<String>();
+    final extraReasonsText = extraReasons.isEmpty ? '' : ' | ${extraReasons.join(' | ')}';
+    String msg = 'playability: ${playabilty.status.name}$extraReasonsText\n$videoId - $videoTitle\nvideo info is saved to ${infoFile.path}';
+    if (cachedAudio != null) msg = '$msg\ncached audio was found and will be used instead';
+    if (cachedVideo != null) msg = '$msg\ncached video was found and will be used instead';
+    return _DownloadErrorDescription._(
+      _DownloadErrorType.video_is_not_available,
+      msg,
+    );
+  }
+
+  factory _DownloadErrorDescription.fileDoesNotExistAfterRenameOrCopy({
+    required File? vfile,
+    required String vpath,
+    required bool visCachedVersion,
+    required File? afile,
+    required String apath,
+    required bool aisCachedVersion,
+  }) {
+    final vmsg = 'vfile: $vfile | vpath $vpath | visCachedVersion $visCachedVersion';
+    final amsg = 'afile: $afile | apath $apath | aisCachedVersion $aisCachedVersion';
+    final msg = '$vmsg\n$amsg';
+    return _DownloadErrorDescription._(
+      _DownloadErrorType.file_does_not_exist_after_rename_or_copy,
+      msg,
+    );
+  }
+
+  @override
+  String toString() => 'type: ${type.name}\nmessage: $message';
+}
+
+enum _DownloadErrorType {
+  video_is_not_available,
+  non_qualified_file_size,
+  merge_error,
+  file_does_not_exist_after_rename_or_copy,
 }

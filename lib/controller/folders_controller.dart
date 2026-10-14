@@ -1,82 +1,556 @@
-import 'package:get/get.dart';
+import 'package:flutter/material.dart';
 
 import 'package:namida/class/folder.dart';
 import 'package:namida/class/track.dart';
+import 'package:namida/class/video.dart';
+import 'package:namida/controller/indexer_controller.dart';
 import 'package:namida/controller/scroll_search_controller.dart';
 import 'package:namida/controller/search_sort_controller.dart';
 import 'package:namida/controller/settings_controller.dart';
 import 'package:namida/core/enums.dart';
 import 'package:namida/core/extensions.dart';
+import 'package:namida/core/utils.dart';
 
-class Folders {
-  static Folders get inst => _instance;
-  static final Folders _instance = Folders._internal();
-  Folders._internal();
+class FoldersController<T extends Folder, E extends Track> {
+  static final FoldersController<Folder, Track> tracksAndVideos = FoldersController<Folder, Track>._(
+    Indexer.inst.mainMapFoldersTracksAndVideos,
+    LibraryTab.folders,
+    FoldersPageConfig.tracksAndVideos(),
+  );
+  static final FoldersController<Folder, Track> tracks = FoldersController<Folder, Track>._(
+    Indexer.inst.mainMapFoldersTracks,
+    LibraryTab.foldersMusic,
+    FoldersPageConfig.tracks(),
+  );
+  static final FoldersController<VideoFolder, Video> videos = FoldersController<VideoFolder, Video>._(
+    Indexer.inst.mainMapFoldersVideos,
+    LibraryTab.foldersVideos,
+    FoldersPageConfig.videos(),
+  );
+  FoldersController._(this._foldersMap, this._tab, this._config);
 
-  final Rxn<Folder> currentFolder = Rxn<Folder>();
+  RxBaseCore<Map<T, List<E>>> get foldersMap => _foldersMap;
+  LibraryTab get libraryTab => _tab;
+  QueueSource getQueueSource(T folder) => _config.queueSource(folder.path);
+  RxBaseCore<Map<T?, T?>> get lastVisitedFolderMap => _lastVisitedFolderMap;
 
-  final RxList<Folder> currentFolderslist = <Folder>[].obs;
+  String getCurrentFolderToBookmark() {
+    if (isHome.value) return '';
+    return currentFolder.value?.path ?? '';
+  }
 
-  List<Track> get currentTracks => currentFolder.value?.tracks ?? [];
+  final RxMap<T, List<E>> _foldersMap;
+  final LibraryTab _tab;
+  final FoldersPageConfig _config;
+
+  final Rxn<T> currentFolder = Rxn<T>();
+
+  final RxList<T> currentFolderslist = <T>[].obs;
+  List<E>? get currentFolderTracksList => folderToTracks(currentFolder.value);
+
+  List<E>? folderToTracks(T? folder) {
+    return folder == null ? null : _foldersMap.value[folder];
+  }
+
+  int? currentNodeFoldersCount(T folder, {bool recursive = false, bool preferRecursiveForRootFolders = false}) {
+    if (preferRecursiveForRootFolders) {
+      final isRoot = isHome.value; // yeah whatever for now
+      if (isRoot) recursive = true;
+    }
+    return _pathsTreeMapCurrent?.getFoldersCountInsideFolder(folder, recursive: recursive) ?? //
+        _pathsTreeMapRoot.getFoldersCountInsideFolder(folder, recursive: recursive);
+  }
+
+  List<E> getNodeTracks(T folder, {bool recursive = false}) {
+    return _pathsTreeMapCurrent?.getTracksCountInsideFolder(folder, recursive: recursive).nullifyEmpty() ?? //
+        _pathsTreeMapRoot.getTracksCountInsideFolder(folder, recursive: recursive).nullifyEmpty() ??
+        [];
+  }
+
+  late var _pathsTreeMapRoot = _FolderNode<T, E>(null, null, folderToTracks);
+  _FolderNode<T, E>? _pathsTreeMapCurrent;
+
+  _FolderNode<T, E> get _homeNode {
+    final rootChildren = _pathsTreeMapRoot.children;
+    return rootChildren.length == 1 ? rootChildren.values.first : _pathsTreeMapRoot;
+  }
 
   /// Even with this logic, root paths are invincible.
-  final RxBool isHome = true.obs;
+  final isHome = true.obs;
 
   /// Used for non-hierarchy.
-  final RxBool isInside = false.obs;
+  final isInside = false.obs;
 
-  /// Highlights the track that is meant to be navigated to after calling [goToFolder].
-  final RxnInt indexToScrollTo = RxnInt();
+  /// Highlights the track that is meant to be navigated to after calling [stepIn].
+  final indexToScrollTo = Rxn<int>();
+  E? _trackToScrollTo;
+
+  final _latestScrollOffset = <T?, double>{};
+  final _lastVisitedFolderMap = <T?, T?>{}.obs;
+
+  void refreshAfterSorting() {
+    currentFolderslist.refresh(); // refreshes folders
+    currentFolder.refresh(); // refreshes tracks
+    if (_trackToScrollTo != null && currentFolder.value != null) {
+      indexToScrollTo.value = folderToTracks(currentFolder.value as T)?.indexOf(_trackToScrollTo!);
+    }
+  }
 
   /// Indicates wether the navigator can go back at this point.
   /// Returns true only if at home, otherwise will call [stepOut] and return false.
   bool onBackButton() {
-    if (!isHome.value) {
-      stepOut();
+    return !stepOut();
+  }
+
+  void stepIn(T? folder, {E? trackToScrollTo, bool restorePosition = false, bool isFromStepOut = false}) {
+    if (folder == null || folder.path == '') {
+      isHome.value = true;
+      _pathsTreeMapCurrent = null;
+    }
+
+    final treeMap = _pathsTreeMapCurrent ??= _pathsTreeMapRoot;
+
+    _FolderNode<T, E>? nextNode;
+    if (folder != null) {
+      nextNode = treeMap.children[folder] ?? _pathsTreeMapRoot.lookup(folder);
+    }
+
+    bool isInitialNodeNested = false;
+    if (nextNode == null) {
+      isHome.value = true;
+      isInitialNodeNested = true;
+      nextNode = _homeNode;
+    }
+
+    if (!isInitialNodeNested && !isFromStepOut) {
+      isInside.value = true;
+      isHome.value = false;
+    }
+
+    final upcomingFolders = nextNode.foldersList;
+
+    _pathsTreeMapCurrent = nextNode;
+
+    if (!isFromStepOut && _config.skipSingleSubfolder.value) {
+      if (!isInitialNodeNested && nextNode.isSkippable) {
+        stepIn(upcomingFolders.first);
+        return;
+      }
+    }
+
+    if (!isFromStepOut) {
+      _saveScrollOffset(currentFolder.value);
+      _markLastVisitedFolder(currentFolder.value, folder);
+    }
+
+    currentFolderslist.value = upcomingFolders;
+    currentFolder.value = folder;
+
+    if (trackToScrollTo != null) {
+      indexToScrollTo.value = folderToTracks(folder)?.indexOf(trackToScrollTo);
+      _trackToScrollTo = trackToScrollTo;
+    } else {
+      indexToScrollTo.value = null;
+      _trackToScrollTo = null;
+    }
+
+    if (restorePosition) {
+      if (isHome.value) folder = null;
+      final pos = _latestScrollOffset[folder] ?? 0;
+      _scrollJump(pos);
+    } else {
+      _scrollJump(0);
+    }
+  }
+
+  bool stepOut() {
+    isInside.value = false;
+    if (currentFolder.value == null) {
       return false;
     }
+
+    T? folderToStepIn;
+    if (_config.enableFoldersHierarchy.value) {
+      var node = _pathsTreeMapCurrent?.parentNode;
+      if (_config.skipSingleSubfolder.value) {
+        while (node != null && node.isSkippable) {
+          node = node.parentNode;
+        }
+      }
+      if (node != null && !identical(node, _homeNode)) {
+        folderToStepIn = node.parent;
+        _pathsTreeMapCurrent = node.parentNode;
+      }
+    }
+
+    indexToScrollTo.value = null;
+    stepIn(folderToStepIn, restorePosition: true, isFromStepOut: true);
+
     return true;
   }
 
-  void stepIn(Folder? folder, {Track? trackToScrollTo}) {
-    if (folder == null || folder.path == '') {
-      isHome.value = true;
-      isInside.value = false;
-      currentFolder.value = null;
-      return;
-    }
-    isHome.value = false;
-    isInside.value = true;
-
-    final dirInside = folder.getDirectoriesInside();
-
-    if (dirInside.length == 1 && folder.tracks.isEmpty) {
-      stepIn(dirInside.first);
-      return;
-    }
-
-    currentFolderslist.value = dirInside;
-
-    currentFolder.value = folder;
-    if (trackToScrollTo != null) {
-      indexToScrollTo.value = folder.tracks.indexOf(trackToScrollTo);
-    }
-    if (LibraryTab.folders.scrollController.hasClients) {
-      LibraryTab.folders.scrollController.jumpTo(0);
-    }
-    currentFolder.value?.tracks.sortByAlts(SearchSortController.inst.getMediaTracksSortingComparables(MediaType.folder));
-  }
-
-  void stepOut() {
-    Folder? folder;
-    if (settings.enableFoldersHierarchy.value) {
-      folder = currentFolder.value?.getParentFolder(fullyFunctional: true);
-    }
-    indexToScrollTo.value = null;
-    stepIn(folder);
-  }
-
   void onFirstLoad() {
-    stepIn(Folder(settings.defaultFolderStartupLocation.value));
+    if (_config.enableFoldersHierarchy.value) {
+      final startupPath = _config.defaultFolderStartupLocation.value;
+      if (startupPath != null) stepIn(Folder.fromType<T>(startupPath));
+    }
+  }
+
+  void onFoldersHierarchyChanged(bool enabled) {
+    isHome.value = true;
+    isInside.value = false;
+    stepIn(null);
+  }
+
+  void _saveScrollOffset(T? folder) {
+    if (isHome.value) {
+      folder = null;
+    }
+    try {
+      _latestScrollOffset[folder] = _tab.scrollController.positions.lastOrNull?.pixels ?? 0;
+    } catch (_) {
+      _latestScrollOffset[folder] = 0;
+    }
+  }
+
+  void _markLastVisitedFolder(T? currentFolder, T? folderToMark) {
+    _lastVisitedFolderMap[currentFolder] = folderToMark;
+  }
+
+  void _scrollJump(double to) async {
+    try {
+      // -- must be animated cuz items may not be layed out yet, causing [to] to get clamped
+      // -- with max offset which can be smaller than [to] at the time.
+      await _tab.scrollController.animateToEff(
+        to,
+        duration: const Duration(milliseconds: 300),
+        curve: Curves.fastLinearToSlowEaseIn,
+      );
+    } catch (_) {}
+  }
+
+  /// Generates missing folders in between
+  void onMapChanged(Map<T, List<E>> map) {
+    _pathsTreeMapRoot = _FolderNode<T, E>(null, null, folderToTracks); // -- vip to properly refill nodes in new sort order
+    final res = _buildAdvancedPathTree(_pathsTreeMapRoot, map.keys);
+    _pathsTreeMapRoot = res.$1;
+    _pathsTreeMapCurrent ??= _pathsTreeMapRoot;
+    for (final folder in res.$2) {
+      map[folder] ??= <E>[]; // adding missing/new folders
+    }
+    _sortMap(map, _pathsTreeMapRoot);
+    Folder.invalidateCaches();
+    if (_config.enableFoldersHierarchy.value) stepIn(_pathsTreeMapCurrent?.parent);
+  }
+
+  void _sortMap(Map<T, List<dynamic>> map, _FolderNode<T, E> rootNode) {
+    final ignorePrefix = settings.ignoreCommonPrefixForTypes.value.contains(TrackSearchFilter.folder);
+    final normalize = SearchSortController.inst.sortKeyNormalizer;
+    final namesCache = <T, String>{};
+    String folderToNameCompare(T folder) => namesCache[folder] ??= normalize(ignorePrefix ? folder.folderNameLower.ignoreCommonPrefixes() : folder.folderNameLower);
+
+    final sorted = map.entries.toFixedList()
+      ..sort(
+        (entryA, entryB) => folderToNameCompare(entryA.key).compareTo(folderToNameCompare(entryB.key)),
+      );
+    map.assignAllEntries(sorted); // we clear after building new sorted one
+
+    _FolderNode._walkChildrenRescursive(
+      rootNode,
+      (map) => map.sort(
+        (a, b) => folderToNameCompare(a.key).compareTo(folderToNameCompare(b.key)),
+      ),
+    );
+
+    refreshAfterSorting();
+  }
+
+  (_FolderNode<T, E>, List<T>) _buildAdvancedPathTree(_FolderNode<T, E> root, Iterable<T> folders) {
+    final allFolders = <T>[];
+    for (final folder in folders) {
+      var current = root;
+      folder.performInbetweenFoldersBuild(
+        (f) {
+          allFolders.add(f);
+          final newNode = current.children.putIfAbsent(f, () => _FolderNode<T, E>(current, f, folderToTracks));
+          current = newNode;
+        },
+      );
+    }
+
+    return (root, allFolders);
+  }
+
+  // -- superseded by [SortKey], which orders digit runs anywhere in the name.
+  //   Map<String, _ParsedResult?> _buildParsedMap(Iterable<String> names) {
+  //     final parsedMap = <String, _ParsedResult?>{};
+  //     for (final n in names) {
+  //       parsedMap[n] = _numberInFilename(n) ?? _parseNumberAtEnd(n);
+  //     }
+  //     return parsedMap;
+  //   }
+  //
+  //   static final _numberInFilenameRegex = RegExp(r'(.*music\W*)(\d+(\.\d+)?)', caseSensitive: false);
+  //   static _ParsedResult? _numberInFilename(String text) {
+  //     final m = _numberInFilenameRegex.firstMatch(text);
+  //     if (m != null) {
+  //       final nmbrtxt = m.group(2);
+  //       if (nmbrtxt != null) {
+  //         final parsednmbr = num.tryParse(nmbrtxt);
+  //         if (parsednmbr != null) {
+  //           int numberStartIndex = m[0]?.indexOf(nmbrtxt) ?? 0;
+  //           if (numberStartIndex < 0) numberStartIndex = 0;
+  //           return _ParsedResult(
+  //             extractedNumber: parsednmbr,
+  //             charactersCount: nmbrtxt.length,
+  //             startAtIndex: numberStartIndex,
+  //             textPart: m.group(1) ?? text.substring(0, numberStartIndex),
+  //           );
+  //         }
+  //       }
+  //     }
+  //
+  //     return null;
+  //   }
+  //
+  //   static _ParsedResult? _parseNumberAtEnd(String text) {
+  //     final codes = text.codeUnits;
+  //     final codesL = codes.length;
+  //     bool wasAddingNumber = false;
+  //     final charCodes = <int>[];
+  //     for (int i = codesL - 1; i >= 0; i--) {
+  //       final code = codes[i];
+  //       if (code >= 0x0030 && code <= 0x0039) {
+  //         // -- from 0 to 9
+  //         wasAddingNumber = true;
+  //         charCodes.add(code);
+  //       } else {
+  //         if (wasAddingNumber) break;
+  //       }
+  //     }
+  //     if (charCodes.isNotEmpty) {
+  //       final startIndex = codes.length - charCodes.length;
+  //       try {
+  //         return _ParsedResult(
+  //           extractedNumber: num.parse(String.fromCharCodes(charCodes.reversed)),
+  //           charactersCount: charCodes.length,
+  //           startAtIndex: startIndex,
+  //           textPart: text.substring(0, startIndex),
+  //         );
+  //       } catch (_) {
+  //         // -- big numbers and format exception
+  //       }
+  //     }
+  //     return null;
+  //   }
+}
+
+// class _ParsedResult {
+//   final num extractedNumber;
+//   final int charactersCount;
+//   final int startAtIndex;
+//   final String textPart;
+//
+//   const _ParsedResult({
+//     required this.extractedNumber,
+//     required this.charactersCount,
+//     required this.startAtIndex,
+//     required this.textPart,
+//   });
+//
+//   int? compare(_ParsedResult parsedB) {
+//     final parsedA = this;
+//     if (parsedA.startAtIndex == parsedB.startAtIndex) {
+//       // -- basically checking textPart is enough to know but we check startAtIndex to speed things up.
+//       if (parsedA.textPart == parsedB.textPart) {
+//         final numbersCompare = parsedA.extractedNumber.compareTo(parsedB.extractedNumber);
+//         if (numbersCompare != 0) return numbersCompare;
+//       }
+//     }
+//     return null;
+//   }
+// }
+
+class FoldersPageConfig {
+  final QueueSource Function(String? name) queueSource;
+  final Rx<String?> defaultFolderStartupLocation;
+  final Rx<bool> enableFoldersHierarchy;
+  final Rx<bool> skipSingleSubfolder;
+  final void Function() toggleFoldersHierarchy;
+  final void Function() toggleSkipSingleSubfolder;
+  final void Function() onDefaultStartupFolderChanged;
+
+  const FoldersPageConfig._({
+    required this.queueSource,
+    required this.defaultFolderStartupLocation,
+    required this.enableFoldersHierarchy,
+    required this.skipSingleSubfolder,
+    required this.toggleFoldersHierarchy,
+    required this.toggleSkipSingleSubfolder,
+    required this.onDefaultStartupFolderChanged,
+  });
+
+  static void _toggleSkipSingleSubfolder() {
+    final newValue = !settings.foldersSkipSingleSubfolder.value;
+    settings.foldersSkipSingleSubfolder.save(newValue);
+  }
+
+  factory FoldersPageConfig.tracksAndVideos() {
+    return FoldersPageConfig._(
+      queueSource: QueueSource.folder,
+      defaultFolderStartupLocation: settings.defaultFolderStartupLocation, // same settings
+      enableFoldersHierarchy: settings.enableFoldersHierarchy, // same settings
+      toggleFoldersHierarchy: () {
+        final newValue = !settings.enableFoldersHierarchy.value;
+        settings.enableFoldersHierarchy.save(newValue);
+        FoldersController.tracksAndVideos.onFoldersHierarchyChanged(newValue);
+      },
+      skipSingleSubfolder: settings.foldersSkipSingleSubfolder,
+      toggleSkipSingleSubfolder: _toggleSkipSingleSubfolder,
+      onDefaultStartupFolderChanged: () {
+        settings.defaultFolderStartupLocation.save(FoldersController.tracksAndVideos.getCurrentFolderToBookmark());
+      },
+    );
+  }
+  factory FoldersPageConfig.tracks() {
+    return FoldersPageConfig._(
+      queueSource: QueueSource.folderMusic,
+      defaultFolderStartupLocation: settings.defaultFolderStartupLocation,
+      enableFoldersHierarchy: settings.enableFoldersHierarchyTracks,
+      toggleFoldersHierarchy: () {
+        final newValue = !settings.enableFoldersHierarchyTracks.value;
+        settings.enableFoldersHierarchyTracks.save(newValue);
+        FoldersController.tracks.onFoldersHierarchyChanged(newValue);
+      },
+      skipSingleSubfolder: settings.foldersSkipSingleSubfolder,
+      toggleSkipSingleSubfolder: _toggleSkipSingleSubfolder,
+      onDefaultStartupFolderChanged: () {
+        settings.defaultFolderStartupLocation.save(FoldersController.tracks.getCurrentFolderToBookmark());
+      },
+    );
+  }
+  factory FoldersPageConfig.videos() {
+    return FoldersPageConfig._(
+      queueSource: QueueSource.folderVideos,
+      defaultFolderStartupLocation: settings.defaultFolderStartupLocationVideos,
+      enableFoldersHierarchy: settings.enableFoldersHierarchyVideos,
+      toggleFoldersHierarchy: () {
+        final newValue = !settings.enableFoldersHierarchyVideos.value;
+        settings.enableFoldersHierarchyVideos.save(newValue);
+        FoldersController.videos.onFoldersHierarchyChanged(newValue);
+      },
+      skipSingleSubfolder: settings.foldersSkipSingleSubfolder,
+      toggleSkipSingleSubfolder: _toggleSkipSingleSubfolder,
+      onDefaultStartupFolderChanged: () {
+        settings.defaultFolderStartupLocationVideos.save(FoldersController.videos.getCurrentFolderToBookmark());
+      },
+    );
+  }
+}
+
+class _FolderNode<T extends Folder, E extends Track> {
+  final _FolderNode<T, E>? parentNode;
+  final T? parent;
+  final List<E>? Function(T? folder) folderToTracks;
+  _FolderNode(this.parentNode, this.parent, this.folderToTracks);
+
+  final children = <T, _FolderNode<T, E>>{};
+
+  List<E>? _recursiveTracksCache;
+
+  late final foldersList = children.keys.toList();
+
+  bool get isSkippable => children.length == 1 && folderToTracks(parent)?.isEmpty == true;
+
+  /// Efficient lookup for a folder's own node. this operation is O(n) where n is the folder path splits count.
+  _FolderNode<T, E>? lookup(T folder) {
+    final direct = children[folder];
+    if (direct != null) return direct;
+
+    var current = this;
+    final isMissing = folder.performInbetweenFoldersBuild<bool>(
+      (f) {
+        final next = current.children[f];
+        if (next == null) return true;
+        current = next;
+        return null;
+      },
+    );
+    if (isMissing == true || identical(current, this)) return null;
+    return current;
+  }
+
+  int? getFoldersCountInsideFolder(T folder, {bool recursive = false}) {
+    final node = lookup(folder);
+
+    if (node != null) {
+      if (recursive) {
+        int totalCount = -1; // bcz recursive counts current
+        _walkKeysRescursive<Null, T, E>(node, (_) {
+          totalCount++;
+          return null;
+        });
+        return totalCount;
+      } else {
+        return node.children.keys.length;
+      }
+    }
+    return null;
+  }
+
+  List<E> getTracksCountInsideFolder(T folder, {bool recursive = false}) {
+    if (!recursive) return folderToTracks(folder) ?? [];
+
+    final node = lookup(folder);
+
+    if (node == null) return [];
+
+    // -- validated by total count, the walk is map lookups only, way cheaper than re-concatenating every build.
+    int total = folderToTracks(folder)?.length ?? 0;
+    _walkKeysRescursive<Null, T, E>(node, (folder) {
+      total += folderToTracks(folder)?.length ?? 0;
+      return null;
+    });
+    final cached = node._recursiveTracksCache;
+    if (cached != null && cached.length == total) return cached;
+
+    final allTracks = <E>[];
+    allTracks.addAll(folderToTracks(folder) ?? []);
+    _walkKeysRescursive<Null, T, E>(node, (folder) {
+      allTracks.addAll(folderToTracks(folder) ?? []);
+      return null;
+    });
+
+    node._recursiveTracksCache = allTracks;
+    return allTracks;
+  }
+
+  static R? _walkKeysRescursive<R, T extends Folder, E extends Track>(_FolderNode<T, E> node, R? Function(T item) callback) {
+    for (final subNodeEntry in node.children.entries) {
+      R? res = callback(subNodeEntry.key);
+      res ??= _walkKeysRescursive<R, T, E>(subNodeEntry.value, callback);
+      if (res != null) return res;
+    }
+    return null;
+  }
+
+  static R? _walkChildrenRescursive<R, T extends Folder, E extends Track>(_FolderNode<T, E> node, R? Function(Map<T, _FolderNode<T, E>> children) callback) {
+    R? resMain = callback(node.children);
+    if (resMain != null) return resMain;
+
+    for (final subNodeEntry in node.children.values) {
+      final res = _walkChildrenRescursive<R, T, E>(subNodeEntry, callback);
+      if (res != null) return res;
+    }
+    return null;
+  }
+
+  @override
+  String toString() => '_FolderNode(children: $children)';
+}
+
+extension<T> on List<T> {
+  List<T>? nullifyEmpty() {
+    return this.isEmpty ? null : this;
   }
 }

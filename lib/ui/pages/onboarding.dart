@@ -1,18 +1,24 @@
-import 'package:flutter/material.dart';
-import 'package:get/get.dart';
+import 'dart:async';
 
+import 'package:flutter/material.dart';
+
+import 'package:namida/base/setting_subpage_provider.dart';
+import 'package:namida/class/route.dart';
 import 'package:namida/controller/backup_controller.dart';
-import 'package:namida/controller/current_color.dart';
 import 'package:namida/controller/indexer_controller.dart';
 import 'package:namida/controller/navigator_controller.dart';
+import 'package:namida/controller/platform/permission_manager/permission_manager.dart';
 import 'package:namida/controller/queue_controller.dart';
+import 'package:namida/core/constants.dart';
+import 'package:namida/core/dimensions.dart';
 import 'package:namida/core/extensions.dart';
 import 'package:namida/core/icon_fonts/broken_icons.dart';
 import 'package:namida/core/translations/language.dart';
-import 'package:namida/main.dart';
+import 'package:namida/core/utils.dart';
 import 'package:namida/main_page_wrapper.dart';
-import 'package:namida/ui/widgets/animated_widgets.dart';
+import 'package:namida/ui/pages/sync_manager_page.dart';
 import 'package:namida/ui/widgets/custom_widgets.dart';
+import 'package:namida/ui/widgets/jellyfish.dart';
 import 'package:namida/ui/widgets/settings/advanced_settings.dart';
 import 'package:namida/ui/widgets/settings/backup_restore_settings.dart';
 import 'package:namida/ui/widgets/settings/extra_settings.dart';
@@ -21,8 +27,7 @@ import 'package:namida/ui/widgets/settings/theme_settings.dart';
 import 'package:namida/ui/widgets/settings_card.dart';
 
 class FirstRunConfigureScreen extends StatefulWidget {
-  final void Function(BuildContext context) onContextAvailable;
-  const FirstRunConfigureScreen({super.key, required this.onContextAvailable});
+  const FirstRunConfigureScreen({super.key});
 
   @override
   State<FirstRunConfigureScreen> createState() => _FirstRunConfigureScreenState();
@@ -32,81 +37,67 @@ class _FirstRunConfigureScreenState extends State<FirstRunConfigureScreen> {
   bool didGrantStoragePermission = false;
   bool didDenyStoragePermission = false;
 
-  late final ScrollController c;
-
-  final _shouldShowGlow = false.obs;
-
   @override
   void initState() {
     super.initState();
-    c = ScrollController()
-      ..addListener(() {
-        if (c.hasClients) {
-          if (c.position.extentAfter > 0) {
-            _shouldShowGlow.value = true;
-          } else {
-            _shouldShowGlow.value = false;
-          }
-        }
-      });
-
     _requestPermission(request: false); // just to set it to true only if granted.
   }
 
-  @override
-  void dispose() {
-    c.dispose();
-    _shouldShowGlow.close();
-    super.dispose();
-  }
-
   Future<void> _requestPermission({bool request = true}) async {
-    didGrantStoragePermission = await requestStoragePermission(request: request);
+    didGrantStoragePermission = await PermissionManager.platform.requestStoragePermission(request: request);
     if (request) didDenyStoragePermission = !didGrantStoragePermission; // if user denied permission after requested
     if (mounted) setState(() {});
   }
 
-  void _navigateToNamida() async {
+  void _navigateToNamida(NamidaRouteWidget? pageAfterFirstLoad) async {
     if (!didGrantStoragePermission) {
       snackyy(
-        title: lang.STORAGE_PERMISSION_DENIED,
-        message: lang.STORAGE_PERMISSION_DENIED_SUBTITLE,
+        title: lang.storagePermissionDenied,
+        message: lang.storagePermissionDeniedSubtitle,
         top: false,
         isError: true,
       );
       return;
     }
-    Navigator.of(context).pushReplacement(MaterialPageRoute(
-      builder: (context) {
-        return MainPageWrapper(
-          onContextAvailable: widget.onContextAvailable,
-          shouldShowOnBoarding: false,
-        );
-      },
-    ));
+
+    if (pageAfterFirstLoad != null) NamidaNavigator.inst.openAfterFirstLoad(pageAfterFirstLoad);
+    NamidaNavigator.inst.navigateToRootReplacement(
+      const MainPageWrapper(),
+    );
     Indexer.inst.prepareTracksFile();
-    QueueController.inst.prepareLatestQueue();
+    return QueueController.inst.prepareLatestQueueAndLatestPlayedForSourceAsync();
   }
 
-  void _onRestoreBackupIconTap() async {
+  Future<void> _onContinueTap([NamidaRouteWidget? pageAfterFirstLoad]) async {
+    await _requestPermission();
+    if (BackupController.inst.isRestoringBackup.value) {
+      snackyy(title: lang.note, message: lang.anotherProcessIsRunning);
+      return;
+    }
+    _navigateToNamida(pageAfterFirstLoad);
+  }
+
+  void _onSyncTap() => _onContinueTap(const NamidaSyncManagerPage());
+
+  void _onRestoreBackupTap() async {
     await _requestPermission();
     if (!didGrantStoragePermission) return;
-    const backupAndRestore = BackupAndRestore();
     NamidaNavigator.inst.navigateDialog(
       dialog: CustomBlurryDialog(
         icon: Broken.refresh_circle,
         normalTitleStyle: true,
-        title: lang.BACKUP_AND_RESTORE,
-        actions: [
-          NamidaButton(
-            text: lang.DONE,
-            onPressed: NamidaNavigator.inst.closeDialog,
-          ),
+        title: lang.backupAndRestore,
+        actions: const [
+          DoneButton(),
         ],
         child: Column(
           children: [
-            backupAndRestore.getRestoreBackupWidget(),
-            backupAndRestore.getDefaultBackupLocationWidget(),
+            SettingEntryTile(
+              entry: BackupAndRestore.restoreBackup,
+            ),
+            SettingEntryTile(
+              entry: BackupAndRestore.defaultBackupLocation,
+            ),
           ],
         ),
       ),
@@ -115,165 +106,282 @@ class _FirstRunConfigureScreenState extends State<FirstRunConfigureScreen> {
 
   @override
   Widget build(BuildContext context) {
-    const indexer = IndexerSettings();
-    final useMediaStore = indexer.getMediaStoreWidget();
-    final foldersToScan = indexer.getFoldersToScanWidget(context: context, initiallyExpanded: true);
-    final foldersToExclude = indexer.getFoldersToExcludeWidget(context: context, initiallyExpanded: true);
-    final groupArtworksByAlbum = indexer.getGroupArtworksByAlbumWidget();
+    final theme = context.theme;
+    final maxWidth = context.width; // use context as dimensions might not be initialized yet
 
-    const theme = ThemeSetting();
-    final themeTile = theme.getThemeTile();
-    final languageTile = theme.getLanguageTile(context);
+    Dimensions.inst.availableAppContentWidth = maxWidth;
 
-    const extras = ExtrasSettings();
-    final libraryTabsTile = extras.getLibraryTabsTile(context);
+    const firstConfigIndexer = IndexerSettings(isInFirstConfigScreen: true);
+    // final useMediaStore = indexer.getMediaStoreWidget();
 
-    const advanced = AdvancedSettings();
-    final performanceTile = advanced.getPerformanceTile(context);
+    final returningUserRow = _ReturningUserRow(
+      onRestoreBackupTap: _onRestoreBackupTap,
+      onSyncTap: _onSyncTap,
+    );
+
+    final languageTile = SettingEntryTile(
+      entry: ThemeSetting.language,
+    );
+    final themeTile = SettingEntryTile(
+      entry: ThemeSetting.themeMode,
+    );
+    final performanceTile = SettingEntryTile(
+      entry: AdvancedSettings.performanceMode,
+    );
+    final libraryTabsTile = SettingEntryTile(
+      entry: ExtrasSettings.libraryTabs,
+    );
+
+    final storagePermissionTile = NamidaFeaturesVisibility.isStoragePermissionNotRequired
+        ? null
+        : _StoragePermissionTile(
+            isGranted: didGrantStoragePermission,
+            isDenied: didDenyStoragePermission,
+            onTap: _requestPermission,
+          );
+    final addFolderWidget = SettingEntryTile(
+      entry: IndexerSettings.addFolder,
+      page: firstConfigIndexer,
+    );
+    final foldersToScan = SettingEntryTile(
+      entry: IndexerSettings.foldersToScan,
+      page: firstConfigIndexer,
+    );
+    final foldersToExclude = SettingEntryTile(
+      entry: IndexerSettings.foldersToExclude,
+      page: firstConfigIndexer,
+    );
+    final includeVideosWidget = SettingEntryTile(
+      entry: IndexerSettings.includeVideos,
+      page: firstConfigIndexer,
+    );
+    final minFileDurationTile = SettingEntryTile(
+      entry: IndexerSettings.minFileDuration,
+      page: firstConfigIndexer,
+    );
+    final minFileSizeTile = SettingEntryTile(
+      entry: IndexerSettings.minFileSize,
+      page: firstConfigIndexer,
+    );
+    final albumIdentifiersTile = SettingEntryTile(
+      entry: IndexerSettings.albumIdentifiers,
+      page: firstConfigIndexer,
+    );
+    final respectNoMediaTile = SettingEntryTile(
+      entry: IndexerSettings.respectNoMedia,
+      page: firstConfigIndexer,
+    );
+    final artworkCacheWidget = SettingEntryTile(
+      entry: IndexerSettings.artworkCache,
+      page: firstConfigIndexer,
+    );
+
+    final sections = <List<Widget>>[
+      [
+        returningUserRow,
+      ],
+      [
+        languageTile,
+        themeTile,
+        performanceTile,
+        libraryTabsTile,
+      ],
+      [
+        ?storagePermissionTile,
+        addFolderWidget,
+        foldersToScan,
+        foldersToExclude,
+        includeVideosWidget,
+        minFileDurationTile,
+        minFileSizeTile,
+        // useMediaStore,
+        albumIdentifiersTile,
+        respectNoMediaTile,
+        artworkCacheWidget,
+      ],
+    ];
+    final sectionsWidgets = sections
+        .map(
+          (section) => Column(
+            mainAxisSize: MainAxisSize.min,
+            children: section,
+          ),
+        )
+        .addSeparators(
+          separator: SettingSectionsColumn.sectionsDivider,
+        )
+        .toFixedList();
 
     return BackgroundWrapper(
       child: Stack(
         alignment: Alignment.center,
         children: [
-          SizedBox(
-            height: context.height * 0.7,
-            width: context.width,
-            child: SettingsCard(
-              icon: Broken.candle,
-              title: lang.CONFIGURE,
-              subtitle: lang.SETUP_FIRST_STARTUP,
-              trailing: Column(
-                children: [
-                  NamidaIconButton(
-                    tooltip: lang.RESTORE_BACKUP,
-                    icon: Broken.back_square,
-                    onPressed: _onRestoreBackupIconTap,
-                  ),
-                  const SizedBox(height: 2.0),
-                  ObxShow(
-                    showIf: BackupController.inst.isRestoringBackup,
-                    child: const LoadingIndicator(),
-                  ),
-                ],
+          // always enable for a sneak peak?
+          // if (NamidaJellys.enabled)
+          const Positioned.fill(
+            child: IgnorePointer(
+              child: JellyField(
+                count: 4,
+                opacity: 0.3,
+                minHeight: 90.0,
+                maxHeight: 240.0,
+                seed: 3,
               ),
-              childRaw: Expanded(
-                child: Padding(
-                  padding: const EdgeInsets.all(4.0),
-                  child: Column(
-                    children: [
-                      Expanded(
-                        child: Stack(
-                          alignment: Alignment.bottomCenter,
-                          children: [
-                            ListView(
+            ),
+          ),
+
+          SizedBox(
+            height: context.height * 0.78,
+            width: context.width,
+            child: Padding(
+              padding: EdgeInsets.symmetric(horizontal: Dimensions.inst.getSettingsHorizontalMargin(context)),
+              child: SettingsCard(
+                icon: Broken.candle,
+                title: lang.configure,
+                subtitle: lang.setupFirstStartup,
+                childRaw: Expanded(
+                  child: Padding(
+                    padding: const EdgeInsets.all(4.0),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Expanded(
+                          child: NamidaScrollbarWithController(
+                            showOnStart: true,
+                            child: (c) => SuperSmoothListView(
                               controller: c,
                               padding: EdgeInsets.zero,
-                              children: [
-                                themeTile,
-                                languageTile,
-                                performanceTile,
-                                libraryTabsTile,
-                                useMediaStore,
-                                groupArtworksByAlbum,
-                                foldersToScan,
-                                foldersToExclude,
-                              ],
+                              children: sectionsWidgets,
                             ),
-                            Obx(
-                              () => SizedBox(
-                                height: 12.0,
-                                width: context.width,
-                                child: AnimatedDecoration(
-                                  duration: const Duration(milliseconds: 200),
-                                  decoration: BoxDecoration(
-                                    boxShadow: [
-                                      BoxShadow(
-                                        color: _shouldShowGlow.value ? CurrentColor.inst.color : Colors.transparent,
-                                        blurRadius: 12.0,
-                                        spreadRadius: 2.0,
-                                      )
-                                    ],
-                                  ),
-                                ),
+                          ),
+                        ),
+                        Container(
+                          decoration: BoxDecoration(
+                            color: Color.alphaBlend(theme.scaffoldBackgroundColor.withOpacityExt(0.7), theme.cardColor),
+                            borderRadius: BorderRadius.circular(16.0.multipliedRadius),
+                          ),
+                          child: AnimatedOpacity(
+                            duration: const Duration(milliseconds: 400),
+                            opacity: didGrantStoragePermission ? 1.0 : 0.5,
+                            child: NamidaInkWell(
+                              onTap: _onContinueTap,
+                              borderRadius: 8.0,
+                              bgColor: theme.cardColor,
+                              margin: const EdgeInsets.all(12.0),
+                              padding: const EdgeInsets.all(12.0),
+                              child: const Icon(
+                                Broken.arrow_right,
+                                size: 24.0,
                               ),
                             ),
-                          ],
+                          ),
                         ),
-                      ),
-                      Container(
-                        decoration: BoxDecoration(
-                          color: Color.alphaBlend(context.theme.scaffoldBackgroundColor.withOpacity(0.7), context.theme.cardColor),
-                          borderRadius: BorderRadius.circular(16.0.multipliedRadius),
-                        ),
-                        child: Row(
-                          children: [
-                            Expanded(
-                              child: NamidaInkWell(
-                                animationDurationMS: 100,
-                                decoration: BoxDecoration(
-                                  border: Border.all(
-                                    width: 1.5,
-                                    color: didGrantStoragePermission
-                                        ? Colors.green.withOpacity(0.3)
-                                        : didDenyStoragePermission
-                                            ? Colors.red.withOpacity(0.3)
-                                            : Colors.transparent,
-                                  ),
-                                ),
-                                onTap: _requestPermission,
-                                borderRadius: didGrantStoragePermission ? 8.0 : 16.0,
-                                bgColor: context.theme.cardColor,
-                                margin: const EdgeInsets.all(12.0),
-                                padding: const EdgeInsets.all(12.0),
-                                child: Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    Expanded(
-                                      child: Text(
-                                        lang.GRANT_STORAGE_PERMISSION,
-                                        style: context.textTheme.displayMedium,
-                                      ),
-                                    ),
-                                    const SizedBox(width: 12.0),
-                                    NamidaCheckMark(
-                                      size: 16.0,
-                                      active: didGrantStoragePermission,
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            ),
-                            AnimatedOpacity(
-                              duration: const Duration(milliseconds: 400),
-                              opacity: didGrantStoragePermission ? 1.0 : 0.5,
-                              child: NamidaInkWell(
-                                width: context.width * 0.2,
-                                onTap: () async {
-                                  await _requestPermission();
-                                  if (BackupController.inst.isRestoringBackup.value) {
-                                    return snackyy(title: lang.NOTE, message: lang.ANOTHER_PROCESS_IS_RUNNING);
-                                  }
-                                  _navigateToNamida();
-                                },
-                                borderRadius: 8.0,
-                                bgColor: context.theme.cardColor,
-                                margin: const EdgeInsets.all(12.0),
-                                padding: const EdgeInsets.all(12.0),
-                                child: const Icon(
-                                  Broken.arrow_right,
-                                  size: 24.0,
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                      )
-                    ],
+                      ],
+                    ),
                   ),
                 ),
+                child: const SizedBox(),
               ),
-              child: const SizedBox(),
             ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ReturningUserRow extends StatelessWidget {
+  final void Function() onRestoreBackupTap;
+  final void Function() onSyncTap;
+
+  const _ReturningUserRow({
+    required this.onRestoreBackupTap,
+    required this.onSyncTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final bgColor = context.theme.colorScheme.secondaryContainer.withOpacityExt(0.2);
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 6.0),
+      child: Row(
+        children: [
+          Expanded(
+            child: ObxO(
+              rx: BackupController.inst.isRestoringBackup,
+              builder: (context, isRestoringBackup) => NamidaInkWellButton(
+                bgColor: bgColor,
+                centered: true,
+                paddingMultiplier: 1.65,
+                icon: Broken.back_square,
+                text: lang.restoreBackup,
+                enabled: !isRestoringBackup,
+                onTap: onRestoreBackupTap,
+              ),
+            ),
+          ),
+          const SizedBox(width: 8.0),
+          Expanded(
+            child: NamidaInkWellButton(
+              bgColor: bgColor,
+              centered: true,
+              paddingMultiplier: 1.65,
+              icon: Broken.cloud_change,
+              text: lang.sync,
+              onTap: onSyncTap,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _StoragePermissionTile extends StatelessWidget {
+  final bool isGranted;
+  final bool isDenied;
+  final void Function() onTap;
+
+  const _StoragePermissionTile({
+    required this.isGranted,
+    required this.isDenied,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = context.theme;
+    final borderColor = isGranted
+        ? Colors.green.withOpacityExt(0.3)
+        : isDenied
+        ? Colors.red.withOpacityExt(0.3)
+        : Colors.transparent;
+    return NamidaInkWell(
+      animationDurationMS: 100,
+      decoration: BoxDecoration(
+        border: Border.all(
+          width: 1.5,
+          color: borderColor,
+        ),
+      ),
+      onTap: onTap,
+      borderRadius: isGranted ? 8.0 : 16.0,
+      bgColor: theme.cardColor,
+      margin: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 6.0),
+      padding: const EdgeInsets.all(12.0),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              lang.grantStoragePermission,
+              style: theme.textTheme.displayMedium,
+            ),
+          ),
+          const SizedBox(width: 12.0),
+          NamidaCheckMark(
+            size: 18.0,
+            active: isGranted,
+            burst: true,
           ),
         ],
       ),

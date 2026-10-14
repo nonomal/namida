@@ -4,43 +4,75 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter_volume_controller/flutter_volume_controller.dart';
-import 'package:get/get.dart';
-import 'package:newpipeextractor_dart/newpipeextractor_dart.dart';
 
+import 'package:flutter_volume_controller/flutter_volume_controller.dart' show FlutterVolumeController;
+import 'package:native_device_orientation/native_device_orientation.dart';
+import 'package:screen_brightness/screen_brightness.dart';
+import 'package:youtipie/class/result_wrapper/playlist_result_base.dart';
+import 'package:youtipie/class/streams/endscreens/endscreen_item_base.dart';
+import 'package:youtipie/class/streams/video_streams_result.dart';
+import 'package:youtipie/core/enum.dart';
+import 'package:youtipie/youtipie.dart';
+
+import 'package:namida/class/route.dart';
+import 'package:namida/class/subtitle_track.dart';
 import 'package:namida/class/track.dart';
 import 'package:namida/class/video.dart';
+import 'package:namida/controller/connectivity.dart';
 import 'package:namida/controller/current_color.dart';
-import 'package:namida/controller/namida_channel.dart';
+import 'package:namida/controller/miniplayer_controller.dart';
 import 'package:namida/controller/navigator_controller.dart';
+import 'package:namida/controller/platform/namida_channel/namida_channel.dart';
 import 'package:namida/controller/player_controller.dart';
 import 'package:namida/controller/settings_controller.dart';
+import 'package:namida/controller/subtitles_controller.dart';
 import 'package:namida/controller/video_controller.dart';
+import 'package:namida/core/constants.dart';
+import 'package:namida/core/enums.dart';
 import 'package:namida/core/extensions.dart';
 import 'package:namida/core/icon_fonts/broken_icons.dart';
 import 'package:namida/core/namida_converter_ext.dart';
 import 'package:namida/core/translations/language.dart';
+import 'package:namida/core/ui_scale.dart';
+import 'package:namida/core/utils.dart';
 import 'package:namida/packages/three_arched_circle.dart';
 import 'package:namida/ui/dialogs/edit_tags_dialog.dart';
 import 'package:namida/ui/widgets/artwork.dart';
 import 'package:namida/ui/widgets/custom_widgets.dart';
+import 'package:namida/ui/widgets/settings/extra_settings.dart';
+import 'package:namida/ui/widgets/settings/youtube_settings.dart';
+import 'package:namida/ui/widgets/subtitle_overlay.dart';
+import 'package:namida/youtube/class/youtube_id.dart';
 import 'package:namida/youtube/controller/youtube_controller.dart';
+import 'package:namida/youtube/controller/youtube_info_controller.dart';
+import 'package:namida/youtube/controller/yt_miniplayer_ui_controller.dart';
+import 'package:namida/youtube/functions/yt_playlist_utils.dart';
+import 'package:namida/youtube/pages/yt_channel_subpage.dart';
+import 'package:namida/youtube/pages/yt_playlist_subpage.dart';
 import 'package:namida/youtube/seek_ready_widget.dart';
+import 'package:namida/youtube/widgets/sponsor_block_button.dart';
+import 'package:namida/youtube/widgets/video_info_dialog.dart';
 import 'package:namida/youtube/widgets/yt_thumbnail.dart';
 import 'package:namida/youtube/yt_utils.dart';
 
+const _kTwoRowsControlsMaxWidth = 520.0;
+
 class NamidaVideoControls extends StatefulWidget {
   final bool showControls;
+  final double? disableControlsUnderPercentage;
   final VoidCallback? onMinimizeTap;
   final bool isFullScreen;
   final bool isLocal;
+  final bool forceEnableSponsorBlock;
 
   const NamidaVideoControls({
     super.key,
     required this.showControls,
+    this.disableControlsUnderPercentage,
     required this.onMinimizeTap,
     required this.isFullScreen,
     required this.isLocal,
+    this.forceEnableSponsorBlock = true,
   });
 
   @override
@@ -49,7 +81,10 @@ class NamidaVideoControls extends StatefulWidget {
 
 class NamidaVideoControlsState extends State<NamidaVideoControls> with TickerProviderStateMixin {
   bool _isVisible = false;
+  double _maxWidth = 0.0;
+  double _maxHeight = 0.0;
   final hideDuration = const Duration(seconds: 3);
+  final hoverHideDuration = const Duration(seconds: 1);
   final volumeHideDuration = const Duration(milliseconds: 500);
   final brightnessHideDuration = const Duration(milliseconds: 500);
   final transitionDuration = const Duration(milliseconds: 300);
@@ -61,46 +96,48 @@ class NamidaVideoControlsState extends State<NamidaVideoControls> with TickerPro
     _hideTimer = null;
   }
 
-  void _startTimer() {
+  void _startTimer({Duration? duration}) {
     _resetTimer();
     if (_isVisible) {
-      _hideTimer = Timer(hideDuration, () {
+      _hideTimer = Timer(duration ?? hideDuration, () {
         setControlsVisibily(false);
       });
     }
   }
 
-  void setControlsVisibily(bool visible, {bool maintainStatusBar = true}) {
+  void setControlsVisibily(bool visible, {bool? maintainStatusBar}) {
     if (visible && NamidaChannel.inst.isInPip.value) return; // dont show if in pip
     if (visible == _isVisible) return;
     if (mounted) setState(() => _isVisible = visible);
 
-    if (maintainStatusBar) {
+    if (mounted && (maintainStatusBar ?? widget.isFullScreen)) {
       if (visible) {
         // -- show status bar
-        NamidaNavigator.inst.setDefaultSystemUI(overlays: widget.isFullScreen ? [SystemUiOverlay.top] : SystemUiOverlay.values);
+        NamidaNavigator.setSystemUIImmersiveMode(false, overlays: [SystemUiOverlay.top]);
       } else {
         // -- hide status bar
-        if (widget.isFullScreen && mounted) SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+        NamidaNavigator.setSystemUIImmersiveMode(true);
       }
     }
   }
 
+  Timer? _isEndCardsVisibleTimer;
+  final _isEndCardsVisible = true.obs;
+
   void showControlsBriefly() {
-    setControlsVisibily(true);
+    setControlsVisibily(true, maintainStatusBar: false);
     _startTimer();
   }
-
-  final userSeekMS = 0.obs;
 
   Widget _getBuilder({
     required Widget child,
   }) {
+    final shouldShow = _isVisible;
     return IgnorePointer(
-      ignoring: !_isVisible,
+      ignoring: !shouldShow,
       child: AnimatedOpacity(
         duration: transitionDuration,
-        opacity: _isVisible ? 1.0 : 0.0,
+        opacity: shouldShow ? 1.0 : 0.0,
         child: child,
       ),
     );
@@ -113,11 +150,26 @@ class NamidaVideoControlsState extends State<NamidaVideoControls> with TickerPro
     if (_isVisible) {
       setControlsVisibily(false);
     } else {
-      if (_canShowControls) {
+      if (widget.showControls) {
         setControlsVisibily(true);
       }
     }
     _startTimer();
+  }
+
+  void _onEdgeHoverEnter() {
+    _currentDeviceVolume.value = null; // hide volume slider
+    _canShowBrightnessSlider.value = false; // hide brightness slider
+
+    if (widget.showControls) {
+      setControlsVisibily(true);
+    }
+
+    _resetTimer();
+  }
+
+  void _onEdgeHoverExit() {
+    _startTimer(duration: hoverHideDuration);
   }
 
   bool _shouldSeekOnTap = false;
@@ -127,17 +179,17 @@ class NamidaVideoControlsState extends State<NamidaVideoControls> with TickerPro
     _doubleSeekTimer?.cancel();
     _doubleSeekTimer = Timer(doubleTapSeekReset, () {
       _shouldSeekOnTap = false;
-      _seekSeconds = 0;
+      _seekSecondsRx.value = 0;
     });
   }
 
-  int _seekSeconds = 0;
+  final _seekSecondsRx = 0.obs;
 
   /// This prevents mixing up forward seek seconds with backward ones.
   bool _lastSeekWasForward = true;
 
   void _onDoubleTap(Offset position) async {
-    final totalWidth = context.width;
+    final totalWidth = _maxWidth;
     final halfScreen = totalWidth / 2;
     final middleAmmountToIgnore = totalWidth / 6;
     final pos = position.dx - halfScreen;
@@ -150,11 +202,11 @@ class NamidaVideoControlsState extends State<NamidaVideoControls> with TickerPro
           onSecondsReady: (finalSeconds) {
             if (_shouldSeekOnTap && !_lastSeekWasForward) {
               // only increase if not at the start
-              if (Player.inst.nowPlayingPosition != 0) {
-                _seekSeconds += finalSeconds;
+              if (Player.inst.nowPlayingPosition.value > 0) {
+                _seekSecondsRx.value += finalSeconds;
               }
             } else {
-              _seekSeconds = finalSeconds;
+              _seekSecondsRx.value = finalSeconds;
             }
           },
         );
@@ -167,11 +219,11 @@ class NamidaVideoControlsState extends State<NamidaVideoControls> with TickerPro
           onSecondsReady: (finalSeconds) {
             if (_shouldSeekOnTap && _lastSeekWasForward) {
               // only increase if not at the end
-              if (Player.inst.nowPlayingPosition != Player.inst.currentItemDuration?.inMilliseconds) {
-                _seekSeconds += finalSeconds;
+              if (Player.inst.nowPlayingPosition.value < (Player.inst.currentItemDuration.value?.inMilliseconds ?? 0)) {
+                _seekSecondsRx.value += finalSeconds;
               }
             } else {
-              _seekSeconds = finalSeconds;
+              _seekSecondsRx.value = finalSeconds;
             }
           },
         );
@@ -207,6 +259,23 @@ class NamidaVideoControlsState extends State<NamidaVideoControls> with TickerPro
   }) async {
     await Future.delayed(Duration(milliseconds: delay));
     await controller.animateTo(target);
+  }
+
+  /// disables controls entirely when specified. for example when minplayer is minimized & controls should't be there.
+  ///
+  /// and updates [_isMiniplayerExpanded] for [YTHorizontalDragMode].
+  void _miniplayerAnimationListener() {
+    if (!mounted) return;
+    final value = MiniPlayerController.inst.animation.value;
+    final hideUnder = widget.disableControlsUnderPercentage;
+    final shouldHide = hideUnder != null && value < hideUnder;
+    final isExpanded = MiniPlayerController.inst.isExpanded;
+    if (shouldHide != _isLocked || isExpanded != _isMiniplayerExpanded) {
+      setState(() {
+        _isLocked = shouldHide;
+        _isMiniplayerExpanded = isExpanded;
+      });
+    }
   }
 
   @override
@@ -250,7 +319,36 @@ class NamidaVideoControlsState extends State<NamidaVideoControls> with TickerPro
         },
       );
     }
+
+    if (!widget.isFullScreen) {
+      _miniplayerAnimationListener();
+      MiniPlayerController.inst.animation.addListener(_miniplayerAnimationListener);
+    }
+
+    settings.youtube.horizontalDrag.addListener(_horizontalDragModeListener);
+
+    if (widget.isFullScreen && NamidaFeaturesVisibility.changeApplicationBrightness) {
+      ScreenBrightness.instance.system.then((value) => _currentBrigthnessDim.value = 1.0 + value);
+      _systemBrightnessStreamSub = ScreenBrightness.instance.onSystemScreenBrightnessChanged.listen(
+        (event) {
+          if (event > 0) {
+            _currentBrigthnessDim.value = 1.0 + event;
+            _setScreenBrightness(event);
+          }
+        },
+      );
+    }
+    if (widget.isFullScreen && _deviceOrientationCommunicatorStreamSub == null) _setupDeviceOrientationListener();
   }
+
+  void _setScreenBrightness(double value) async {
+    value = value.clampDouble(0.01, 1.0); // -- below 0.01 treats it as 0 and disables it making it jump to system brightness
+    try {
+      await ScreenBrightness.instance.setApplicationScreenBrightness(value);
+    } catch (_) {}
+  }
+
+  StreamSubscription<double>? _systemBrightnessStreamSub;
 
   final _volumeListenerKey = 'video_widget';
 
@@ -260,10 +358,18 @@ class NamidaVideoControlsState extends State<NamidaVideoControls> with TickerPro
     seekAnimationForward2.dispose();
     seekAnimationBackward1.dispose();
     seekAnimationBackward2.dispose();
-    userSeekMS.close();
     _currentDeviceVolume.close();
     _canShowBrightnessSlider.close();
+    _seekSecondsRx.close();
+    _isEndCardsVisible.close();
     Player.inst.onVolumeChangeRemoveListener(_volumeListenerKey);
+    MiniPlayerController.inst.animation.removeListener(_miniplayerAnimationListener);
+    settings.youtube.horizontalDrag.removeListener(_horizontalDragModeListener);
+    _systemBrightnessStreamSub?.cancel();
+    if (widget.isFullScreen && NamidaFeaturesVisibility.changeApplicationBrightness) {
+      ScreenBrightness.instance.resetApplicationScreenBrightness();
+    }
+    _deviceOrientationCommunicatorStreamSub?.cancel();
     super.dispose();
   }
 
@@ -277,7 +383,7 @@ class NamidaVideoControlsState extends State<NamidaVideoControls> with TickerPro
     required bool isForward,
     required bool isSecondary,
   }) {
-    final seekContainerSize = context.width;
+    final seekContainerSize = _maxWidth;
     final offsetPercentage = isSecondary ? 0.7 : 0.55;
     final finalOffset = -(seekContainerSize * offsetPercentage);
     return Positioned(
@@ -293,7 +399,7 @@ class NamidaVideoControlsState extends State<NamidaVideoControls> with TickerPro
           builder: (context, child) {
             return DecoratedBox(
               decoration: BoxDecoration(
-                color: Colors.white.withOpacity((controller.value / 3).clamp(0, 1)),
+                color: Colors.white.withOpacityExt((controller.value / 3).clampDouble(0, 1)),
                 shape: BoxShape.circle,
               ),
               child: child!,
@@ -308,14 +414,15 @@ class NamidaVideoControlsState extends State<NamidaVideoControls> with TickerPro
     required AnimationController controller,
     required bool isForward,
   }) {
-    final seekContainerSize = context.width;
+    final textTheme = context.textTheme;
+    final seekContainerSize = _maxWidth;
     final finalOffset = seekContainerSize * 0.05;
-    final forwardIcons = <int, IconData>{
+    const forwardIcons = <int, IconData>{
       5: Broken.forward_5_seconds,
       10: Broken.forward_10_seconds,
       15: Broken.forward_15_seconds,
     };
-    final backwardIcons = <int, IconData>{
+    const backwardIcons = <int, IconData>{
       5: Broken.backward_5_seconds,
       10: Broken.backward_10_seconds,
       15: Broken.backward_15_seconds,
@@ -337,32 +444,28 @@ class NamidaVideoControlsState extends State<NamidaVideoControls> with TickerPro
     return Positioned(
       right: isForward ? finalOffset : null,
       left: isForward ? null : finalOffset,
-      child: IgnorePointer(
-        child: AnimatedBuilder(
-          animation: controller,
-          builder: (context, child) {
-            final ss = _seekSeconds;
-            return NamidaOpacity(
-              opacity: controller.value,
-              child: Column(
-                children: [
-                  Icon(
-                    isForward ? forwardIcons[ss] ?? Broken.forward : backwardIcons[ss] ?? Broken.backward,
-                    color: color,
-                    shadows: outlineShadow,
-                  ),
-                  const SizedBox(height: 8.0),
-                  Text(
-                    '$ss ${lang.SECONDS}',
-                    style: context.textTheme.displayMedium?.copyWith(
-                      color: color,
-                      shadows: outlineShadow,
-                    ),
-                  )
-                ],
+      child: FadeIgnoreTransition(
+        completelyKillWhenPossible: true,
+        opacity: controller,
+        child: ObxO(
+          rx: _seekSecondsRx,
+          builder: (context, ss) => Column(
+            children: [
+              Icon(
+                isForward ? forwardIcons[ss] ?? Broken.forward : backwardIcons[ss] ?? Broken.backward,
+                color: color,
+                shadows: outlineShadow,
               ),
-            );
-          },
+              const SizedBox(height: 8.0),
+              Text(
+                '$ss ${lang.seconds}',
+                style: textTheme.displayMedium?.copyWith(
+                  color: color,
+                  shadows: outlineShadow,
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -370,36 +473,94 @@ class NamidaVideoControlsState extends State<NamidaVideoControls> with TickerPro
 
   Widget _getQualityChip({
     required String title,
-    String subtitle = '',
+    String? subtitle,
+    String? thirdLine,
     IconData? icon,
     required void Function(bool isSelected) onPlay,
     required bool selected,
     required bool isCached,
+    Widget? trailing,
+    bool popOnTap = true,
+    double? progress,
   }) {
+    final textTheme = context.textTheme;
+    progress = progress?.clampDouble(0.0, 1.0);
+    final color = CurrentColor.inst.miniplayerColor;
+    final bgColor = selected ? color.withOpacityExt(0.4) : null;
     return NamidaInkWell(
       onTap: () {
         _startTimer();
-        Navigator.of(context).pop();
+        if (popOnTap) NamidaNavigator.inst.popMenu();
         onPlay(selected);
       },
-      decoration: const BoxDecoration(),
+      decoration: BoxDecoration(
+        color: progress != null ? null : bgColor,
+        gradient: progress == null
+            ? null
+            : LinearGradient(
+                begin: AlignmentDirectional.centerStart,
+                end: AlignmentDirectional.centerEnd,
+                colors: [
+                  color.withOpacityExt(0.4),
+                  color.withOpacityExt(0.4),
+                  color.withOpacityExt(0.2),
+                  color.withOpacityExt(0.2),
+                ],
+                stops: [0.0, progress, progress, 1.0],
+              ),
+      ),
       borderRadius: 6.0,
-      bgColor: selected ? CurrentColor.inst.miniplayerColor.withAlpha(100) : null,
       margin: const EdgeInsets.symmetric(horizontal: 4.0, vertical: 2.0),
       padding: const EdgeInsets.all(6.0),
       child: Row(
         children: [
-          Icon(icon ?? (isCached ? Broken.tick_circle : Broken.story), size: 20.0),
+          progress == null
+              ? Icon(
+                  icon ?? (isCached ? Broken.tick_circle : Broken.story),
+                  size: 20.0,
+                )
+              : SizedBox(
+                  width: 20.0,
+                  child: FittedBox(
+                    fit: .scaleDown,
+                    child: Text(
+                      "${(progress * 100).toStringAsFixed(0)}%",
+                      textAlign: TextAlign.center,
+                      style: textTheme.displaySmall?.copyWith(fontSize: 12.0),
+                    ),
+                  ),
+                ),
           const SizedBox(width: 4.0),
-          Text(
-            title,
-            style: context.textTheme.displayMedium?.copyWith(fontSize: 13.0.multipliedFontScale),
-          ),
-          if (subtitle != '')
-            Text(
-              subtitle,
-              style: context.textTheme.displaySmall?.copyWith(fontSize: 12.0.multipliedFontScale),
+          Flexible(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Flexible(
+                      child: Text(
+                        title,
+                        style: textTheme.displayMedium?.copyWith(fontSize: 13.0),
+                      ),
+                    ),
+                    if (subtitle != null && subtitle != '')
+                      Text(
+                        subtitle,
+                        style: textTheme.displaySmall?.copyWith(fontSize: 12.0),
+                      ),
+                  ],
+                ),
+                if (thirdLine != null && thirdLine != '')
+                  Text(
+                    thirdLine,
+                    style: textTheme.displaySmall?.copyWith(fontSize: 12.0),
+                  ),
+              ],
             ),
+          ),
+          ?trailing,
         ],
       ),
     );
@@ -429,10 +590,10 @@ class NamidaVideoControlsState extends State<NamidaVideoControls> with TickerPro
   }
 
   bool _canSlideVolume(BuildContext context, double globalHeight) {
-    final minimumVerticalDistanceToIgnoreSwipes = context.height * 0.1;
+    final minimumVerticalDistanceToIgnoreSwipes = _maxHeight * 0.1;
 
     final isSafeFromDown = globalHeight > minimumVerticalDistanceToIgnoreSwipes;
-    final isSafeFromUp = globalHeight < context.height - minimumVerticalDistanceToIgnoreSwipes;
+    final isSafeFromUp = globalHeight < _maxHeight - minimumVerticalDistanceToIgnoreSwipes;
     return isSafeFromDown && isSafeFromUp;
   }
 
@@ -444,11 +605,14 @@ class NamidaVideoControlsState extends State<NamidaVideoControls> with TickerPro
 
   bool _isDraggingSeekBar = false;
 
-  RxDouble get _currentBrigthnessDim => VideoController.inst.currentBrigthnessDim;
+  Rx<double> get _currentBrigthnessDim => VideoController.inst.currentBrigthnessDim;
 
-  Widget _getVerticalSliderWidget(String key, double? perc, IconData icon, ui.FlutterView view) {
-    final totalHeight = view.physicalSize.shortestSide / view.devicePixelRatio * 0.75;
-    return AnimatedSwitcher(
+  final _maxBrightnessValue = NamidaFeaturesVisibility.changeApplicationBrightness ? 2.0 : 1.0;
+
+  Widget _getVerticalSliderWidget(String key, double? perc, IconData icon, ui.FlutterView view, {double max = 1.0}) {
+    final textTheme = context.textTheme;
+    final totalHeight = view.physicalSize.shortestSide / (view.devicePixelRatioWithScale) * 0.75;
+    return CustomAnimatedSwitcher(
       duration: const Duration(milliseconds: 200),
       child: perc == null || _isDraggingSeekBar
           ? SizedBox(key: Key('$key.hidden'))
@@ -458,7 +622,7 @@ class NamidaVideoControlsState extends State<NamidaVideoControls> with TickerPro
               child: Container(
                 width: 42.0,
                 decoration: BoxDecoration(
-                  color: context.theme.cardColor.withOpacity(0.5),
+                  color: context.theme.cardColor.withOpacityExt(0.5),
                   borderRadius: BorderRadius.circular(12.0.multipliedRadius),
                 ),
                 child: Column(
@@ -469,7 +633,7 @@ class NamidaVideoControlsState extends State<NamidaVideoControls> with TickerPro
                       children: [
                         Container(
                           decoration: BoxDecoration(
-                            color: Colors.black.withOpacity(0.2),
+                            color: Colors.black.withOpacityExt(0.2),
                             borderRadius: BorderRadius.circular(8.0.multipliedRadius),
                           ),
                           width: 4.0,
@@ -481,14 +645,14 @@ class NamidaVideoControlsState extends State<NamidaVideoControls> with TickerPro
                             borderRadius: BorderRadius.circular(8.0.multipliedRadius),
                           ),
                           width: 4.0,
-                          height: totalHeight * 0.4 * perc,
+                          height: totalHeight * 0.4 * (perc / max),
                         ),
                       ],
                     ),
                     const SizedBox(height: 12.0),
                     Text(
                       "${(perc * 100).round()}%",
-                      style: context.textTheme.displaySmall,
+                      style: textTheme.displaySmall,
                     ),
                     const SizedBox(height: 6.0),
                     Icon(icon, size: 20.0),
@@ -513,117 +677,1049 @@ class NamidaVideoControlsState extends State<NamidaVideoControls> with TickerPro
     _doubleTapTimer = null;
   }
 
-  bool get _canShowControls => widget.showControls && !NamidaChannel.inst.isInPip.value;
+  bool get _canShowControls => !_isLocked && !NamidaChannel.inst.isInPip.value;
 
   EdgeInsets _deviceInsets = EdgeInsets.zero;
-  Orientation? _latestOrientation;
+
+  final _videoConstraintsKey = GlobalKey();
+
+  StreamSubscription<NativeDeviceOrientation>? _deviceOrientationCommunicatorStreamSub;
+  void _setupDeviceOrientationListener() {
+    if (Platform.isAndroid || Platform.isIOS) {
+      _deviceOrientationCommunicatorStreamSub?.cancel();
+      final stream = NativeDeviceOrientationCommunicator().onOrientationChanged();
+      _deviceOrientationCommunicatorStreamSub = stream.listen(
+        (event) {
+          if (mounted) {
+            setState(() => _deviceInsets = EdgeInsets.zero);
+          }
+        },
+      );
+    }
+  }
+
+  bool _didDeviceInsetsChange(EdgeInsets newDeviceInsets) {
+    return newDeviceInsets.left > _deviceInsets.left ||
+        newDeviceInsets.right > _deviceInsets.right ||
+        newDeviceInsets.top > _deviceInsets.top ||
+        newDeviceInsets.bottom > _deviceInsets.bottom;
+  }
+
+  void toggleGlowBehindVideo() {
+    final newValueEnabled = !settings.enableGlowBehindVideo.value;
+    settings.enableGlowBehindVideo.save(newValueEnabled);
+    if (newValueEnabled) {
+      snackyy(title: lang.warning, message: lang.performanceNote, icon: Broken.danger);
+    }
+  }
+
+  void _onPointerUpCancel() {
+    _isPointerDown = false;
+    _disableSliders = false;
+    _startVolumeSwipeTimer();
+    _startBrightnessDimTimer();
+    _isEndCardsVisibleTimer?.cancel();
+    _isEndCardsVisible.value = true;
+  }
+
+  bool _isLocked = false;
+  bool _isMiniplayerExpanded = false;
+
+  late YTHorizontalDragMode _horizontalDragMode = settings.youtube.horizontalDrag.value;
+  void _horizontalDragModeListener() {
+    final mode = settings.youtube.horizontalDrag.value;
+    if (mode != _horizontalDragMode && mounted) setState(() => _horizontalDragMode = mode);
+  }
+
+  void _toggleLocked() {
+    setState(() {
+      _isLocked = !_isLocked;
+    });
+  }
+
+  late final _seekReadyKey = widget.isFullScreen ? SeekReadyWidget.fullscreenKey : SeekReadyWidget.normalKey;
+  SeekReadyWidgetState? get _seekReady => _seekReadyKey.currentState;
 
   @override
   Widget build(BuildContext context) {
-    final maxWidth = context.width;
-    final maxHeight = context.height;
+    final textTheme = context.textTheme;
+    final newDeviceInsets = MediaQuery.viewPaddingOf(context);
+    if (_deviceInsets == EdgeInsets.zero || _didDeviceInsetsChange(newDeviceInsets)) {
+      if (newDeviceInsets != EdgeInsets.zero) _deviceInsets = newDeviceInsets;
+    }
+
+    final isFullScreen = widget.isFullScreen;
+
+    // -- no clamp with miniplayerMaxWidth, we use custom ui scale
+    final maxWidth = _maxWidth = context.width;
+    final maxHeight = _maxHeight = context.height;
+
     final inLandscape = NamidaNavigator.inst.isInLanscape;
 
-    // -- in landscape, the size is calculated based on height, to fit in correctly.
-    final fallbackHeight = inLandscape ? maxHeight : maxWidth * 9 / 16;
-    final fallbackWidth = inLandscape ? maxHeight * 16 / 9 : maxWidth;
+    final videoBoxMaxConstraints = inLandscape
+        ? BoxConstraints(
+            maxHeight: maxHeight,
+            maxWidth: maxHeight * 16 / 9,
+          )
+        : BoxConstraints(
+            maxHeight: maxWidth * 9 / 16,
+            maxWidth: maxWidth,
+          );
 
-    final finalVideoWidget = Obx(() {
-      final info = Player.inst.videoPlayerInfo;
-      if (info != null && info.isInitialized) {
-        return NamidaAspectRatio(
-          aspectRatio: info.aspectRatio,
+    final finalVideoWidget = ObxO(
+      rx: VideoController.inst.displayedVideoInfo,
+      builder: (context, info) {
+        if (info != null && info.isInitialized) {
+          return NamidaAspectRatio(
+            aspectRatio: info.aspectRatio,
+            child: ObxO(
+              rx: VideoController.inst.videoZoomAdditionalScale,
+              builder: (context, pinchInZoom) => AnimatedScale(
+                duration: const Duration(milliseconds: 200),
+                scale: 1.0 + pinchInZoom * 0.02,
+                child: Texture(textureId: info.textureId),
+              ),
+            ),
+          );
+        }
+        if (widget.isLocal && !isFullScreen) {
+          return Container(
+            key: const Key('dummy_container'),
+            color: Colors.transparent,
+          );
+        }
+        // -- fallback images
+        return LayoutWidthProvider(
+          builder: (context, providerMaxWidth) {
+            // -- in landscape, the size is calculated based on height, to fit in correctly.
+            final fallbackWidth = (inLandscape ? maxHeight * 16 / 9 : maxWidth).withMaximum(providerMaxWidth);
+            final fallbackHeight = double.infinity;
+            return ObxO(
+              rx: Player.inst.currentItem,
+              builder: (context, item) {
+                if (item is YoutubeID) {
+                  final vidId = item.id;
+                  return YoutubeThumbnail(
+                    type: ThumbnailType.video,
+                    key: Key(vidId),
+                    isImportantInCache: true,
+                    width: fallbackWidth,
+                    height: fallbackHeight,
+                    borderRadius: 0,
+                    blur: 0,
+                    disableBlurBgSizeShrink: true,
+                    videoId: vidId,
+                    displayFallbackIcon: false,
+                    compressed: false,
+                    preferLowerRes: false,
+                    fit: BoxFit.contain, // never change this lil bro
+                  );
+                }
+                final track = item is Selectable ? item.track : null;
+                return ArtworkWidget(
+                  key: ValueKey(track?.path),
+                  track: track,
+                  path: track?.pathToImage,
+                  thumbnailSize: fallbackWidth,
+                  width: fallbackWidth,
+                  borderRadius: 0,
+                  blur: 0,
+                  disableBlurBgSizeShrink: true,
+                  compressed: false,
+                  fit: BoxFit.contain, // never change this my friend
+                );
+              },
+            );
+          },
+        );
+      },
+    );
+
+    final horizontalControlsPadding = isFullScreen
+        ? inLandscape
+              ? EdgeInsets.only(left: 12.0 + _deviceInsets.left, right: 12.0 + _deviceInsets.right) // lanscape videos
+              : EdgeInsets.only(left: 12.0 + _deviceInsets.left, right: 12.0 + _deviceInsets.right) // vertical videos
+        : const EdgeInsets.symmetric(horizontal: 2.0);
+
+    final safeAreaPadding = isFullScreen
+        ? inLandscape
+              ? EdgeInsets.only(left: _deviceInsets.left, right: _deviceInsets.right)
+              : EdgeInsets
+                    .zero // bcz we hide status bar and nav bar
+        : EdgeInsets.zero;
+
+    final bottomPadding = isFullScreen
+        ? inLandscape
+              ? 12.0 +
+                    _deviceInsets
+                        .bottom // lanscape videos
+              : 12.0 +
+                    0.35 *
+                        _deviceInsets
+                            .bottom // vertical videos
+        : 2.0;
+    final topPadding = isFullScreen
+        ? inLandscape
+              ? 12.0 +
+                    _deviceInsets
+                        .top // lanscape videos
+              : 12.0 +
+                    _deviceInsets
+                        .top // vertical videos
+        : 2.0;
+    // -- how much the subtitles are pushed up while the bottom controls are visible
+    final subtitlesControlsOffset = isFullScreen ? 78.0 : 46.0;
+    final subtitlesFontSize = isFullScreen ? 16.0 : 12.0;
+    final itemsColor = Colors.white.withAlpha(200);
+    final shouldShowSliders = _canShowControls && isFullScreen;
+    final shouldShowSeekBar = isFullScreen;
+    final view = View.of(context);
+
+    final mainButtonSize = 40.0.withMaximum(maxWidth * 0.1);
+    final mainButtonPadding = EdgeInsets.all(14.0.withMaximum(maxWidth * 0.035));
+
+    final mainBufferIconSize = mainButtonSize * 1.3; // 40 => 52
+
+    final secondaryButtonSize = 30.0.withMaximum(maxWidth * 0.06);
+    final secondaryButtonPadding = EdgeInsets.all(10.0.withMaximum(maxWidth * 0.025));
+
+    final lockIconWidget = isFullScreen
+        ? NamidaBgBlurClipped(
+            blur: 3.0,
+            decoration: BoxDecoration(
+              color: Colors.black.withOpacityExt(0.2),
+              borderRadius: borr8,
+            ),
+            child: Padding(
+              padding: const EdgeInsets.all(6.0),
+              child: NamidaIconButton(
+                verticalPadding: 2.0,
+                horizontalPadding: 8.0,
+                padding: EdgeInsets.zero,
+                icon: _isLocked ? Broken.lock_slash : Broken.lock_1,
+                iconSize: _isLocked ? 22.0 : 18.0,
+                iconColor: itemsColor,
+                onPressed: _toggleLocked,
+              ),
+            ),
+          )
+        : null;
+
+    final topRowLeading = <Widget>[
+      if (isFullScreen || widget.onMinimizeTap != null)
+        NamidaIconButton(
+          horizontalPadding: 12.0,
+          verticalPadding: 6.0,
+          onPressed: isFullScreen ? NamidaNavigator.inst.exitFullScreen : widget.onMinimizeTap,
+          icon: Broken.arrow_down_2,
+          iconColor: itemsColor,
+          iconSize: 20.0,
+        ),
+      const SizedBox(width: 8.0),
+    ];
+
+    final topRowTitle = Expanded(
+      child: isFullScreen
+          ? Material(
+              type: MaterialType.transparency,
+              child: _VideoTitleSubtitleWidget(
+                isLocal: widget.isLocal,
+              ),
+            )
+          : const SizedBox(),
+    );
+
+    // ==== Reset Brightness ====
+    final resetBrightnessButton = ObxO(
+      rx: _currentBrigthnessDim,
+      builder: (context, brigthnessDim) => CustomAnimatedSwitcher(
+        duration: const Duration(milliseconds: 200),
+        child: brigthnessDim < 1.0
+            ? NamidaIconButton(
+                key: const Key('brightnesseto_ok'),
+                tooltip: () => lang.resetBrightness,
+                icon: Broken.sun_1,
+                iconColor: itemsColor.withOpacityExt(0.8),
+                verticalPadding: 4.0,
+                horizontalPadding: 8.0,
+                iconSize: 18.0,
+                onPressed: () => _currentBrigthnessDim.value = 1.0,
+              )
+            : const SizedBox(
+                key: Key('brightnesseto_no'),
+              ),
+      ),
+    );
+
+    final speedChip = NamidaPopupWrapper(
+      onPop: _startTimer,
+      onTap: () {
+        _resetTimer();
+        setControlsVisibily(true);
+      },
+      children: () => [
+        ...settings.player.speeds.value.map(
+          (speed) => ObxO(
+            rx: Player.inst.currentSpeed,
+            builder: (context, selectedSpeed) {
+              final isSelected = selectedSpeed == speed;
+              return NamidaInkWell(
+                onTap: () {
+                  _startTimer();
+                  final isSelected = Player.inst.currentSpeed.value == speed;
+                  if (!isSelected) {
+                    Player.inst.setSpeed(speed);
+                    settings.player.speed.save(speed);
+                    NamidaNavigator.inst.popMenu();
+                  }
+                },
+                decoration: const BoxDecoration(),
+                borderRadius: 6.0,
+                bgColor: isSelected ? CurrentColor.inst.miniplayerColor.withAlpha(100) : null,
+                margin: const EdgeInsets.symmetric(horizontal: 4.0, vertical: 2.0),
+                padding: const EdgeInsets.all(6.0),
+                child: Row(
+                  children: [
+                    const Icon(Broken.play_cricle, size: 20.0),
+                    const SizedBox(width: 12.0),
+                    Text(
+                      "${speed}x",
+                      style: textTheme.displayMedium?.copyWith(fontSize: 13.0),
+                    ),
+                  ],
+                ),
+              );
+            },
+          ),
+        ),
+        NamidaInkWell(
+          onTap: () {
+            _startTimer();
+            NamidaNavigator.inst.popMenu();
+            NamidaNavigator.inst.navigateDialog(dialog: const _SpeedsEditorDialog());
+          },
+          decoration: const BoxDecoration(),
+          borderRadius: 6.0,
+          bgColor: null,
+          margin: const EdgeInsets.symmetric(horizontal: 4.0, vertical: 2.0),
+          padding: const EdgeInsets.all(6.0),
+          child: Row(
+            children: [
+              const Icon(Broken.add_circle, size: 20.0),
+              const SizedBox(width: 12.0),
+              Text(
+                lang.add,
+                style: textTheme.displayMedium?.copyWith(fontSize: 13.0),
+              ),
+            ],
+          ),
+        ),
+      ],
+      child: _VideoWidgetActionChip(
+        child: Obx(
+          (context) {
+            final speed = Player.inst.currentSpeed.valueR;
+            return Row(
+              children: [
+                Icon(
+                  Broken.play_cricle,
+                  size: 16.0,
+                  color: itemsColor,
+                ),
+                const SizedBox(width: 4.0).animateEntrance(showWhen: speed != 1.0, allCurves: Curves.easeInOutQuart),
+                Text(
+                  "${speed}x",
+                  style: textTheme.displaySmall?.copyWith(
+                    color: itemsColor,
+                    fontSize: 12.0,
+                  ),
+                ).animateEntrance(showWhen: speed != 1.0, allCurves: Curves.easeInOutQuart),
+              ],
+            );
+          },
+        ),
+      ),
+    );
+
+    final audioTracksChip = ObxO(
+      rx: Player.inst.audioTracks,
+      builder: (context, tracks) {
+        if (tracks == null || tracks.length <= 1) return const SizedBox();
+        final selectedTrack = tracks.firstWhereEff((e) => e.isSelected);
+
+        return NamidaPopupWrapper(
+          openOnTap: true,
+          onPop: _startTimer,
+          onTap: () {
+            _resetTimer();
+            setControlsVisibily(true);
+          },
+          children: () => tracks.map(
+            (e) {
+              final isSelected = e.isSelected;
+              final titleRaw = e.displayName;
+              final title = [
+                titleRaw.capitalizeFirst(),
+                if (e.label != titleRaw) e.label?.capitalizeFirst(),
+              ].joinText(separator: ' • ');
+              final subtitle = e.mimeType?.toUpperCase();
+              final thirdLine = [
+                if (e.sampleRate != null) '${e.sampleRate! / 1000} kHz',
+                if (e.bitrate != null) "${e.bitrate! ~/ 1000} kb/s",
+                if (e.channelCount != null && e.channelCount != 2) "${e.channelCount!} ch",
+              ].joinText(separator: ' • ');
+
+              return _getQualityChip(
+                title: title,
+                subtitle: subtitle == null || subtitle.isEmpty ? null : ' • $subtitle',
+                thirdLine: thirdLine,
+                onPlay: (isSelected) => Player.inst.setAudioTrackAndSave(e.id),
+                selected: isSelected,
+                isCached: true,
+              );
+            },
+          ),
+          child: _VideoWidgetActionChip(
+            trailing: Icon(
+              Broken.audio_square,
+              size: 16.0,
+              color: itemsColor,
+            ),
+            text: selectedTrack?.displayName.capitalizeFirst() ?? '?',
+            textColor: itemsColor,
+          ),
+        );
+      },
+    );
+
+    final audioLanguageChip = ObxO(
+      rx: YoutubeInfoController.current.currentYTStreams,
+      builder: (context, streams) {
+        final streamsMap = streams?.audioStreamsOrganizedByLanguage;
+        if (streamsMap == null || streamsMap.keys.length <= 1) return const SizedBox();
+
+        return NamidaPopupWrapper(
+          openOnTap: true,
+          onPop: _startTimer,
+          onTap: () {
+            _resetTimer();
+            setControlsVisibily(true);
+          },
+          children: () => streamsMap.values.map(
+            (element) => Obx(
+              (context) {
+                bool isSelected = false;
+                final audioTrack = element.audioTrack;
+                final langCode = audioTrack?.langCode;
+                if (langCode != null) {
+                  if (langCode == Player.inst.currentCachedAudio.valueR?.langaugeCode) {
+                    isSelected = true;
+                  } else if (langCode == Player.inst.currentAudioStream.valueR?.audioTrack?.langCode) {
+                    isSelected = true;
+                  }
+                }
+                final id = Player.inst.currentVideoR?.id;
+                return _getQualityChip(
+                  title: audioTrack?.displayName ?? '?',
+                  subtitle: " • ${langCode ?? 0}",
+                  onPlay: (isSelected) {
+                    if (!isSelected || Player.inst.videoPlayerInfo.value?.isInitialized == true) {
+                      Player.inst.onItemPlayYoutubeIDSetAudio(
+                        stream: element,
+                        mainStreams: streams,
+                        cachedFile: null,
+                        useCache: true,
+                        videoId: Player.inst.currentVideo?.id ?? '',
+                      );
+                    }
+                  },
+                  selected: isSelected,
+                  isCached: element.getCachedFileSync(id) != null,
+                );
+              },
+            ),
+          ),
           child: Obx(
-            () => AnimatedScale(
-              duration: const Duration(milliseconds: 200),
-              scale: 1.0 + VideoController.inst.videoZoomAdditionalScale.value * 0.02,
-              child: Texture(textureId: info.textureId),
+            (context) {
+              final displayName = Player.inst.currentAudioStream.valueR?.audioTrack?.displayName ?? Player.inst.currentCachedAudio.valueR?.langaugeName;
+              return _VideoWidgetActionChip(
+                leading: Icon(
+                  Broken.audio_square,
+                  size: 16.0,
+                  color: itemsColor,
+                ),
+                text: displayName ?? '?',
+                textColor: itemsColor,
+              );
+            },
+          ),
+        );
+      },
+    );
+
+    final subtitleChip = NamidaPopupWrapper(
+      openOnTap: true,
+      onPop: _startTimer,
+      onTap: () {
+        _resetTimer();
+        setControlsVisibily(true);
+      },
+      children: () async {
+        final tracks = await Subtitles.inst.ensureDiscovered();
+        if (tracks.isEmpty) {
+          return [
+            _getQualityChip(
+              title: lang.none,
+              icon: Broken.text_block,
+              onPlay: (_) {},
+              selected: false,
+              isCached: true,
+            ),
+          ];
+        }
+        return [
+          ObxO(
+            rx: Subtitles.inst.selectedTrack,
+            builder: (context, selected) => _getQualityChip(
+              title: lang.disable,
+              icon: Broken.close_circle,
+              onPlay: (_) => Subtitles.inst.selectTrack(null),
+              selected: selected == null,
+              isCached: true,
+            ),
+          ),
+          ...tracks.map(
+            (track) {
+              final supported = Subtitles.inst.isTrackSupported(track);
+              final details = [
+                if (track.languageCode.isNotEmpty) track.languageName,
+                if (track.codecName.isNotEmpty) track.codecName,
+              ];
+              return ObxO(
+                rx: Subtitles.inst.selectedTrack,
+                builder: (context, selected) {
+                  final chip = _getQualityChip(
+                    title: track.displayName,
+                    subtitle: details.isEmpty ? null : " • ${details.join(' • ')}",
+                    thirdLine: !supported
+                        ? lang.failed
+                        : track.isAutoGenerated
+                        ? lang.autoGenerated
+                        : null,
+                    icon: switch (track) {
+                      SubtitleTrackFile() => Broken.document,
+                      SubtitleTrackPlayer() => Broken.video,
+                      SubtitleTrackYoutube() => Broken.video_play,
+                    },
+                    onPlay: (_) => Subtitles.inst.selectTrack(track),
+                    selected: selected?.id == track.id,
+                    isCached: true,
+                  );
+                  return supported ? chip : Opacity(opacity: 0.5, child: chip);
+                },
+              );
+            },
+          ),
+        ];
+      },
+      child: Obx(
+        (context) {
+          final enabled = settings.enableSubtitles.valueR;
+          final languageName = enabled ? Subtitles.inst.selectedTrack.valueR?.languageName : null;
+          return _VideoWidgetActionChip(
+            text: languageName,
+            textColor: itemsColor,
+            trailing: Subtitles.inst.isLoading.valueR
+                ? ThreeArchedCircle(
+                    color: itemsColor,
+                    size: 12.0,
+                  )
+                : Icon(
+                    Broken.text_block,
+                    size: 16.0,
+                    color: enabled ? itemsColor : itemsColor.withOpacityExt(0.4),
+                  ),
+          );
+        },
+      ),
+    );
+
+    final qualityChip = NamidaPopupWrapper(
+      openOnTap: true,
+      onPop: _startTimer,
+      onTap: () {
+        _resetTimer();
+        setControlsVisibily(true);
+      },
+      refreshListenable: widget.isLocal ? VideoController.inst.currentVideoConfig.currentYTStreams : YoutubeInfoController.current.currentYTStreams,
+      children: () {
+        VideoStreamsResult? streams;
+        Selectable? currentSelectable;
+        String? currentLocalVideoId;
+        if (widget.isLocal) {
+          streams = VideoController.inst.currentVideoConfig.currentYTStreams.value;
+          final currentItem = Player.inst.currentItem.value;
+          if (currentItem is Selectable) {
+            currentSelectable = currentItem;
+            currentLocalVideoId = currentItem.track.youtubeID;
+          }
+        } else {
+          streams = YoutubeInfoController.current.currentYTStreams.value;
+        }
+        final ytQualities = streams?.videoStreams.withoutWebmIfNeccessaryOrExperimentalCodecs(
+          allowExperimentalCodecs: settings.youtube.allowExperimentalCodecs.value,
+        );
+        final cachedQualitiesAll = widget.isLocal ? VideoController.inst.currentVideoConfig.currentPossibleLocalVideos : YoutubeInfoController.current.currentCachedQualities;
+        final cachedQualities = List<NamidaVideo>.from(cachedQualitiesAll.value);
+        final videoId = Player.inst.currentVideoR?.id;
+        if (ytQualities != null && ytQualities.isNotEmpty) {
+          cachedQualities.removeWhere(
+            (cq) {
+              return ytQualities.any((ytq) {
+                if (widget.isLocal) return ytq.height == cq.height && ytq.bitrate == cq.bitrate;
+                final cachePath = videoId == null ? null : ytq.cachePath(videoId);
+                if (cachePath == cq.path) return true;
+                if (ytq.sizeInBytes == cq.sizeInBytes) return true;
+                final sameRes = cq.resolution.toString().startsWith(ytq.qualityLabel); // 720p.startsWith(720p60).
+                if (!sameRes) return false;
+                final sameFrames = ytq.fps == cq.framerate;
+                if (!sameFrames) return false;
+                return true; // same res && same frames
+              });
+            },
+          );
+        }
+        return [
+          Obx(
+            (context) {
+              final hasHighConnection = ConnectivityController.inst.hasHighConnection;
+              final rx = hasHighConnection ? settings.youtube.dataSaverMode : settings.youtube.dataSaverModeMobile;
+              final value = rx.valueR;
+              final isOff = value == DataSaverMode.off;
+              return _getQualityChip(
+                title: lang.dataSaver,
+                onPlay: (isSelected) => YoutubeSettings.openDataSaverConfigureDialog(),
+                selected: false,
+                isCached: false,
+                thirdLine: isOff ? null : value.toText(),
+                icon: Broken.blur,
+              );
+            },
+          ),
+          Obx(
+            (context) => _getQualityChip(
+              title: lang.audioOnly,
+              onPlay: (isSelected) {
+                Player.inst.setAudioOnlyPlayback(true);
+                VideoController.inst.currentVideo.value = null;
+                settings.enableVideoPlayback.save(false);
+              },
+              selected: (widget.isLocal ? VideoController.inst.currentVideo.valueR == null : settings.youtube.isAudioOnlyMode.valueR),
+              isCached: false,
+              icon: Broken.musicnote,
+            ),
+          ),
+          if (currentSelectable != null)
+            if (currentLocalVideoId == null || currentLocalVideoId.isEmpty)
+              _getQualityChip(
+                title: lang.search,
+                icon: Broken.search_normal,
+                selected: false,
+                isCached: false,
+                popOnTap: false,
+                onPlay: (isSelected) {
+                  final tr = currentSelectable!.track;
+                  showSetYTLinkCommentDialog(
+                    tr,
+                    CurrentColor.inst.miniplayerColor,
+                    autoOpenSearch: true,
+                  );
+                },
+              )
+            else
+              ObxO(
+                rx: VideoController.inst.currentVideoConfig.isLoadingCurrentYTStreams,
+                builder: (context, isLoadingMore) => _getQualityChip(
+                  title: lang.checkForMore,
+                  icon: Broken.chart,
+                  trailing: isLoadingMore ? const LoadingIndicator() : null,
+                  selected: false,
+                  isCached: false,
+                  popOnTap: false,
+                  onPlay: (_) => VideoController.inst.fetchYTQualitiesForCurrent(currentSelectable!.track),
+                ),
+              ),
+          ...cachedQualities.map(
+            (element) => Obx(
+              (context) => _getQualityChip(
+                title: '${element.resolution}p${element.framerateText()}',
+                subtitle: " • ${element.sizeInBytes.fileSizeFormatted}",
+                onPlay: (isSelected) {
+                  // sometimes video is not initialized so we need the second check
+                  if (isSelected && Player.inst.videoPlayerInfo.value?.isInitialized == true) return;
+                  final localTrack = currentSelectable?.track;
+                  if (widget.isLocal && localTrack != null) {
+                    VideoController.inst.setVideoQualityFromLocal(track: localTrack, video: element);
+                  } else {
+                    Player.inst.onItemPlayYoutubeIDSetQuality(
+                      mainStreams: streams,
+                      stream: null,
+                      cachedFile: File(element.path),
+                      videoItem: element,
+                      useCache: true,
+                      videoId: Player.inst.currentVideo?.id ?? '',
+                    );
+                  }
+                },
+                selected: widget.isLocal
+                    ? VideoController.inst.currentVideo.valueR?.path == element.path
+                    : settings.youtube.isAudioOnlyMode.valueR
+                    ? false
+                    : Player.inst.currentCachedVideo.valueR?.path == element.path,
+                isCached: true,
+              ),
+            ),
+          ),
+          ...?ytQualities?.map((element) {
+            return Obx(
+              (context) {
+                if (widget.isLocal) {
+                  final cacheFile = element.getCachedFileSync(currentLocalVideoId);
+                  final isSelected = VideoController.inst.isStreamCurrentlySelectedR(element, cacheFile);
+
+                  var codecIdentifier = element.codecInfo.codecIdentifierIfCustom();
+                  var codecIdentifierText = codecIdentifier != null ? ' (${codecIdentifier.toUpperCase()})' : '';
+                  final thirdLine = "${element.bitrateText()}$codecIdentifierText";
+
+                  void setQuality() {
+                    final localTrack = currentSelectable?.track;
+                    if (localTrack == null) return;
+                    VideoController.inst.setVideoQualityFromStream(
+                      track: localTrack,
+                      videoId: currentLocalVideoId,
+                      stream: element,
+                      cacheFile: cacheFile,
+                      mainStreams: streams,
+                    );
+                  }
+
+                  void onPlay(bool isSelected) {
+                    if (isSelected && Player.inst.videoPlayerInfo.value?.isInitialized == true) return;
+                    setQuality();
+                  }
+
+                  final videoConfig = VideoController.inst.currentVideoConfig;
+                  if (YoutubeController.isSameVideoStream(videoConfig.currentDownloadingStream.valueR, element)) {
+                    final totalBytes = element.sizeInBytes;
+                    return ObxO(
+                      rx: videoConfig.currentDownloadedBytes,
+                      builder: (context, downloadedBytes) => _getQualityChip(
+                        title: element.qualityLabel,
+                        subtitle: " • ${element.sizeInBytes.fileSizeFormatted}",
+                        thirdLine: thirdLine,
+                        onPlay: (_) => setQuality(),
+                        selected: isSelected,
+                        isCached: false,
+                        icon: Broken.import,
+                        progress: totalBytes <= 0 ? null : (downloadedBytes ?? 0) / totalBytes,
+                        trailing: totalBytes <= 0 ? const LoadingIndicator() : null,
+                      ),
+                    );
+                  }
+
+                  return _getQualityChip(
+                    title: element.qualityLabel,
+                    subtitle: " • ${element.sizeInBytes.fileSizeFormatted}",
+                    thirdLine: thirdLine,
+                    onPlay: onPlay,
+                    selected: isSelected,
+                    isCached: cacheFile != null,
+                  );
+                } else {
+                  final id = Player.inst.currentVideoR?.id;
+                  final cachedFile = id == null ? null : element.getCachedFileSync(id);
+                  bool isSelected = false;
+                  if (settings.youtube.isAudioOnlyMode.valueR) {
+                    isSelected = false;
+                  } else {
+                    final currentVS = Player.inst.currentVideoStream.valueR;
+                    if (currentVS != null) {
+                      isSelected = element.itag == currentVS.itag;
+                    } else {
+                      final currentCachedV = Player.inst.currentCachedVideo.valueR;
+                      if (currentCachedV != null && cachedFile != null) {
+                        isSelected = cachedFile.path == currentCachedV.path;
+                      }
+                    }
+                  }
+
+                  var codecIdentifier = element.codecInfo.codecIdentifierIfCustom();
+                  var codecIdentifierText = codecIdentifier != null ? ' (${codecIdentifier.toUpperCase()})' : '';
+
+                  return _getQualityChip(
+                    title: element.qualityLabel,
+                    subtitle: " • ${element.sizeInBytes.fileSizeFormatted}",
+                    thirdLine: "${element.bitrateText()}$codecIdentifierText",
+                    onPlay: (isSelected) {
+                      if (!isSelected || Player.inst.videoPlayerInfo.value?.isInitialized != true) {
+                        Player.inst.onItemPlayYoutubeIDSetQuality(
+                          mainStreams: streams,
+                          stream: element,
+                          cachedFile: cachedFile,
+                          useCache: true,
+                          videoId: id ?? '',
+                        );
+                      }
+                    },
+                    selected: isSelected,
+                    isCached: cachedFile != null,
+                  );
+                }
+              },
+            );
+          }),
+        ];
+      },
+      child: Obx(
+        (context) {
+          final isAudio = widget.isLocal ? VideoController.inst.currentVideo.valueR == null : settings.youtube.isAudioOnlyMode.valueR;
+
+          String? qt;
+          IconData icon;
+          IconData? secondaryIcon;
+          if (isAudio) {
+            icon = Broken.musicnote;
+          } else {
+            icon = Broken.setting;
+
+            if (widget.isLocal) {
+              final videoConfig = VideoController.inst.currentVideoConfig;
+              final downloadingStream = videoConfig.currentDownloadingStream.valueR;
+              if (downloadingStream != null) {
+                final totalBytes = downloadingStream.sizeInBytes;
+                final downloadedBytes = videoConfig.currentDownloadedBytes.valueR ?? 0;
+                final percentageText = totalBytes <= 0 ? '' : ' ${(downloadedBytes / totalBytes * 100).toStringAsFixed(0)}%';
+                qt = '${downloadingStream.qualityLabel}$percentageText';
+              } else {
+                final video = videoConfig.currentVideo.valueR;
+                qt = video == null ? null : '${video.resolution}p${video.framerateText()}';
+              }
+            } else {
+              qt = Player.inst.currentVideoStream.valueR?.qualityLabel;
+              if (qt == null) {
+                final cached = Player.inst.currentCachedVideo.valueR;
+                if (cached != null) qt = "${cached.resolution}p${cached.framerateText()}";
+              }
+
+              final dataSaverMode = ConnectivityController.inst.hasHighConnectionR ? settings.youtube.dataSaverMode.valueR : settings.youtube.dataSaverModeMobile.valueR;
+              if (Player.inst.currentVideoStream.valueR == null && Player.inst.currentCachedVideo.valueR == null && !dataSaverMode.canFetchNetworkVideoStream) {
+                secondaryIcon = Broken.blur;
+              }
+            }
+          }
+
+          return _VideoWidgetActionChip(
+            text: qt,
+            textColor: itemsColor,
+            trailing: secondaryIcon == null
+                ? Icon(
+                    icon,
+                    color: itemsColor,
+                    size: 16.0,
+                  )
+                : StackedIcon(
+                    baseIcon: icon,
+                    secondaryIcon: secondaryIcon,
+                    margin: 0.0,
+                    iconSize: 16.0,
+                    secondaryIconSize: 8.0,
+                    baseIconColor: itemsColor,
+                    secondaryIconColor: itemsColor,
+                    shadowColor: itemsColor.invert(),
+                  ),
+          );
+        },
+      ),
+    );
+
+    final Widget? configChip = !isFullScreen
+        ? null
+        : NamidaPopupWrapper(
+            openOnTap: true,
+            onPop: _startTimer,
+            onTap: () {
+              _resetTimer();
+              setControlsVisibily(true);
+            },
+            childrenDefault: () => [
+              NamidaPopupItem(
+                icon: Broken.sun_1,
+                secondaryIcon: Broken.drop,
+                title: lang.enableGlowEffect,
+                onTap: toggleGlowBehindVideo,
+                trailing: ObxO(
+                  rx: settings.enableGlowBehindVideo,
+                  builder: (context, active) => CustomSwitch(
+                    active: active,
+                    width: 37.0,
+                    height: 20.0,
+                  ),
+                ),
+              ),
+              if (!widget.isLocal)
+                NamidaPopupItem(
+                  icon: Broken.card_tick,
+                  title: lang.showVideoEndcards,
+                  onTap: () => settings.youtube.showVideoEndcards.save(!settings.youtube.showVideoEndcards.value),
+                  trailing: ObxO(
+                    rx: settings.youtube.showVideoEndcards,
+                    builder: (context, active) => CustomSwitch(
+                      active: active,
+                      width: 37.0,
+                      height: 20.0,
+                    ),
+                  ),
+                ),
+              if (!widget.isLocal)
+                NamidaPopupItem(
+                  icon: Broken.profile_circle,
+                  secondaryIcon: Broken.drop,
+                  title: lang.showChannelWatermarkInFullscreen,
+                  onTap: () => settings.youtube.showChannelWatermarkFullscreen.save(!settings.youtube.showChannelWatermarkFullscreen.value),
+                  trailing: ObxO(
+                    rx: settings.youtube.showChannelWatermarkFullscreen,
+                    builder: (context, active) => CustomSwitch(
+                      active: active,
+                      width: 37.0,
+                      height: 20.0,
+                    ),
+                  ),
+                ),
+            ],
+            child: _VideoWidgetActionChip(
+              tooltip: () => lang.configure,
+              child: Icon(
+                Broken.setting_4,
+                size: 16.0,
+                color: itemsColor,
+              ),
+            ),
+          );
+
+    final skipSponsorButton = ObxO(
+      rx: settings.youtube.sponsorBlockSettings,
+      builder: (context, sponsorblock) => sponsorblock.enabled
+          ? Align(
+              alignment: AlignmentDirectional.centerEnd,
+              child: Padding(
+                padding: EdgeInsetsDirectional.only(bottom: bottomPadding + 2.0),
+                child: SkipSponsorButton(
+                  itemsColor: itemsColor,
+                ),
+              ),
+            )
+          : const SizedBox(),
+    );
+
+    late final queueOrderChip = Obx(
+      (context) {
+        final queueL = Player.inst.currentQueue.valueR.length;
+        if (queueL <= 1) return const SizedBox();
+        return NamidaBgBlurClipped(
+          blur: 3.0,
+          decoration: BoxDecoration(
+            color: Colors.black.withOpacityExt(0.2),
+            borderRadius: borr8,
+          ),
+          child: Padding(
+            padding: const EdgeInsets.all(6.0),
+            child: Obx(
+              (context) => Text(
+                "${Player.inst.currentIndex.valueR + 1}/$queueL",
+                style: textTheme.displaySmall?.copyWith(fontWeight: FontWeight.w600, color: itemsColor),
+              ),
             ),
           ),
         );
-      }
-      if (widget.isLocal && !widget.isFullScreen) {
-        return Container(
-          key: const Key('dummy_container'),
-          color: Colors.transparent,
-        );
-      }
-      // -- fallback images
-      if (widget.isLocal) {
-        final track = Player.inst.nowPlayingTrack;
-        if (File(track.pathToImage).existsSync()) {
-          return ArtworkWidget(
-            key: Key(track.path),
-            track: track,
-            path: track.pathToImage,
-            thumbnailSize: fallbackWidth,
-            width: fallbackWidth,
-            height: fallbackHeight,
-            borderRadius: 0,
-            blur: 0,
-            compressed: false,
+      },
+    );
+
+    final currentSegmentsChip = ObxO(
+      rx: YoutubeInfoController.current.currentVideoPage,
+      builder: (context, page) {
+        final streamSegments = page?.streamSegments;
+        if (streamSegments != null && streamSegments.isNotEmpty) {
+          return ObxOSelect(
+            rx: Player.inst.nowPlayingPosition,
+            selector: (currentPositionMS) => streamSegments.findByMillisecond(currentPositionMS),
+            builder: (context, currentSegment) {
+              if (currentSegment != null && currentSegment.title.isNotEmpty) {
+                return NamidaBgBlurClipped(
+                  blur: 3.0,
+                  decoration: BoxDecoration(
+                    color: Colors.black.withOpacityExt(0.2),
+                    borderRadius: borr8,
+                  ),
+                  child: TapDetector(
+                    onTap: () async {
+                      final startSeconds = currentSegment.startSeconds;
+                      if (startSeconds != null) {
+                        YoutubeMiniplayerUiController.inst.ensureSegmentsVisible();
+                      }
+                    },
+                    child: Padding(
+                      padding: const EdgeInsets.all(6.0),
+                      child: Text(
+                        currentSegment.title,
+                        style: textTheme.displaySmall?.copyWith(
+                          fontWeight: FontWeight.w500,
+                          fontSize: 11.0,
+                          color: itemsColor,
+                        ),
+                        softWrap: false,
+                        overflow: TextOverflow.fade,
+                      ),
+                    ),
+                  ),
+                );
+              }
+              return const SizedBox();
+            },
           );
         }
-      }
-      final vidId = Player.inst.nowPlayingVideoID?.id ?? (YoutubeController.inst.currentYoutubeMetadataVideo.value ?? Player.inst.currentVideoInfo)?.id;
-      return YoutubeThumbnail(
-        key: Key(vidId ?? ''),
-        isImportantInCache: true,
-        width: fallbackWidth,
-        height: fallbackHeight,
-        borderRadius: 0,
-        blur: 0,
-        videoId: vidId,
-        displayFallbackIcon: false,
-        compressed: false,
-        preferLowerRes: false,
-      );
-    });
+        return const SizedBox();
+      },
+    );
 
-    final horizontalControlsPadding = widget.isFullScreen
-        ? inLandscape
-            ? EdgeInsets.only(left: 12.0 + _deviceInsets.left, right: 12.0 + _deviceInsets.right) // lanscape videos
-            : EdgeInsets.only(left: 12.0 + _deviceInsets.left, right: 12.0 + _deviceInsets.right) // vertical videos
-        : const EdgeInsets.symmetric(horizontal: 2.0);
-    final bottomPadding = widget.isFullScreen
-        ? inLandscape
-            ? 12.0 + _deviceInsets.bottom // lanscape videos
-            : 12.0 + 0.35 * _deviceInsets.bottom // vertical videos
-        : 2.0;
-    final topPadding = widget.isFullScreen
-        ? inLandscape
-            ? 12.0 + _deviceInsets.top // lanscape videos
-            : 12.0 + _deviceInsets.top // vertical videos
-        : 2.0;
-    final itemsColor = Colors.white.withAlpha(200);
-    final shouldShowSliders = _canShowControls && widget.isFullScreen;
-    final shouldShowSeekBar = widget.isFullScreen;
-    final view = View.of(context);
-    final newDeviceInsets = MediaQuery.paddingOf(context);
-    final newOrientation = MediaQuery.orientationOf(context);
-    if (_latestOrientation != newOrientation || _deviceInsets.horizontal < newDeviceInsets.horizontal || _deviceInsets.vertical < newDeviceInsets.vertical) {
-      _deviceInsets = newDeviceInsets;
-      _latestOrientation = newOrientation;
-    }
+    final canHorizontalSeek = !_isLocked && _horizontalDragMode.resolve(fullscreen: isFullScreen, miniplayerExpanded: _isMiniplayerExpanded);
 
-    return Listener(
+    Widget videoControlsWidget = _ListenerEnabled(
+      enabled: !_isLocked,
+      behavior: HitTestBehavior.translucent,
       onPointerDown: (event) {
-        _pointerDownedOnRight = event.position.dx > context.width / 2;
+        _pointerDownedOnRight = event.localPosition.dx > maxWidth / 2;
         _isPointerDown = true;
         if (_shouldSeekOnTap) {
-          _onDoubleTap(event.position);
+          _onDoubleTap(event.localPosition);
           _startTimer();
         }
-        _disableSliders = !_canSlideVolume(context, event.position.dy);
+        _disableSliders = !_canSlideVolume(context, event.localPosition.dy);
+        _isEndCardsVisibleTimer = Timer(Duration(milliseconds: 200), () {
+          _isEndCardsVisible.value = false;
+        });
       },
-      onPointerUp: (event) {
-        _isPointerDown = false;
-        _disableSliders = false;
-        _startVolumeSwipeTimer();
-        _startBrightnessDimTimer();
+      onPointerUp: (_) {
+        _onPointerUpCancel();
+      },
+      onPointerCancel: (_) {
+        _onPointerUpCancel();
       },
       child: GestureDetector(
         behavior: HitTestBehavior.translucent,
+        onHorizontalDragStart: canHorizontalSeek ? (details) => _seekReady?.onHorizontalDragStartSimple() : null,
+        onHorizontalDragUpdate: canHorizontalSeek ? (event) => _seekReady?.onHorizontalDragUpdateSimple(event) : null,
+        onHorizontalDragEnd: canHorizontalSeek ? (event) => _seekReady?.onHorizontalDragEnd(allowMagnet: false) : null,
+        onHorizontalDragCancel: canHorizontalSeek ? _seekReady?.onHorizontalDragCancel : null,
         onVerticalDragUpdate: !shouldShowSliders
             ? null
             : (event) async {
@@ -649,7 +1745,13 @@ class NamidaVideoControlsState extends State<NamidaVideoControls> with TickerPro
                   } else if (_brightnessDimThreshold <= -_brightnessMinDistance) {
                     _brightnessDimThreshold = 0.0;
                     _canShowBrightnessSlider.value = true;
-                    _currentBrigthnessDim.value = (_currentBrigthnessDim.value + 0.01).withMaximum(1.0);
+                    _currentBrigthnessDim.value = (_currentBrigthnessDim.value + 0.01).withMaximum(_maxBrightnessValue);
+                  }
+                  if (NamidaFeaturesVisibility.changeApplicationBrightness) {
+                    if (_currentBrigthnessDim.value > 1.0) {
+                      // -- settings to 0 just disables it, thats why only `> 1.0`
+                      _setScreenBrightness(_currentBrigthnessDim.value - 1.0);
+                    }
                   }
                 }
               },
@@ -675,6 +1777,10 @@ class NamidaVideoControlsState extends State<NamidaVideoControls> with TickerPro
                   });
                 }
               }
+            : _isLocked
+            ? (_) {
+                _onTap();
+              }
             : null,
         onTapCancel: () {
           _onFinishingDoubleTapTimer();
@@ -685,895 +1791,815 @@ class NamidaVideoControlsState extends State<NamidaVideoControls> with TickerPro
           children: [
             Align(
               alignment: Alignment.center,
-              child: finalVideoWidget,
+              child: Padding(
+                padding: safeAreaPadding,
+                child: Stack(
+                  alignment: Alignment.center,
+                  children: [
+                    ObxO(
+                      key: _videoConstraintsKey,
+                      rx: settings.enableGlowBehindVideo,
+                      builder: (context, enableGlowBehindVideo) => ObxO(
+                        rx: NamidaChannel.inst.isInPip,
+                        builder: (context, inPip) => _DropShadowWrapper(
+                          enabled: isFullScreen && !inPip && enableGlowBehindVideo,
+                          child: finalVideoWidget,
+                        ),
+                      ),
+                    ),
+                    if (_canShowControls)
+                      ObxO(
+                        rx: settings.youtube.showVideoEndcards,
+                        builder: (context, userEnabledVideoEndCards) => !userEnabledVideoEndCards
+                            ? const SizedBox()
+                            : ConstrainedBox(
+                                constraints: videoBoxMaxConstraints,
+                                child: ObxO(
+                                  rx: _isEndCardsVisible,
+                                  builder: (context, endcardsvisible) => _YTVideoEndcards(
+                                    visible: endcardsvisible,
+                                    inFullScreen: isFullScreen,
+                                  ),
+                                ),
+                              ),
+                      ),
+                  ],
+                ),
+              ),
             ),
             // ---- Brightness Mask -----
             Positioned.fill(
-              child: Obx(
-                () => Container(
-                  color: Colors.black.withOpacity(1 - _currentBrigthnessDim.value),
+              child: ObxO(
+                rx: _currentBrigthnessDim,
+                builder: (context, brightness) => brightness < 1.0
+                    ? IgnorePointer(
+                        child: ColoredBox(
+                          color: Colors.black.withOpacityExt(1 - brightness),
+                        ),
+                      )
+                    : const SizedBox.shrink(),
+              ),
+            ),
+
+            // ---- Subtitles ----
+            Positioned(
+              left: 0,
+              right: 0,
+              bottom: 0,
+              child: IgnorePointer(
+                child: AnimatedOpacity(
+                  duration: transitionDuration,
+                  opacity: _canShowControls ? 1.0 : 0.0,
+                  child: ObxO(
+                    rx: settings.enableSubtitles,
+                    builder: (context, enableSubtitles) => !enableSubtitles
+                        ? const SizedBox()
+                        : AnimatedPadding(
+                            key: const ValueKey('subtitles'),
+                            duration: transitionDuration,
+                            curve: Curves.easeOutQuart,
+                            padding: EdgeInsets.only(bottom: bottomPadding + (_isVisible ? subtitlesControlsOffset : 12.0)),
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(horizontal: 24.0),
+                              child: SubtitleOverlay(
+                                style: textTheme.displayMedium?.copyWith(
+                                  fontSize: subtitlesFontSize,
+                                  fontWeight: FontWeight.w600,
+                                  color: const ui.Color.fromARGB(255, 222, 222, 222),
+                                  shadows: const <Shadow>[
+                                    Shadow(offset: Offset(-1.0, -1.0), color: Color.fromRGBO(10, 10, 10, 0.75), blurRadius: 6.0),
+                                    Shadow(offset: Offset(1.0, -1.0), color: Color.fromRGBO(10, 10, 10, 0.75), blurRadius: 6.0),
+                                    Shadow(offset: Offset(1.0, 1.0), color: Color.fromRGBO(10, 10, 10, 0.75), blurRadius: 6.0),
+                                    Shadow(offset: Offset(-1.0, 1.0), color: Color.fromRGBO(10, 10, 10, 0.75), blurRadius: 6.0),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ),
+                  ),
                 ),
               ),
             ),
 
-            if (_canShowControls) ...[
-              // ---- Mask -----
-              Positioned.fill(
-                child: _getBuilder(
-                  child: Container(
-                    color: Colors.black.withOpacity(0.25),
+            // -- seek ready cant have expanded hit test otherwise it would block bottom controls here
+            // -- this widgets adds extra horizontal drag detection behind controls
+            if (!isFullScreen && !_isLocked)
+              Positioned(
+                left: 0,
+                right: 0,
+                bottom: 0,
+                child:
+                    SeekReadyWidget.normalKey.currentState?.createHitTestWidget(
+                      expandHitTest: true,
+                      allowTapping: false,
+                      maxWidth: maxWidth,
+                    ) ??
+                    const SizedBox(),
+              ),
+
+            if (_isLocked && lockIconWidget != null)
+              Align(
+                alignment: .topLeft,
+                child: Padding(
+                  padding: horizontalControlsPadding + EdgeInsets.only(top: topPadding) + const EdgeInsets.all(8.0),
+                  child: _getBuilder(
+                    child: lockIconWidget,
                   ),
                 ),
               ),
 
-              // ---- Top Row ----
-              Padding(
-                padding: horizontalControlsPadding + EdgeInsets.only(top: topPadding),
-                child: TapDetector(
-                  onTap: () {},
-                  child: Align(
-                    alignment: Alignment.topCenter,
-                    child: _getBuilder(
-                      child: Row(
-                        children: [
-                          if (widget.isFullScreen || widget.onMinimizeTap != null)
-                            NamidaIconButton(
-                              horizontalPadding: 12.0,
-                              verticalPadding: 6.0,
-                              onPressed: widget.isFullScreen ? NamidaNavigator.inst.exitFullScreen : widget.onMinimizeTap,
-                              icon: Broken.arrow_down_2,
-                              iconColor: itemsColor,
-                              iconSize: 20.0,
-                            ),
-                          const SizedBox(width: 8.0),
-                          Expanded(
-                            child: widget.isFullScreen
-                                ? Material(
-                                    type: MaterialType.transparency,
-                                    child: Obx(() {
-                                      final videoName = widget.isLocal
-                                          ? Player.inst.nowPlayingTrack.title
-                                          : YoutubeController.inst.currentYoutubeMetadataVideo.value?.name ?? Player.inst.currentVideoInfo?.name ?? '';
-                                      final channelName = widget.isLocal
-                                          ? Player.inst.nowPlayingTrack.originalArtist
-                                          : YoutubeController.inst.currentYoutubeMetadataChannel.value?.name ?? Player.inst.currentVideoInfo?.uploaderName ?? '';
-                                      return Column(
-                                        mainAxisSize: MainAxisSize.min,
-                                        crossAxisAlignment: CrossAxisAlignment.start,
-                                        children: [
-                                          if (videoName != '')
-                                            Text(
-                                              videoName,
-                                              style: context.textTheme.displayLarge?.copyWith(color: const Color.fromRGBO(255, 255, 255, 0.85)),
-                                            ),
-                                          if (channelName != '')
-                                            Text(
-                                              channelName,
-                                              style: context.textTheme.displaySmall?.copyWith(color: const Color.fromRGBO(255, 255, 255, 0.7)),
-                                            ),
-                                        ],
-                                      );
-                                    }),
-                                  )
-                                : const SizedBox(),
-                          ),
-                          const SizedBox(width: 8.0),
-                          // ==== Reset Brightness ====
-                          Obx(
-                            () => AnimatedSwitcher(
-                              duration: const Duration(milliseconds: 200),
-                              child: _currentBrigthnessDim.value < 1.0
-                                  ? NamidaIconButton(
-                                      key: const Key('brightnesseto_ok'),
-                                      tooltip: lang.RESET_BRIGHTNESS,
-                                      icon: Broken.sun_1,
-                                      iconColor: itemsColor.withOpacity(0.8),
-                                      horizontalPadding: 0.0,
-                                      iconSize: 18.0,
-                                      onPressed: () => _currentBrigthnessDim.value = 1.0,
-                                    )
-                                  : const SizedBox(
-                                      key: Key('brightnesseto_no'),
-                                    ),
-                            ),
-                          ),
-                          const SizedBox(width: 8.0),
-                          // ===== Speed Chip =====
-                          NamidaPopupWrapper(
-                            onPop: _startTimer,
-                            onTap: () {
-                              _resetTimer();
-                              setControlsVisibily(true);
-                            },
-                            children: () => [
-                              ...settings.player.speeds.map((speed) {
-                                return Obx(
-                                  () {
-                                    final isSelected = Player.inst.currentSpeed == speed;
-                                    return NamidaInkWell(
-                                      onTap: () {
-                                        _startTimer();
-                                        Navigator.of(context).pop();
-                                        if (!isSelected) {
-                                          Player.inst.setPlayerSpeed(speed);
-                                          settings.player.save(speed: speed);
-                                        }
-                                      },
-                                      decoration: const BoxDecoration(),
-                                      borderRadius: 6.0,
-                                      bgColor: isSelected ? CurrentColor.inst.miniplayerColor.withAlpha(100) : null,
-                                      margin: const EdgeInsets.symmetric(horizontal: 4.0, vertical: 2.0),
-                                      padding: const EdgeInsets.all(6.0),
-                                      child: Row(
-                                        children: [
-                                          const Icon(Broken.play_cricle, size: 20.0),
-                                          const SizedBox(width: 12.0),
-                                          Text(
-                                            "${speed}x",
-                                            style: context.textTheme.displayMedium?.copyWith(fontSize: 13.0.multipliedFontScale),
-                                          ),
-                                        ],
-                                      ),
-                                    );
-                                  },
-                                );
-                              }).toList(),
-                              NamidaInkWell(
-                                onTap: () {
-                                  _startTimer();
-                                  Navigator.of(context).pop();
-                                  NamidaNavigator.inst.navigateDialog(dialog: const _SpeedsEditorDialog());
-                                },
-                                decoration: const BoxDecoration(),
-                                borderRadius: 6.0,
-                                bgColor: null,
-                                margin: const EdgeInsets.symmetric(horizontal: 4.0, vertical: 2.0),
-                                padding: const EdgeInsets.all(6.0),
-                                child: Row(
-                                  children: [
-                                    const Icon(Broken.add_circle, size: 20.0),
-                                    const SizedBox(width: 12.0),
-                                    Text(
-                                      lang.ADD,
-                                      style: context.textTheme.displayMedium?.copyWith(fontSize: 13.0.multipliedFontScale),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            ],
-                            child: Padding(
-                              padding: const EdgeInsets.all(4.0),
-                              child: BorderRadiusClip(
-                                borderRadius: BorderRadius.circular(6.0.multipliedRadius),
-                                child: NamidaBgBlur(
-                                  blur: 3.0,
-                                  child: Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 6.0),
-                                    decoration: BoxDecoration(
-                                      color: Colors.black.withOpacity(0.2),
-                                      borderRadius: BorderRadius.circular(6.0.multipliedRadius),
-                                    ),
-                                    child: Obx(
-                                      () => Row(
-                                        children: [
-                                          Icon(
-                                            Broken.play_cricle,
-                                            size: 16.0,
-                                            color: itemsColor,
-                                          ),
-                                          const SizedBox(width: 4.0).animateEntrance(showWhen: Player.inst.currentSpeed != 1.0, allCurves: Curves.easeInOutQuart),
-                                          Text(
-                                            "${Player.inst.currentSpeed}x",
-                                            style: context.textTheme.displaySmall?.copyWith(
-                                              color: itemsColor,
-                                              fontSize: 12.0,
-                                            ),
-                                          ).animateEntrance(showWhen: Player.inst.currentSpeed != 1.0, allCurves: Curves.easeInOutQuart),
-                                        ],
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                              ),
-                            ),
-                          ),
-                          Obx(() {
-                            final audioStreamsAll = List<AudioOnlyStream>.from(YoutubeController.inst.currentYTAudioStreams);
-                            final streamsMap = <String, AudioOnlyStream>{}; // {language: audiostream}
-                            audioStreamsAll.sortBy((e) => e.displayLanguage ?? '');
-                            audioStreamsAll.loop((e, index) {
-                              if (e.language != null && e.formatSuffix != 'webm') {
-                                streamsMap[e.language!] = e;
-                              }
-                            });
-                            if (streamsMap.keys.length <= 1) return const SizedBox();
+            if (widget.showControls)
+              IgnorePointer(
+                ignoring: !_canShowControls,
+                child: Opacity(
+                  opacity: _canShowControls ? 1.0 : 0,
+                  child: Stack(
+                    fit: StackFit.passthrough,
+                    alignment: Alignment.center,
+                    children: [
+                      if (NamidaFeaturesVisibility.showVideoControlsOnHover)
+                        Center(
+                          child: LayoutWidthHeightProvider(
+                            builder: (context, maxWidth, maxHeight) {
+                              // final leftPortion = maxWidth * 0.1;
+                              // final rightPortion = maxWidth * 0.9;
+                              final topPortion = maxHeight * 0.1;
+                              final bottomPortion = maxHeight * 0.8;
 
-                            return NamidaPopupWrapper(
-                              openOnTap: true,
-                              onPop: _startTimer,
-                              onTap: () {
-                                _resetTimer();
-                                setControlsVisibily(true);
-                              },
-                              children: () => [
-                                ...streamsMap.values.map(
-                                  (element) => Obx(
-                                    () {
-                                      final isSelected1 = element.language == Player.inst.currentCachedAudio?.langaugeCode;
-                                      final isSelected2 = element.language == Player.inst.currentAudioStream?.language;
-                                      final isSelected = isSelected1 || isSelected2;
-                                      final id = Player.inst.nowPlayingVideoID?.id;
-                                      return _getQualityChip(
-                                        title: '${element.displayLanguage}',
-                                        subtitle: " • ${element.language ?? 0}",
-                                        onPlay: (isSelected) {
-                                          if (!isSelected) {
-                                            Player.inst.onItemPlayYoutubeIDSetAudio(
-                                              stream: element,
-                                              cachedFile: null,
-                                              useCache: true,
-                                              videoId: Player.inst.nowPlayingVideoID?.id ?? '',
-                                            );
-                                          }
-                                        },
-                                        selected: isSelected,
-                                        isCached: element.getCachedFile(id) != null,
-                                      );
-                                    },
-                                  ),
-                                ),
-                              ],
-                              child: Padding(
-                                padding: const EdgeInsets.all(4.0),
-                                child: BorderRadiusClip(
-                                  borderRadius: BorderRadius.circular(6.0.multipliedRadius),
-                                  child: NamidaBgBlur(
-                                    blur: 3.0,
-                                    child: Container(
-                                      padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 6.0),
-                                      decoration: BoxDecoration(
-                                        color: Colors.black.withOpacity(0.2),
-                                        borderRadius: BorderRadius.circular(6.0.multipliedRadius),
-                                      ),
-                                      child: Obx(
-                                        () {
-                                          final currentStream = Player.inst.currentAudioStream;
-                                          final currentCached = Player.inst.currentCachedAudio;
-                                          final qt = currentStream?.displayLanguage ?? currentCached?.langaugeName;
-                                          return qt == null
-                                              ? const SizedBox()
-                                              : Text(
-                                                  qt,
-                                                  style: context.textTheme.displaySmall?.copyWith(color: itemsColor),
-                                                );
-                                        },
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                              ),
-                            );
-                          }),
-                          // ===== Quality Chip =====
-                          Obx(
-                            () {
-                              final ytQualities =
-                                  (widget.isLocal ? VideoController.inst.currentYTQualities : YoutubeController.inst.currentYTQualities).where((s) => s.formatSuffix != 'webm');
-                              final cachedQualitiesAll = widget.isLocal ? VideoController.inst.currentPossibleVideos : YoutubeController.inst.currentCachedQualities;
-                              final cachedQualities = List<NamidaVideo>.from(cachedQualitiesAll);
-                              final videoId = Player.inst.nowPlayingVideoID?.id;
-                              cachedQualities.removeWhere(
-                                (cq) {
-                                  return ytQualities.any((ytq) {
-                                    if (widget.isLocal) return ytq.height == cq.height;
-                                    final cachePath = videoId == null ? null : ytq.cachePath(videoId);
-                                    if (cachePath == cq.path) return true;
-                                    if (ytq.sizeInBytes == cq.sizeInBytes) return true;
-                                    final sameRes = ytq.resolution == null ? false : cq.resolution.toString().startsWith(ytq.resolution!); // 720p.startsWith(720p60).
-                                    final sameFrames = ytq.fps == null ? true : ytq.fps == cq.framerate;
-                                    return sameRes && sameFrames;
-                                  });
+                              final allowBottom = isFullScreen;
+
+                              return MouseRegion(
+                                opaque: false,
+                                onHover: (event) {
+                                  // final dx = event.position.dx;
+                                  final dy = event.localPosition.dy;
+                                  final allowVertical = (dy < topPortion || (allowBottom && dy > bottomPortion));
+                                  const allowHorizontal = false;
+                                  // final allowHorizontal = (dx < leftPortion || dx > rightPortion);
+                                  if (allowVertical || allowHorizontal) {
+                                    if (_isVisible == false) {
+                                      _onEdgeHoverEnter();
+                                    }
+                                  } else {
+                                    if (_isVisible == true && _hideTimer == null) {
+                                      _onEdgeHoverExit();
+                                    }
+                                  }
                                 },
                               );
-                              return NamidaPopupWrapper(
-                                openOnTap: true,
-                                onPop: _startTimer,
-                                onTap: () {
-                                  _resetTimer();
-                                  setControlsVisibily(true);
-                                },
-                                children: () => [
-                                  Obx(
-                                    () => _getQualityChip(
-                                      title: lang.AUDIO_ONLY,
-                                      onPlay: (isSelected) {
-                                        Player.inst.setAudioOnlyPlayback(true);
-                                        VideoController.inst.currentVideo.value = null;
-                                        settings.save(enableVideoPlayback: false);
-                                      },
-                                      selected: (widget.isLocal ? VideoController.inst.currentVideo.value == null : Player.inst.isAudioOnlyPlayback),
-                                      isCached: false,
-                                      icon: Broken.musicnote,
-                                    ),
-                                  ),
-                                  ...cachedQualities.map(
-                                    (element) => Obx(
-                                      () => _getQualityChip(
-                                        title: '${element.resolution}p${element.framerateText()}',
-                                        subtitle: " • ${element.sizeInBytes.fileSizeFormatted}",
-                                        onPlay: (isSelected) {
-                                          // sometimes video is not initialized so we need the second check
-                                          if (!isSelected || !Player.inst.videoInitialized) {
-                                            Player.inst.onItemPlayYoutubeIDSetQuality(
-                                              stream: null,
-                                              cachedFile: File(element.path),
-                                              videoItem: element,
-                                              useCache: true,
-                                              videoId: Player.inst.nowPlayingVideoID?.id ?? '',
-                                            );
-                                            if (widget.isLocal) {
-                                              VideoController.inst.currentVideo.value = element;
-                                              settings.save(enableVideoPlayback: true);
-                                            }
-                                          }
-                                        },
-                                        selected: widget.isLocal
-                                            ? VideoController.inst.currentVideo.value?.path == element.path
-                                            : Player.inst.isAudioOnlyPlayback
-                                                ? false
-                                                : Player.inst.currentCachedVideo?.path == element.path,
-                                        isCached: true,
-                                      ),
-                                    ),
-                                  ),
-                                  ...ytQualities.map((element) {
-                                    final sizeInBytes = element.sizeInBytes;
-                                    return Obx(
-                                      () {
-                                        if (widget.isLocal) {
-                                          final id = Player.inst.nowPlayingVideoID?.id;
-                                          final isSelected = element.height == VideoController.inst.currentVideo.value?.height;
+                            },
+                          ),
+                        ),
 
-                                          return _getQualityChip(
-                                            title: element.resolution ?? '',
-                                            subtitle: sizeInBytes == null ? '' : " • ${sizeInBytes.fileSizeFormatted}",
-                                            onPlay: (isSelected) {
-                                              if (!isSelected || !Player.inst.videoInitialized) {
-                                                Player.inst.onItemPlayYoutubeIDSetQuality(
-                                                  stream: element,
-                                                  cachedFile: null,
-                                                  useCache: true,
-                                                  videoId: id ?? '',
-                                                );
-                                              }
-                                            },
-                                            selected: isSelected,
-                                            isCached: isSelected,
-                                          );
-                                        } else {
-                                          final id = Player.inst.nowPlayingVideoID?.id;
-                                          final cachedFile = id == null ? null : element.getCachedFile(id);
-                                          final isSelected = Player.inst.isAudioOnlyPlayback
-                                              ? false
-                                              : (element.resolution == Player.inst.currentVideoStream?.resolution ||
-                                                  (Player.inst.currentCachedVideo != null && cachedFile?.path == Player.inst.currentCachedVideo?.path));
+                      // ---- Mask -----
+                      Positioned.fill(
+                        child: IgnorePointer(
+                          child: _getBuilder(
+                            child: Container(
+                              color: Colors.black.withOpacityExt(0.25),
+                            ),
+                          ),
+                        ),
+                      ),
 
-                                          return _getQualityChip(
-                                            title: element.resolution ?? '',
-                                            subtitle: sizeInBytes == null ? '' : " • ${sizeInBytes.fileSizeFormatted}",
-                                            onPlay: (isSelected) {
-                                              if (!isSelected) {
-                                                Player.inst.onItemPlayYoutubeIDSetQuality(
-                                                  stream: element,
-                                                  cachedFile: cachedFile,
-                                                  useCache: true,
-                                                  videoId: id ?? '',
-                                                );
-                                              }
-                                            },
-                                            selected: isSelected,
-                                            isCached: cachedFile != null,
-                                          );
-                                        }
-                                      },
-                                    );
-                                  }).toList(),
-                                ],
-                                child: Padding(
-                                  padding: const EdgeInsets.all(4.0),
-                                  child: BorderRadiusClip(
-                                    borderRadius: BorderRadius.circular(6.0.multipliedRadius),
-                                    child: NamidaBgBlur(
-                                      blur: 3.0,
-                                      child: Container(
-                                        padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 6.0),
-                                        decoration: BoxDecoration(
-                                          color: Colors.black.withOpacity(0.2),
-                                          borderRadius: BorderRadius.circular(6.0.multipliedRadius),
-                                        ),
-                                        child: Obx(
-                                          () {
-                                            final isAudio = widget.isLocal ? VideoController.inst.currentVideo.value == null : Player.inst.isAudioOnlyPlayback;
+                      Positioned.fill(
+                        child: LongPressDetector(
+                          onLongPress: null,
+                          initializer: (instance) {
+                            instance.onLongPressStart = _isLocked ? null : (_) => Player.inst.startSpeedUp();
+                            instance.onLongPressEnd = (_) => Player.inst.endSpeedUp();
+                            instance.onLongPressCancel = () => Player.inst.endSpeedUp();
+                          },
+                        ),
+                      ),
 
-                                            String? qt;
-                                            if (!isAudio) {
-                                              if (widget.isLocal) {
-                                                final video = VideoController.inst.currentVideo.value;
-                                                qt = video == null ? null : '${video.resolution}p${video.framerateText()}';
-                                              } else {
-                                                qt = Player.inst.currentVideoStream?.resolution;
-                                                if (qt == null) {
-                                                  final c = Player.inst.currentCachedVideo;
-                                                  qt = c == null ? null : '${c.resolution}p${c.framerateText()}';
-                                                }
-                                              }
-                                            }
-
-                                            return Row(
+                      // ---- Top Row ----
+                      Padding(
+                        padding: horizontalControlsPadding + EdgeInsets.only(top: topPadding),
+                        child: TapDetector(
+                          onTap: () {},
+                          child: Align(
+                            alignment: Alignment.topCenter,
+                            child: _getBuilder(
+                              child: ObxO(
+                                rx: Subtitles.inst.canHaveSubtitles,
+                                builder: (context, canHaveSubtitles) {
+                                  // -- title takes leftover space, chips keep natural size & only scale down when they cant fit
+                                  Widget buildTopRow(List<Widget> trailing) {
+                                    return Row(
+                                      children: [
+                                        ...topRowLeading,
+                                        Expanded(
+                                          child: LayoutWidthProvider(
+                                            builder: (context, availableWidth) => Row(
                                               children: [
-                                                if (qt != null) ...[
-                                                  Text(
-                                                    qt,
-                                                    style: context.textTheme.displaySmall?.copyWith(color: itemsColor),
+                                                topRowTitle,
+                                                ConstrainedBox(
+                                                  constraints: BoxConstraints(maxWidth: availableWidth),
+                                                  child: FittedBox(
+                                                    fit: BoxFit.scaleDown,
+                                                    child: Row(
+                                                      mainAxisSize: MainAxisSize.min,
+                                                      children: trailing,
+                                                    ),
                                                   ),
-                                                  const SizedBox(width: 4.0),
-                                                ],
-                                                Icon(
-                                                  isAudio ? Broken.musicnote : Broken.setting,
-                                                  color: itemsColor,
-                                                  size: 16.0,
                                                 ),
                                               ],
-                                            );
-                                          },
+                                            ),
+                                          ),
+                                        ),
+                                      ],
+                                    );
+                                  }
+
+                                  // -- subtitle chip is the one making row very long (yes)
+                                  final splitToTwoRows = isFullScreen && canHaveSubtitles && maxWidth < _kTwoRowsControlsMaxWidth;
+                                  if (!splitToTwoRows) {
+                                    return buildTopRow([
+                                      const SizedBox(width: 4.0),
+                                      resetBrightnessButton,
+                                      const SizedBox(width: 4.0),
+                                      if (canHaveSubtitles) subtitleChip,
+                                      audioLanguageChip,
+                                      audioTracksChip,
+                                      speedChip,
+                                      qualityChip,
+                                      ?configChip,
+                                    ]);
+                                  }
+                                  return Column(
+                                    mainAxisSize: MainAxisSize.min,
+                                    crossAxisAlignment: CrossAxisAlignment.end,
+                                    children: [
+                                      buildTopRow([
+                                        const SizedBox(width: 4.0),
+                                        resetBrightnessButton,
+                                        const SizedBox(width: 4.0),
+                                        qualityChip,
+                                        ?configChip,
+                                      ]),
+                                      Transform.translate(
+                                        offset: Offset(0, -4.0),
+                                        child: FittedBox(
+                                          fit: BoxFit.scaleDown,
+                                          child: Row(
+                                            mainAxisSize: MainAxisSize.min,
+                                            children: [
+                                              subtitleChip,
+                                              audioLanguageChip,
+                                              audioTracksChip,
+                                              speedChip,
+                                            ],
+                                          ),
                                         ),
                                       ),
-                                    ),
-                                  ),
-                                ),
-                              );
-                            },
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-              // ---- Bottom Row ----
-              Padding(
-                padding: horizontalControlsPadding + EdgeInsets.only(bottom: bottomPadding),
-                child: TapDetector(
-                  onTap: () {},
-                  child: Align(
-                    alignment: Alignment.bottomCenter,
-                    child: _getBuilder(
-                      child: Padding(
-                        padding: const EdgeInsets.all(4.0),
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            if (shouldShowSeekBar)
-                              SizedBox(
-                                width: context.width,
-                                child: Padding(
-                                  padding: const EdgeInsets.symmetric(horizontal: 12.0),
-                                  child: SeekReadyWidget(
-                                    isFullscreen: widget.isFullScreen,
-                                    showPositionCircle: widget.isFullScreen,
-                                    isLocal: widget.isLocal,
-                                    canDrag: () {
-                                      return _currentDeviceVolume.value == null && !_canShowBrightnessSlider.value;
-                                    },
-                                    onDraggingChange: (isDragging) {
-                                      if (isDragging) {
-                                        _isDraggingSeekBar = true;
-                                        _resetTimer();
-                                        setControlsVisibily(true);
-                                      } else {
-                                        _isDraggingSeekBar = false;
-                                        _startTimer();
-                                      }
-                                    },
-                                  ),
-                                ),
+                                    ],
+                                  );
+                                },
                               ),
-                            Row(
-                              children: [
-                                BorderRadiusClip(
-                                  borderRadius: borr8,
-                                  child: NamidaBgBlur(
-                                    blur: 3.0,
-                                    child: Container(
-                                      padding: const EdgeInsets.all(6.0),
-                                      decoration: BoxDecoration(
-                                        color: Colors.black.withOpacity(0.2),
-                                        borderRadius: borr8,
-                                      ),
-                                      child: TapDetector(
-                                        behavior: HitTestBehavior.translucent,
-                                        onTap: () {
-                                          settings.player.save(displayRemainingDurInsteadOfTotal: !settings.player.displayRemainingDurInsteadOfTotal.value);
-                                        },
-                                        child: Row(
-                                          mainAxisSize: MainAxisSize.min,
-                                          children: [
-                                            Obx(
-                                              () => Text(
-                                                "${Player.inst.nowPlayingPosition.milliSecondsLabel}/",
-                                                style: context.textTheme.displayMedium?.copyWith(
-                                                  fontSize: 13.5.multipliedFontScale,
-                                                  color: itemsColor,
+                            ),
+                          ),
+                        ),
+                      ),
+                      // ---- Bottom Row ----
+                      Column(
+                        mainAxisSize: MainAxisSize.min,
+                        mainAxisAlignment: MainAxisAlignment.end,
+                        children: [
+                          skipSponsorButton,
+                          Padding(
+                            padding: horizontalControlsPadding + EdgeInsets.only(bottom: bottomPadding),
+                            child: TapDetector(
+                              onTap: () {},
+                              child: _getBuilder(
+                                child: Padding(
+                                  padding: const EdgeInsets.all(4.0),
+                                  child: Column(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      if (shouldShowSeekBar)
+                                        SizedBox(
+                                          width: maxWidth,
+                                          child: Padding(
+                                            padding: const EdgeInsets.symmetric(horizontal: 12.0),
+                                            child: SeekReadyWidget(
+                                              key: SeekReadyWidget.fullscreenKey,
+                                              isFullscreen: isFullScreen,
+                                              showPositionCircle: isFullScreen,
+                                              isLocal: widget.isLocal,
+                                              canDrag: () {
+                                                return _currentDeviceVolume.value == null && !_canShowBrightnessSlider.value;
+                                              },
+                                              onDraggingChange: (isDragging) {
+                                                if (isDragging) {
+                                                  _isDraggingSeekBar = true;
+                                                  _resetTimer();
+                                                  setControlsVisibily(true);
+                                                } else {
+                                                  _isDraggingSeekBar = false;
+                                                  _startTimer();
+                                                }
+                                              },
+                                            ),
+                                          ),
+                                        ),
+                                      Row(
+                                        children: [
+                                          NamidaBgBlurClipped(
+                                            blur: 3.0,
+                                            decoration: BoxDecoration(
+                                              color: Colors.black.withOpacityExt(0.2),
+                                              borderRadius: borr8,
+                                            ),
+                                            child: Padding(
+                                              padding: const EdgeInsets.all(6.0),
+                                              child: TapDetector(
+                                                behavior: HitTestBehavior.translucent,
+                                                onTap: () {
+                                                  settings.player.displayRemainingDurInsteadOfTotal.save(!settings.player.displayRemainingDurInsteadOfTotal.value);
+                                                },
+                                                child: Row(
+                                                  mainAxisSize: MainAxisSize.min,
+                                                  children: [
+                                                    Obx(
+                                                      (context) => Text(
+                                                        "${Player.inst.nowPlayingPositionR.milliSecondsLabel}/",
+                                                        style: textTheme.displayMedium?.copyWith(
+                                                          fontSize: 13.5,
+                                                          color: itemsColor,
+                                                        ),
+                                                      ),
+                                                    ),
+                                                    Obx(
+                                                      (context) {
+                                                        int totalDurMs = Player.inst.getCurrentVideoDurationR.inMilliseconds;
+                                                        String prefix = '';
+                                                        if (settings.player.displayRemainingDurInsteadOfTotal.valueR) {
+                                                          totalDurMs = totalDurMs - Player.inst.nowPlayingPositionR;
+                                                          prefix = '-';
+                                                        }
+
+                                                        return Text(
+                                                          "$prefix${totalDurMs.milliSecondsLabel}",
+                                                          style: textTheme.displayMedium?.copyWith(
+                                                            fontSize: 13.5,
+                                                            color: itemsColor,
+                                                          ),
+                                                        );
+                                                      },
+                                                    ),
+                                                  ],
                                                 ),
                                               ),
                                             ),
-                                            Obx(
-                                              () {
-                                                int totalDurMs = Player.inst.getCurrentVideoDuration.inMilliseconds;
-                                                String prefix = '';
-                                                if (settings.player.displayRemainingDurInsteadOfTotal.value) {
-                                                  totalDurMs = totalDurMs - Player.inst.nowPlayingPosition;
-                                                  prefix = '-';
-                                                }
+                                          ),
+                                          const SizedBox(width: 4.0),
+                                          if (isFullScreen) ...[
+                                            // -- queue order
+                                            queueOrderChip,
+                                            const SizedBox(width: 4.0),
+                                          ],
+                                          Expanded(
+                                            child: Align(
+                                              alignment: Alignment.centerLeft,
+                                              child: currentSegmentsChip,
+                                            ),
+                                          ),
+                                          if (lockIconWidget != null) ...[
+                                            const SizedBox(width: 4.0),
+                                            lockIconWidget,
+                                          ],
+                                          const SizedBox(width: 4.0),
+                                          NamidaBgBlurClipped(
+                                            blur: 3.0,
+                                            decoration: BoxDecoration(
+                                              color: Colors.black.withOpacityExt(0.2),
+                                              borderRadius: borr8,
+                                            ),
+                                            child: Padding(
+                                              padding: const EdgeInsets.all(6.0),
+                                              child: Row(
+                                                children: [
+                                                  const SizedBox(width: 2.0),
+                                                  if (NamidaFeaturesVisibility.showRotateScreenInFullScreen && isFullScreen) ...[
+                                                    // -- rotate screen button
+                                                    NamidaIconButton(
+                                                      verticalPadding: 2.0,
+                                                      horizontalPadding: 4.0,
+                                                      padding: EdgeInsets.zero,
+                                                      iconSize: 20.0,
+                                                      icon: Broken.rotate_left_1,
+                                                      iconColor: itemsColor,
+                                                      onPressed: () {
+                                                        _startTimer();
+                                                        NamidaNavigator.inst.setDeviceOrientations(null);
+                                                      },
+                                                    ),
+                                                    const SizedBox(width: 10.0),
+                                                  ],
 
-                                                return Text(
-                                                  "$prefix${totalDurMs.milliSecondsLabel}",
-                                                  style: context.textTheme.displayMedium?.copyWith(
-                                                    fontSize: 13.5.multipliedFontScale,
+                                                  if (!isFullScreen && settings.ytStyleButtonSwitcher.value == true) ...[
+                                                    NamidaIconButton(
+                                                      verticalPadding: 2.0,
+                                                      horizontalPadding: 4.0,
+                                                      padding: EdgeInsets.zero,
+                                                      iconSize: 18.0,
+                                                      icon: Broken.video_octagon,
+                                                      iconColor: itemsColor,
+                                                      onPressed: () {
+                                                        settings.youtube.youtubeStyleMiniplayer.save(false);
+                                                        MiniPlayerController.inst.snapToExpanded(haptic: false);
+                                                        Player.inst.tryGenerateWaveform(Player.inst.currentVideo);
+                                                      },
+                                                    ),
+                                                    const SizedBox(width: 8.0),
+                                                  ],
+
+                                                  RepeatModeIconButton(
+                                                    compact: true,
                                                     color: itemsColor,
+                                                    onPressed: () {
+                                                      _startTimer();
+                                                    },
                                                   ),
-                                                );
+                                                  if (isFullScreen) const SizedBox(width: 10.0) else const SizedBox(width: 8.0),
+                                                  SoundControlButton(
+                                                    compact: true,
+                                                    color: itemsColor,
+                                                    onPressed: () {
+                                                      _startTimer();
+                                                    },
+                                                  ),
+                                                  if (isFullScreen) const SizedBox(width: 10.0) else const SizedBox(width: 8.0),
+                                                  NamidaIconButton(
+                                                    verticalPadding: 2.0,
+                                                    horizontalPadding: 4.0,
+                                                    padding: EdgeInsets.zero,
+                                                    iconSize: 20.0,
+                                                    icon: Broken.copy,
+                                                    iconColor: itemsColor,
+                                                    onPressed: () {
+                                                      _startTimer();
+                                                      final id = Player.inst.currentVideo?.id;
+                                                      if (id != null) const YTUtils().copyCurrentVideoUrl(id, withTimestamp: false);
+                                                    },
+                                                    onLongPress: () {
+                                                      _startTimer();
+                                                      final id = Player.inst.currentVideo?.id;
+                                                      if (id != null) YTUtils.showCopyItemsDialog(id);
+                                                    },
+                                                  ),
+                                                  if (isFullScreen) const SizedBox(width: 10.0) else const SizedBox(width: 8.0),
+                                                  NamidaIconButton(
+                                                    verticalPadding: 2.0,
+                                                    horizontalPadding: 4.0,
+                                                    padding: EdgeInsets.zero,
+                                                    iconSize: 20.0,
+                                                    icon: Broken.maximize_2,
+                                                    iconColor: itemsColor,
+                                                    onPressed: () {
+                                                      _startTimer();
+                                                      VideoController.inst.toggleFullScreenVideoView(isLocal: widget.isLocal);
+                                                    },
+                                                  ),
+                                                  const SizedBox(width: 2.0),
+                                                ],
+                                              ),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                      if (shouldShowSeekBar && !inLandscape) const SizedBox(height: 24.0),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+
+                      // ---- Middle Actions ----
+                      Padding(
+                        padding: safeAreaPadding,
+                        child: _getBuilder(
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                            children: [
+                              const SizedBox(),
+                              ObxO(
+                                rx: Player.inst.currentIndex,
+                                builder: (context, currentIndex) {
+                                  final shouldShowPrev = currentIndex != 0;
+                                  return Opacity(
+                                    opacity: shouldShowPrev ? 1.0 : 0.5,
+                                    child: NamidaBgBlurClipped(
+                                      blur: 2,
+                                      shape: BoxShape.circle,
+                                      child: ColoredBox(
+                                        color: Colors.black.withOpacityExt(0.2),
+                                        child: NamidaIconButton(
+                                          icon: null,
+                                          padding: secondaryButtonPadding,
+                                          onPressed: () {
+                                            Player.inst.previous();
+                                            _startTimer();
+                                          },
+                                          child: Icon(
+                                            Broken.previous,
+                                            size: secondaryButtonSize,
+                                            color: itemsColor,
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  );
+                                },
+                              ),
+                              NamidaBgBlurClipped(
+                                blur: 2.5,
+                                shape: BoxShape.circle,
+                                child: ColoredBox(
+                                  color: Colors.black.withOpacityExt(0.3),
+                                  child: NamidaIconButton(
+                                    icon: null,
+                                    padding: mainButtonPadding,
+                                    onPressed: () {
+                                      Player.inst.togglePlayPause();
+                                      _startTimer();
+                                    },
+                                    child: ObxO(
+                                      rx: Player.inst.playWhenReady,
+                                      builder: (context, playWhenReady) => CustomAnimatedSwitcher(
+                                        duration: const Duration(milliseconds: 200),
+                                        child: playWhenReady
+                                            ? Icon(
+                                                Broken.pause,
+                                                size: mainButtonSize,
+                                                color: itemsColor,
+                                                key: const Key('paused'),
+                                              )
+                                            : Icon(
+                                                Broken.play,
+                                                size: mainButtonSize,
+                                                color: itemsColor,
+                                                key: const Key('playing'),
+                                              ),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              ObxO(
+                                rx: Player.inst.currentIndex,
+                                builder: (context, currentIndex) {
+                                  return ObxO(
+                                    rx: Player.inst.currentQueue,
+                                    builder: (context, ytqueue) {
+                                      final shouldShowNext = currentIndex != ytqueue.length - 1;
+                                      return Opacity(
+                                        opacity: shouldShowNext ? 1.0 : 0.5,
+                                        child: NamidaBgBlurClipped(
+                                          blur: 2,
+                                          shape: BoxShape.circle,
+                                          child: ColoredBox(
+                                            color: Colors.black.withOpacityExt(0.2),
+                                            child: NamidaIconButton(
+                                              icon: null,
+                                              padding: secondaryButtonPadding,
+                                              onPressed: () {
+                                                Player.inst.next();
+                                                _startTimer();
                                               },
+                                              child: Icon(
+                                                Broken.next,
+                                                size: secondaryButtonSize,
+                                                color: itemsColor,
+                                              ),
+                                            ),
+                                          ),
+                                        ),
+                                      );
+                                    },
+                                  );
+                                },
+                              ),
+                              const SizedBox(),
+                            ],
+                          ),
+                        ),
+                      ),
+                      IgnorePointer(
+                        child: Padding(
+                          padding: safeAreaPadding,
+                          child: Obx(
+                            (context) => Player.inst.shouldShowLoadingIndicatorR
+                                ? ThreeArchedCircle(
+                                    color: itemsColor,
+                                    size: mainBufferIconSize,
+                                  )
+                                : const SizedBox(),
+                          ),
+                        ),
+                      ),
+
+                      // ===== Seek Animators ====
+                      Positioned.fill(
+                        child: Padding(
+                          padding: safeAreaPadding,
+                          child: Stack(
+                            alignment: Alignment.center,
+                            children: [
+                              // -- left --
+                              _getSeekAnimatedContainer(
+                                controller: seekAnimationBackward1,
+                                isForward: false,
+                                isSecondary: false,
+                              ),
+                              _getSeekAnimatedContainer(
+                                controller: seekAnimationBackward2,
+                                isForward: false,
+                                isSecondary: true,
+                              ),
+
+                              // -- right --
+                              _getSeekAnimatedContainer(
+                                controller: seekAnimationForward1,
+                                isForward: true,
+                                isSecondary: false,
+                              ),
+                              _getSeekAnimatedContainer(
+                                controller: seekAnimationForward2,
+                                isForward: true,
+                                isSecondary: true,
+                              ),
+
+                              // ===========
+                              getSeekTextWidget(
+                                controller: seekAnimationBackward2,
+                                isForward: false,
+                              ),
+                              getSeekTextWidget(
+                                controller: seekAnimationForward2,
+                                isForward: true,
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+
+                      // ========= Sliders ==========
+                      if (shouldShowSliders) ...[
+                        Positioned.fill(
+                          child: Padding(
+                            padding: safeAreaPadding,
+                            child: Stack(
+                              alignment: Alignment.center,
+                              children: [
+                                // ======= Brightness Slider ========
+                                Positioned(
+                                  right: maxWidth * 0.1,
+                                  child: Obx(
+                                    (context) {
+                                      final bri = _canShowBrightnessSlider.valueR ? _currentBrigthnessDim.valueR : null;
+                                      return _getVerticalSliderWidget(
+                                        'brightness',
+                                        bri,
+                                        max: _maxBrightnessValue,
+                                        Broken.sun_1,
+                                        view,
+                                      );
+                                    },
+                                  ),
+                                ),
+                                // ======= Volume Slider ========
+                                Positioned(
+                                  left: maxWidth * 0.1,
+                                  child: ObxO(
+                                    rx: _currentDeviceVolume,
+                                    builder: (context, vol) => _getVerticalSliderWidget(
+                                      'volume',
+                                      vol,
+                                      Broken.volume_high,
+                                      view,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ],
+
+                      Positioned(
+                        top: 0,
+                        child: ObxO(
+                          rx: Player.inst.isSpeedModifierActive,
+                          builder: (context, modifierActive) => CustomAnimatedSwitcher(
+                            duration: const Duration(milliseconds: 100),
+                            child: modifierActive == true
+                                ? Padding(
+                                    key: const Key('longpress_active'),
+                                    padding: EdgeInsets.only(top: 24.0 + topPadding),
+                                    child: NamidaBgBlurClipped(
+                                      blur: 2.5,
+                                      child: NamidaInkWell(
+                                        borderRadius: 8.0,
+                                        bgColor: Colors.black.withOpacityExt(0.3),
+                                        padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 6.0),
+                                        child: Row(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            Icon(
+                                              Broken.forward,
+                                              size: 20.0,
+                                              color: itemsColor,
+                                            ),
+                                            const SizedBox(width: 6.0),
+                                            Text(
+                                              "${lang.speed} ${settings.player.longPressSpeed.value}x",
+                                              style: context.textTheme.displayMedium?.copyWith(
+                                                color: itemsColor,
+                                              ),
                                             ),
                                           ],
                                         ),
                                       ),
                                     ),
+                                  )
+                                : const SizedBox(
+                                    key: Key('longpress_inactive'),
                                   ),
-                                ),
-                                const SizedBox(width: 4.0),
-                                if (widget.isFullScreen) ...[
-                                  // -- queue order
-                                  Obx(
-                                    () {
-                                      final queueL = (widget.isLocal ? Player.inst.currentQueue : Player.inst.currentQueueYoutube).length;
-                                      if (queueL <= 1) return const SizedBox();
-                                      return BorderRadiusClip(
-                                        borderRadius: borr8,
-                                        child: NamidaBgBlur(
-                                          blur: 3.0,
-                                          child: Container(
-                                            padding: const EdgeInsets.all(6.0),
-                                            decoration: BoxDecoration(
-                                              color: Colors.black.withOpacity(0.2),
-                                              borderRadius: borr8,
-                                            ),
-                                            child: Obx(
-                                              () => Text(
-                                                "${Player.inst.currentIndex + 1}/$queueL",
-                                                style: context.textTheme.displaySmall?.copyWith(fontWeight: FontWeight.w600, color: itemsColor),
-                                              ),
-                                            ),
-                                          ),
-                                        ),
-                                      );
-                                    },
-                                  ),
-                                  const SizedBox(width: 4.0),
-                                ],
-                                const Spacer(),
-                                const SizedBox(width: 4.0),
-                                BorderRadiusClip(
-                                  borderRadius: borr8,
-                                  child: NamidaBgBlur(
-                                    blur: 3.0,
-                                    child: Container(
-                                      padding: const EdgeInsets.all(6.0),
-                                      decoration: BoxDecoration(
-                                        color: Colors.black.withOpacity(0.2),
-                                        borderRadius: borr8,
-                                      ),
-                                      child: Row(
-                                        children: [
-                                          const SizedBox(width: 2.0),
-                                          if (widget.isFullScreen)
-                                            // -- rotate screen button
-                                            NamidaIconButton(
-                                              horizontalPadding: 0.0,
-                                              padding: EdgeInsets.zero,
-                                              iconSize: 20.0,
-                                              icon: Broken.rotate_left_1,
-                                              iconColor: itemsColor,
-                                              onPressed: () {
-                                                _startTimer();
-                                                NamidaNavigator.inst.setDeviceOrientations(!NamidaNavigator.inst.isInLanscape);
-                                              },
-                                            ),
-                                          if (widget.isFullScreen) SizedBox(width: widget.isFullScreen ? 12.0 : 10.0),
-                                          RepeatModeIconButton(
-                                            compact: true,
-                                            color: itemsColor,
-                                            onPressed: () {
-                                              _startTimer();
-                                            },
-                                          ),
-                                          SizedBox(width: widget.isFullScreen ? 12.0 : 10.0),
-                                          EqualizerIconButton(
-                                            compact: true,
-                                            color: itemsColor,
-                                            onPressed: () {
-                                              _startTimer();
-                                            },
-                                          ),
-                                          SizedBox(width: widget.isFullScreen ? 12.0 : 10.0),
-                                          NamidaIconButton(
-                                            horizontalPadding: 0.0,
-                                            padding: EdgeInsets.zero,
-                                            iconSize: 20.0,
-                                            icon: Broken.copy,
-                                            iconColor: itemsColor,
-                                            onPressed: () {
-                                              _startTimer();
-                                              YTUtils().copyVideoUrl(Player.inst.getCurrentVideoId);
-                                            },
-                                          ),
-                                          SizedBox(width: widget.isFullScreen ? 12.0 : 10.0),
-                                          NamidaIconButton(
-                                            horizontalPadding: 0.0,
-                                            padding: EdgeInsets.zero,
-                                            iconSize: 20.0,
-                                            icon: Broken.maximize_2,
-                                            iconColor: itemsColor,
-                                            onPressed: () {
-                                              _startTimer();
-                                              VideoController.inst.toggleFullScreenVideoView(isLocal: widget.isLocal);
-                                            },
-                                          ),
-                                          const SizedBox(width: 2.0),
-                                        ],
-                                      ),
-                                    ),
-                                  ),
-                                )
-                              ],
-                            ),
-                            if (shouldShowSeekBar && !inLandscape) const SizedBox(height: 24.0),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-
-              // ---- Middle Actions ----
-              _getBuilder(
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                  children: [
-                    const SizedBox(),
-                    Obx(
-                      () {
-                        final shouldShowPrev = Player.inst.currentIndex != 0;
-                        return IgnorePointer(
-                          ignoring: !shouldShowPrev,
-                          child: Opacity(
-                            opacity: shouldShowPrev ? 1.0 : 0.0,
-                            child: ClipOval(
-                              child: NamidaBgBlur(
-                                blur: 2,
-                                child: ColoredBox(
-                                  color: Colors.black.withOpacity(0.2),
-                                  child: NamidaIconButton(
-                                      icon: null,
-                                      horizontalPadding: 0.0,
-                                      padding: EdgeInsets.zero,
-                                      onPressed: () {
-                                        Player.inst.previous();
-                                        _startTimer();
-                                      },
-                                      child: Padding(
-                                        padding: const EdgeInsets.all(10.0),
-                                        child: Icon(
-                                          Broken.previous,
-                                          size: 30.0,
-                                          color: itemsColor,
-                                        ),
-                                      )),
-                                ),
-                              ),
-                            ),
-                          ),
-                        );
-                      },
-                    ),
-                    ClipOval(
-                      child: NamidaBgBlur(
-                        blur: 2.5,
-                        child: ColoredBox(
-                          color: Colors.black.withOpacity(0.3),
-                          child: Obx(
-                            () {
-                              final currentPosition = Player.inst.nowPlayingPosition;
-                              final currentTotalDur = Player.inst.currentItemDuration?.inMilliseconds ?? 0;
-                              final reachedLastPosition = currentPosition != 0 && (currentPosition - currentTotalDur).abs() < 100; // 100ms allowance
-
-                              return reachedLastPosition
-                                  ? NamidaIconButton(
-                                      icon: null,
-                                      horizontalPadding: 0.0,
-                                      padding: EdgeInsets.zero,
-                                      onPressed: () async {
-                                        await Player.inst.seek(Duration.zero);
-                                        await Player.inst.play();
-                                        _startTimer();
-                                      },
-                                      child: Padding(
-                                        padding: const EdgeInsets.all(14.0),
-                                        child: Icon(
-                                          Broken.refresh,
-                                          size: 40.0,
-                                          color: itemsColor,
-                                          key: const Key('replay'),
-                                        ),
-                                      ),
-                                    )
-                                  : NamidaIconButton(
-                                      icon: null,
-                                      horizontalPadding: 0.0,
-                                      padding: EdgeInsets.zero,
-                                      onPressed: () {
-                                        Player.inst.togglePlayPause();
-                                        _startTimer();
-                                      },
-                                      child: Padding(
-                                        padding: const EdgeInsets.all(14.0),
-                                        child: Obx(
-                                          () => AnimatedSwitcher(
-                                            duration: const Duration(milliseconds: 200),
-                                            child: Player.inst.isPlaying
-                                                ? Icon(
-                                                    Broken.pause,
-                                                    size: 40.0,
-                                                    color: itemsColor,
-                                                    key: const Key('paused'),
-                                                  )
-                                                : Icon(
-                                                    Broken.play,
-                                                    size: 40.0,
-                                                    color: itemsColor,
-                                                    key: const Key('playing'),
-                                                  ),
-                                          ),
-                                        ),
-                                      ),
-                                    );
-                            },
                           ),
                         ),
                       ),
-                    ),
-                    Obx(
-                      () {
-                        final shouldShowNext = Player.inst.currentIndex != Player.inst.currentQueueYoutube.length - 1;
-                        return IgnorePointer(
-                          ignoring: !shouldShowNext,
-                          child: Opacity(
-                            opacity: shouldShowNext ? 1.0 : 0.0,
-                            child: ClipOval(
-                              child: NamidaBgBlur(
-                                blur: 2,
-                                child: ColoredBox(
-                                  color: Colors.black.withOpacity(0.2),
-                                  child: NamidaIconButton(
-                                      icon: null,
-                                      horizontalPadding: 0.0,
-                                      padding: EdgeInsets.zero,
-                                      onPressed: () {
-                                        Player.inst.next();
-                                        _startTimer();
-                                      },
-                                      child: Padding(
-                                        padding: const EdgeInsets.all(10.0),
-                                        child: Icon(
-                                          Broken.next,
-                                          size: 30.0,
-                                          color: itemsColor,
-                                        ),
-                                      )),
+
+                      if (isFullScreen && _canShowControls)
+                        ObxO(
+                          rx: settings.youtube.showChannelWatermarkFullscreen,
+                          builder: (context, showChannelWatermarkFullscreen) {
+                            if (!showChannelWatermarkFullscreen) return const SizedBox();
+
+                            return Positioned(
+                              right: 12.0,
+                              bottom: 12.0,
+                              child: Padding(
+                                padding: safeAreaPadding,
+                                child: _YTChannelOverlayThumbnail(
+                                  ignoreTouches: _isVisible,
                                 ),
                               ),
-                            ),
-                          ),
-                        );
-                      },
-                    ),
-                    const SizedBox(),
-                  ],
-                ),
-              ),
-              Obx(
-                () => Player.inst.shouldShowLoadingIndicator
-                    ? ThreeArchedCircle(
-                        color: itemsColor,
-                        size: 52.0,
-                      )
-                    : const SizedBox(),
-              ),
-
-              // ===== Seek Animators ====
-
-              // -- left --
-              _getSeekAnimatedContainer(
-                controller: seekAnimationBackward1,
-                isForward: false,
-                isSecondary: false,
-              ),
-              _getSeekAnimatedContainer(
-                controller: seekAnimationBackward2,
-                isForward: false,
-                isSecondary: true,
-              ),
-
-              // -- right --
-              _getSeekAnimatedContainer(
-                controller: seekAnimationForward1,
-                isForward: true,
-                isSecondary: false,
-              ),
-              _getSeekAnimatedContainer(
-                controller: seekAnimationForward2,
-                isForward: true,
-                isSecondary: true,
-              ),
-
-              // ===========
-              getSeekTextWidget(
-                controller: seekAnimationBackward2,
-                isForward: false,
-              ),
-              getSeekTextWidget(
-                controller: seekAnimationForward2,
-                isForward: true,
-              ),
-
-              // ========= Sliders ==========
-              if (shouldShowSliders) ...[
-                // ======= Brightness Slider ========
-                Positioned(
-                  left: context.width * 0.15,
-                  child: Obx(
-                    () {
-                      final bri = _canShowBrightnessSlider.value ? _currentBrigthnessDim.value : null;
-                      return _getVerticalSliderWidget(
-                        'brightness',
-                        bri,
-                        Broken.sun_1,
-                        view,
-                      );
-                    },
+                            );
+                          },
+                        ),
+                    ],
                   ),
                 ),
-                // ======= Volume Slider ========
-                Positioned(
-                  right: context.width * 0.15,
-                  child: Obx(
-                    () {
-                      final vol = _currentDeviceVolume.value;
-                      return _getVerticalSliderWidget(
-                        'volume',
-                        vol,
-                        Broken.volume_high,
-                        view,
-                      );
-                    },
-                  ),
-                ),
-              ],
-            ],
+              )
+            else if (widget.forceEnableSponsorBlock)
+              skipSponsorButton,
           ],
         ),
       ),
+    );
+
+    if (settings.youtube.whiteVideoBGInLightMode.value && context.isDarkMode == false) {
+      videoControlsWidget = ColoredBox(
+        color: context.theme.scaffoldBackgroundColor,
+        child: videoControlsWidget,
+      );
+    }
+
+    return videoControlsWidget;
+  }
+}
+
+class _ListenerEnabled extends StatelessWidget {
+  final bool enabled;
+  final PointerDownEventListener? onPointerDown;
+  final PointerUpEventListener? onPointerUp;
+  final PointerCancelEventListener? onPointerCancel;
+  final HitTestBehavior behavior;
+  final Widget child;
+
+  const _ListenerEnabled({
+    required this.enabled,
+    this.onPointerDown,
+    this.onPointerUp,
+    this.onPointerCancel,
+    this.behavior = HitTestBehavior.deferToChild,
+    required this.child,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    // -- keep Listener always in tree, otherwise animations are lost when toggling enabled
+    return Listener(
+      onPointerDown: enabled ? onPointerDown : null,
+      onPointerUp: enabled ? onPointerUp : null,
+      onPointerCancel: enabled ? onPointerCancel : null,
+      behavior: enabled ? behavior : HitTestBehavior.deferToChild,
+      child: child,
     );
   }
 }
@@ -1600,15 +2626,15 @@ class __SpeedsEditorDialogState extends State<_SpeedsEditorDialog> {
     return Form(
       key: formKey,
       child: CustomBlurryDialog(
-        title: lang.CONFIGURE,
+        title: lang.configure,
         actions: [
-          TextButton(
-            onPressed: NamidaNavigator.inst.closeDialog,
-            child: Text(lang.DONE),
+          NamidaTextButton(
+            onTap: NamidaNavigator.inst.closeDialog,
+            text: lang.done,
           ),
           NamidaButton(
-            text: lang.ADD,
-            onPressed: () {
+            text: lang.add,
+            onTap: () {
               formKey.currentState?.validate();
             },
           ),
@@ -1617,7 +2643,7 @@ class __SpeedsEditorDialogState extends State<_SpeedsEditorDialog> {
           mainAxisSize: MainAxisSize.min,
           children: [
             Wrap(
-              children: settings.player.speeds
+              children: settings.player.speeds.value
                   .map(
                     (e) => IgnorePointer(
                       ignoring: e == 1.0,
@@ -1632,13 +2658,17 @@ class __SpeedsEditorDialogState extends State<_SpeedsEditorDialog> {
                           ),
                           child: InkWell(
                             onTap: () {
-                              if (e == 1.0) return snackyy(message: lang.ERROR);
-                              if (settings.player.speeds.length <= 4) return showMinimumItemsSnack(4);
+                              if (e == 1.0) {
+                                snackyy(message: lang.error); // we already ignore tap but uh
+                                return;
+                              }
+                              if (settings.player.speeds.value.length <= 4) return showMinimumItemsSnack(4);
 
-                              settings.player.speeds
-                                ..remove(e)
-                                ..sort();
-                              settings.player.save(speeds: settings.player.speeds);
+                              settings.player.speeds.update(
+                                (speeds) => speeds
+                                  ..remove(e)
+                                  ..sort(),
+                              );
                               setState(() {});
                             },
                             child: Row(
@@ -1649,7 +2679,7 @@ class __SpeedsEditorDialogState extends State<_SpeedsEditorDialog> {
                                 const Icon(
                                   Broken.close_circle,
                                   size: 18.0,
-                                )
+                                ),
                               ],
                             ),
                           ),
@@ -1657,33 +2687,544 @@ class __SpeedsEditorDialogState extends State<_SpeedsEditorDialog> {
                       ),
                     ),
                   )
-                  .toList(),
+                  .toFixedList(),
             ),
             Padding(
               padding: const EdgeInsets.only(top: 14.0),
               child: CustomTagTextField(
                 controller: speedsController,
-                hintText: lang.VALUE,
-                labelText: lang.SPEED,
+                hintText: lang.value,
+                labelText: lang.speed,
                 isNumeric: true,
                 validator: (value) {
                   value ??= '';
-                  if (value.isEmpty) return lang.EMPTY_VALUE;
+                  if (value.isEmpty) return lang.emptyValue;
                   final sp = double.parse(speedsController.text);
-                  if (settings.player.speeds.contains(sp)) return lang.ERROR;
-                  settings.player.speeds
-                    ..add(sp)
-                    ..sort();
-                  settings.player.save(speeds: settings.player.speeds);
+                  if (settings.player.speeds.value.contains(sp)) return lang.error;
+                  settings.player.speeds.update(
+                    (speeds) => speeds
+                      ..add(sp)
+                      ..sort(),
+                  );
                   speedsController.clear();
                   setState(() {});
                   return null;
                 },
               ),
-            )
+            ),
           ],
         ),
       ),
     );
+  }
+}
+
+class _YTChannelOverlayThumbnail extends StatefulWidget {
+  final bool ignoreTouches;
+  const _YTChannelOverlayThumbnail({required this.ignoreTouches});
+
+  @override
+  State<_YTChannelOverlayThumbnail> createState() => __YTChannelOverlayThumbnailState();
+}
+
+class __YTChannelOverlayThumbnailState extends State<_YTChannelOverlayThumbnail> {
+  bool _isHighlighted = false;
+
+  String? _channelOverlayUrl;
+
+  @override
+  void initState() {
+    _updateChannelOverlayUrl();
+    YoutubeInfoController.current.currentYTStreams.addListener(_updateChannelOverlayUrl);
+    super.initState();
+  }
+
+  @override
+  void dispose() {
+    YoutubeInfoController.current.currentYTStreams.removeListener(_updateChannelOverlayUrl);
+    super.dispose();
+  }
+
+  void _updateChannelOverlayUrl() {
+    refreshState(
+      () {
+        _channelOverlayUrl = YoutubeInfoController.current.currentYTStreams.value?.overlay?.overlays.pick()?.url;
+      },
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final channelOverlayUrl = _channelOverlayUrl;
+    return IgnorePointer(
+      ignoring: widget.ignoreTouches,
+      child: TapDetector(
+        onTap: null,
+        initializer: (instance) {
+          instance
+            ..onTapDown = (d) {
+              if (mounted) setState(() => _isHighlighted = true);
+            }
+            ..onTapUp = (d) {
+              if (mounted) setState(() => _isHighlighted = false);
+            }
+            ..onTapCancel = () {
+              if (mounted) setState(() => _isHighlighted = false);
+            };
+        },
+        child: AnimatedOpacity(
+          duration: const Duration(milliseconds: 300),
+          opacity: _isHighlighted ? 1 : 0.35,
+          child: YoutubeThumbnail(
+            key: ValueKey(channelOverlayUrl),
+            width: 38.0,
+            isImportantInCache: true,
+            borderRadius: 0,
+            type: ThumbnailType.channel,
+            customUrl: channelOverlayUrl,
+            displayFallbackIcon: false,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _YTVideoEndcards extends StatefulWidget {
+  final bool visible;
+  final bool inFullScreen;
+  const _YTVideoEndcards({required this.visible, required this.inFullScreen});
+
+  @override
+  State<_YTVideoEndcards> createState() => _YTVideoEndcardsState();
+}
+
+class _YTVideoEndcardsState extends State<_YTVideoEndcards> {
+  List<EndScreenItemBase>? _currentEndcards;
+  int? _firstEndCardTimestamp;
+  int? _lastEndCardTimestamp;
+  bool _canShowAnyEndcard = false;
+  late final _fetchedPlaylistsCompleters = <String, Completer<void>?>{};
+  late final _fetchedPlaylistsControllers = <String, PopupMenuController?>{};
+  late final _fetchedPlaylists = <String, YoutiPiePlaylistResultBase?>{};
+
+  void _onEndcardsChanged() {
+    final streamRes = YoutubeInfoController.current.currentYTStreams.value;
+    final newEndcards = streamRes?.endscreens;
+    if (newEndcards != _currentEndcards) {
+      setState(() {
+        _currentEndcards = newEndcards;
+
+        _firstEndCardTimestamp = newEndcards?.reduceOrNull((value, element) => element.startMs > value.startMs ? value : element)?.startMs;
+        _lastEndCardTimestamp = newEndcards?.reduceOrNull((value, element) => element.endMs > value.endMs ? element : value)?.endMs;
+      });
+    }
+  }
+
+  @override
+  void initState() {
+    _onEndcardsChanged();
+    _onPlayerPositionChange();
+    YoutubeInfoController.current.currentYTStreams.addListener(_onEndcardsChanged);
+    Player.inst.nowPlayingPosition.addListener(_onPlayerPositionChange);
+    super.initState();
+  }
+
+  @override
+  void dispose() {
+    YoutubeInfoController.current.currentYTStreams.removeListener(_onEndcardsChanged);
+    Player.inst.nowPlayingPosition.removeListener(_onPlayerPositionChange);
+    super.dispose();
+  }
+
+  void _onPlayerPositionChange() {
+    bool newCanShowAnyEndcard = false;
+    final firstEndCardTimestamp = _firstEndCardTimestamp;
+    final lastEndCardTimestamp = _lastEndCardTimestamp;
+    if (firstEndCardTimestamp != null && lastEndCardTimestamp != null) {
+      final currPos = Player.inst.nowPlayingPosition.value;
+      newCanShowAnyEndcard = currPos > firstEndCardTimestamp && currPos < lastEndCardTimestamp;
+    }
+
+    if (_canShowAnyEndcard != newCanShowAnyEndcard) {
+      if (mounted) {
+        setState(() => _canShowAnyEndcard = newCanShowAnyEndcard);
+      }
+    }
+  }
+
+  void _exitFullScreenIfNeeded() {
+    if (widget.inFullScreen) {
+      NamidaNavigator.inst.exitFullScreen();
+    }
+  }
+
+  List<Widget> _getCustomChildrenVideo(EndScreenItemVideo e) {
+    final videoId = e.videoId;
+    String? title = e.title;
+    String? subtitle = e.viewsCount?.formatDecimalShort() ?? e.viewsCountText;
+
+    final textTheme = context.textTheme;
+    return [
+      NamidaInkWell(
+        onTap: videoId == null
+            ? null
+            : () {
+                NamidaNavigator.inst.navigateDialog(
+                  dialog: VideoInfoDialog(
+                    videoId: videoId,
+                  ),
+                );
+              },
+        padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 4.0),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(
+              Broken.info_circle,
+              size: 20.0,
+            ),
+            const SizedBox(width: 6.0),
+            SizedBox(
+              width: 168.0,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title!,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: textTheme.displaySmall,
+                  ),
+                  if (subtitle != null)
+                    Text(
+                      subtitle,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: textTheme.displaySmall?.copyWith(
+                        fontSize: 10.0,
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+      const NamidaContainerDivider(),
+    ];
+  }
+
+  FutureOr<List<NamidaPopupItem>> _getItemChildren(EndScreenItemBase item) async {
+    switch (item) {
+      case EndScreenItemVideo():
+        final videoId = item.videoId;
+        if (videoId == null) return [];
+        return YTUtils.getVideoCardMenuItems(
+          queueSource: QueueSourceYoutubeID.ytVideoEndCard,
+          downloadIndex: null,
+          totalLength: null,
+          streamInfoItem: null,
+          videoId: videoId,
+          channelID: null,
+          playlistID: null,
+          showInfoTile: false,
+          idsNamesLookup: {videoId: item.title},
+          isInFullScreen: widget.inFullScreen,
+        );
+      case EndScreenItemChannel():
+        final channelId = item.channelId;
+        final channelTitle = item.title;
+        return [
+          if (channelId != null && channelId.isNotEmpty)
+            NamidaPopupItem(
+              icon: Broken.user,
+              title: lang.goToChannel,
+              subtitle: channelTitle ?? '',
+              onTap: () {
+                _exitFullScreenIfNeeded();
+                YTChannelSubpage(channelID: channelId).navigate();
+              },
+            ),
+        ];
+      case EndScreenItemPlaylist():
+        final fetchedPlaylistC = _fetchedPlaylistsCompleters[item.basicInfo.id];
+        if (fetchedPlaylistC == null) {
+          final completer = _fetchedPlaylistsCompleters[item.basicInfo.id] = Completer<void>();
+          final cachedPlaylist = await YoutiPie.cacheBuilder.forPlaylistVideos(playlistId: item.basicInfo.id).read();
+          if (cachedPlaylist != null) {
+            _fetchedPlaylists[item.basicInfo.id] = cachedPlaylist;
+            completer.complete();
+          } else {
+            YoutubeInfoController.playlist.fetchPlaylist(playlistId: item.basicInfo.id).then(
+              (fetchedPlaylist) {
+                _fetchedPlaylists[item.basicInfo.id] = fetchedPlaylist;
+                completer.complete();
+                _fetchedPlaylistsControllers[item.basicInfo.id]?.reOpenMenu();
+              },
+            );
+          }
+        }
+
+        final fetchedPlaylist = _fetchedPlaylists[item.basicInfo.id];
+        if (fetchedPlaylist == null) {
+          return [
+            NamidaPopupItem(
+              icon: Broken.export_2,
+              title: lang.open,
+              onTap: () {
+                _exitFullScreenIfNeeded();
+                YTHostedPlaylistSubpage.fromId(
+                  playlistId: item.basicInfo.id,
+                  userPlaylist: null,
+                ).navigate();
+              },
+            ),
+          ];
+        } else {
+          return item.basicInfo.getPopupMenuItems(
+            queueSource: QueueSourceYoutubeID.ytVideoEndCard,
+            displayOpenPlaylist: true,
+            showProgressSheet: true,
+            playlistToFetch: fetchedPlaylist,
+            userPlaylist: null,
+            isInFullScreen: widget.inFullScreen,
+          );
+        }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final currentEndcards = _currentEndcards;
+    if (currentEndcards == null || currentEndcards.isEmpty) return const SizedBox.shrink();
+
+    return CustomAnimatedSwitcher(
+      duration: const Duration(milliseconds: 200),
+      child: !(_canShowAnyEndcard && widget.visible)
+          ? null
+          : LayoutBuilder(
+              builder: (context, constraints) {
+                final maxWidth = constraints.maxWidth;
+                final maxHeight = constraints.maxHeight;
+
+                return ObxO(
+                  rx: Player.inst.nowPlayingPosition,
+                  builder: (context, playerPosition) => Stack(
+                    alignment: Alignment.center,
+                    children: currentEndcards.map(
+                      (e) {
+                        if (playerPosition < e.startMs || playerPosition > e.endMs) {
+                          return const SizedBox.shrink();
+                        }
+
+                        double leftPadding = e.display.left * maxWidth;
+                        double topPadding = e.display.top * maxHeight;
+
+                        final isAvatarShaped = e.type == VideoEndScreenItemType.channel;
+                        final url = e.thumbnails.pick()?.url;
+                        final width = e.display.width * maxWidth;
+
+                        final controller = e is EndScreenItemPlaylist ? _fetchedPlaylistsControllers[e.basicInfo.id] ??= PopupMenuController() : null;
+
+                        return Positioned(
+                          left: leftPadding,
+                          top: topPadding,
+                          child: NamidaPopupWrapper(
+                            controller: controller,
+                            openOnTap: true,
+                            openOnLongPress: true,
+                            children: e is EndScreenItemVideo ? () => _getCustomChildrenVideo(e) : null,
+                            childrenDefault: () => _getItemChildren(e),
+                            childrenAfterChildrenDefault: false,
+                            child: YoutubeThumbnail(
+                              key: ValueKey(url),
+                              width: width,
+                              height: width / e.display.aspectRatio,
+                              customUrl: url,
+                              isImportantInCache: false,
+                              isCircle: isAvatarShaped,
+                              forceSquared: !isAvatarShaped,
+                              borderRadius: 6.0,
+                              type: switch (e.type) {
+                                VideoEndScreenItemType.video => ThumbnailType.video,
+                                VideoEndScreenItemType.playlist => ThumbnailType.playlist,
+                                VideoEndScreenItemType.channel => ThumbnailType.channel,
+                                VideoEndScreenItemType.unknown => ThumbnailType.other,
+                              },
+                              onTopWidgets: e is EndScreenItemPlaylist
+                                  ? (_) => [
+                                      Positioned(
+                                        bottom: 2.0,
+                                        right: 2.0,
+                                        child: YtThumbnailOverlayBox(
+                                          text: e.basicInfo.videosCount?.toString() ?? e.basicInfo.videosCountText,
+                                          icon: Broken.play_cricle,
+                                        ),
+                                      ),
+                                    ]
+                                  : null,
+                            ),
+                          ),
+                        );
+                      },
+                    ).toFixedList(),
+                  ),
+                );
+              },
+            ),
+    );
+  }
+}
+
+class _VideoTitleSubtitleWidget extends StatelessWidget {
+  final bool isLocal;
+
+  const _VideoTitleSubtitleWidget({
+    required this.isLocal,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final textTheme = context.textTheme;
+    return PlayableTitleSubtitleWidget(
+      isYTID: !isLocal,
+      builder: (title, subtitle) => Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (title != null && title.isNotEmpty)
+            Text(
+              title,
+              style: textTheme.displayLarge?.copyWith(color: const Color.fromRGBO(255, 255, 255, 0.85)),
+              maxLines: 3,
+              overflow: TextOverflow.ellipsis,
+            ),
+          if (subtitle != null && subtitle.isNotEmpty)
+            Text(
+              subtitle,
+              style: textTheme.displaySmall?.copyWith(color: const Color.fromRGBO(255, 255, 255, 0.7)),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _VideoWidgetActionChip extends StatelessWidget {
+  final String Function()? tooltip;
+  final String? text;
+  final Color? textColor;
+  final Widget? leading;
+  final Widget? trailing;
+  final Widget? child;
+
+  const _VideoWidgetActionChip({
+    this.tooltip,
+    this.text,
+    this.textColor,
+    this.leading,
+    this.trailing,
+    this.child,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final text = this.text;
+    Widget content;
+    if (child != null) {
+      content = child!;
+    } else {
+      content = Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          ?leading,
+          if (text != null && text.isNotEmpty) ...[
+            if (leading != null) const SizedBox(width: 4.0),
+            Text(
+              text,
+              style: context.textTheme.displaySmall?.copyWith(
+                color: textColor,
+                height: 1.3,
+              ),
+            ),
+            if (trailing != null) const SizedBox(width: 4.0),
+          ] else if (leading != null && trailing != null)
+            const SizedBox(width: 4.0),
+          ?trailing,
+        ],
+      );
+    }
+
+    Widget finalChild = Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 6.0),
+      child: content,
+    );
+    if (tooltip != null) {
+      finalChild = NamidaTooltip(
+        message: tooltip,
+        child: finalChild,
+      );
+    }
+    return Padding(
+      padding: const EdgeInsets.all(4.0),
+      child: NamidaBgBlurClipped(
+        blur: 3.0,
+        decoration: BoxDecoration(
+          color: Colors.black.withOpacityExt(0.2),
+          borderRadius: BorderRadius.circular(6.0.multipliedRadius),
+        ),
+        child: finalChild,
+      ),
+    );
+  }
+}
+
+class _DropShadowWrapper extends StatelessWidget {
+  final bool enabled;
+  final Widget child;
+
+  const _DropShadowWrapper({
+    required this.enabled,
+    required this.child,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Stack(
+      children: [
+        CustomAnimatedSwitcher(
+          duration: Duration(milliseconds: 800),
+          reverseDuration: Duration(milliseconds: 500),
+          child: enabled
+              ? Transform.scale(
+                  scale: 1.1,
+                  child: NamidaBlur(
+                    blur: 40.0,
+                    fixArtifacts: true,
+                    child: child,
+                  ),
+                )
+              : const SizedBox(
+                  key: ValueKey('video_bg_blur_disabled'),
+                ),
+        ),
+        child,
+      ],
+    );
+  }
+}
+
+extension _ListExt<E> on List<E> {
+  E? reduceOrNull(E Function(E value, E element) combine) {
+    if (isEmpty) return null;
+    E value = this.first;
+    for (final current in this) {
+      value = combine(value, current);
+    }
+    return value;
   }
 }

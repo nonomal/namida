@@ -1,0 +1,178 @@
+import 'package:flutter/material.dart';
+
+import 'package:flutter_staggered_animations/flutter_staggered_animations.dart';
+import 'package:namico_db_wrapper/namico_db_wrapper.dart';
+
+import 'package:namida/base/tracks_search_wrapper.dart';
+import 'package:namida/base/pull_to_refresh.dart';
+import 'package:namida/base/tracks_search_widget_mixin.dart';
+import 'package:namida/class/route.dart';
+import 'package:namida/class/track.dart';
+import 'package:namida/controller/smart_playlists/smart_playlists_controller.dart';
+import 'package:namida/core/dimensions.dart';
+import 'package:namida/core/enums.dart';
+import 'package:namida/core/extensions.dart';
+import 'package:namida/core/functions.dart';
+import 'package:namida/core/utils.dart';
+import 'package:namida/ui/dialogs/common_dialogs.dart';
+import 'package:namida/ui/widgets/artwork.dart';
+import 'package:namida/ui/widgets/custom_widgets.dart';
+import 'package:namida/ui/widgets/library/multi_artwork_container.dart';
+import 'package:namida/ui/widgets/library/track_tile.dart';
+import 'package:namida/ui/widgets/network_artwork.dart';
+
+class SmartPlaylistTracksPage extends StatefulWidget with NamidaRouteWidget {
+  @override
+  RouteType get route => RouteType.SUBPAGE_smartPlaylistTracks;
+
+  @override
+  String get name => smartPlaylistWrapper.value.name;
+
+  final SmartPlaylistWrapper smartPlaylistWrapper;
+
+  const SmartPlaylistTracksPage({
+    super.key,
+    required this.smartPlaylistWrapper,
+  });
+
+  @override
+  State<SmartPlaylistTracksPage> createState() => _SmartPlaylistTracksPageState();
+}
+
+class _SmartPlaylistTracksPageState extends State<SmartPlaylistTracksPage>
+    with TickerProviderStateMixin, PullToRefreshMixin, PortsProvider<TracksSearchParams>, TracksSearchWidgetMixin<SmartPlaylistTracksPage> {
+  @override
+  Iterable<TrackExtended> getTracksExtended() {
+    return _tracks.map((e) => e.track.toTrackExt());
+  }
+
+  @override
+  RxBaseCore listChangesListenerRx() =>
+      SmartPlaylistsController.inst.smartPlaylistsMap.value[widget.smartPlaylistWrapper.value.key] ?? SmartPlaylistsController.inst.smartPlaylistsMap;
+
+  final _controller = ScrollController();
+
+  var _tracks = <Track>[];
+
+  void _reFetchTracks() {
+    setState(() {
+      _tracks = widget.smartPlaylistWrapper.resolve();
+    });
+  }
+
+  @override
+  void initState() {
+    _reFetchTracks();
+    widget.smartPlaylistWrapper.addListener(_reFetchTracks);
+    super.initState();
+  }
+
+  @override
+  void dispose() {
+    super.dispose();
+    widget.smartPlaylistWrapper.removeListener(_reFetchTracks);
+    _controller.dispose();
+  }
+
+  Future<void> _editAndRefresh(SmartPlaylist oldSmartPlaylist, SmartPlaylist smartPlaylist) async {
+    await SmartPlaylistsController.inst.edit(oldSmartPlaylist, smartPlaylist);
+    if (mounted) _reFetchTracks();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final name = widget.name;
+    final queueSource = QueueSource.smartPlaylist(name);
+    final searchResults = this.searchResults;
+    return BackgroundWrapper(
+      child: AnimationLimiter(
+        child: TrackTilePropertiesProvider(
+          configs: TrackTilePropertiesConfigs(
+            queueSource: queueSource,
+          ),
+          builder: (properties) => PullToRefreshWidget(
+            state: this,
+            controller: _controller,
+            onRefresh: () async => _reFetchTracks(),
+            child: ObxO(
+              rx: SmartPlaylistsController.inst.smartPlaylistsMap,
+              builder: (context, smartPlaylistsMap) {
+                final smartPlaylistWrapper = smartPlaylistsMap[widget.smartPlaylistWrapper.value.key];
+                if (smartPlaylistWrapper == null) return const SizedBox();
+                return ObxO(
+                  rx: smartPlaylistWrapper,
+                  builder: (context, smartPlaylist) => NamidaListView(
+                    scrollController: _controller,
+                    infoBox: (maxWidth) => SubpageInfoContainer(
+                      maxWidth: maxWidth,
+                      type: MediaType.playlist,
+                      onOpenMenu: () => NamidaDialogs.inst.showSmartPlaylistDialog(widget.smartPlaylistWrapper),
+                      customArtworkManager: CustomArtworkManager.smartPlaylist(widget.smartPlaylistWrapper),
+                      source: queueSource,
+                      title: name,
+                      subtitle: [
+                        _tracks.length.displayTrackKeyword,
+                        _tracks.totalDurationFormatted,
+                      ].join(' - '),
+                      heroTag: '',
+                      imageBuilder: (size) => MultiArtworkContainer(
+                        heroTag: '',
+                        size: size,
+                        tracks: _tracks.toImageTracks(),
+                      ),
+                      tracksFn: () => _tracks,
+                      bannerBuilder: (width, height) => ArtworkStripBanner(
+                        tracks: _tracks,
+                        width: width,
+                        height: height,
+                      ),
+                    ),
+                    stickyHeader: TracksSearchWidgetBoxBase(
+                      state: this,
+                      leftText: [
+                        _tracks.displayTrackKeyword,
+                        _tracks.totalDurationFormatted,
+                      ].join(' - '),
+                      sort: smartPlaylist.sorting.firstType,
+                      sortReverse: smartPlaylist.sorting.reverse,
+                      onSortTap: () => NamidaOnTaps.inst.onTracksSortIconTap(
+                        currentSorting: smartPlaylist.sorting,
+                        onChanged: (sorting) => _editAndRefresh(
+                          smartPlaylist,
+                          smartPlaylist.copyWith(sorting: sorting),
+                        ),
+                      ),
+                      onReverseIconTap: (newSortReverse) {
+                        final sorting = smartPlaylist.sorting.copyWith(reverse: newSortReverse);
+                        _editAndRefresh(
+                          smartPlaylist,
+                          smartPlaylist.copyWith(sorting: sorting),
+                        );
+                      },
+                    ),
+                    itemCount: searchResults?.length ?? _tracks.length,
+                    itemExtent: Dimensions.inst.trackTileItemExtent,
+                    itemBuilder: (context, i) {
+                      final index = searchResults == null ? i : searchResults[i];
+                      final track = _tracks[index];
+                      return AnimatingTile(
+                        key: ValueKey(index),
+                        position: i,
+                        child: TrackTile(
+                          properties: properties,
+                          index: index,
+                          trackOrTwd: track,
+                          tracks: _tracks,
+                        ),
+                      );
+                    },
+                  ),
+                );
+              },
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}

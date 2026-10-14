@@ -1,26 +1,37 @@
 import 'package:flutter/material.dart';
 
-import 'package:get/get.dart';
-
 import 'package:namida/class/queue.dart';
+import 'package:namida/class/route.dart';
 import 'package:namida/core/enums.dart';
 import 'package:namida/core/extensions.dart';
+import 'package:namida/ui/dialogs/common_dialogs.dart';
+import 'package:namida/ui/widgets/artwork.dart';
 import 'package:namida/ui/widgets/custom_widgets.dart';
 import 'package:namida/ui/widgets/library/multi_artwork_container.dart';
 
-class QueueTracksPage extends StatelessWidget {
+class QueueTracksPage extends StatelessWidget with NamidaRouteWidget {
+  @override
+  String? get name => queue.date.toString();
+
+  @override
+  RouteType get route => RouteType.SUBPAGE_queueTracks;
+
   final Queue queue;
   const QueueTracksPage({super.key, required this.queue});
 
   @override
   Widget build(BuildContext context) {
+    final queueSource = QueueSource.queuePage(queue);
     return BackgroundWrapper(
       child: NamidaTracksList(
-        queueSource: QueueSource.queuePage,
+        queueSource: queueSource,
         queueLength: queue.tracks.length,
         queue: queue.tracks,
-        header: SubpagesTopContainer(
-          source: QueueSource.queuePage,
+        infoBox: (maxWidth) => SubpageInfoContainer(
+          maxWidth: maxWidth,
+          type: MediaType.playlist,
+          onOpenMenu: () => NamidaDialogs.inst.showQueueDialog(queue.date),
+          source: queueSource,
           title: queue.date.dateFormattedOriginal,
           subtitle: queue.date.clockFormatted,
           thirdLineText: [
@@ -28,12 +39,17 @@ class QueueTracksPage extends StatelessWidget {
             queue.tracks.totalDurationFormatted,
           ].join(' - '),
           heroTag: 'queue_${queue.date}',
-          imageWidget: MultiArtworkContainer(
-            size: Get.width * 0.35,
+          imageBuilder: (size) => MultiArtworkContainer(
+            size: size,
             heroTag: 'queue_${queue.date}',
             tracks: queue.tracks.toImageTracks(),
           ),
-          tracks: queue.tracks,
+          tracksFn: () => queue.tracks,
+          bannerBuilder: (width, height) => ArtworkStripBanner(
+            tracks: queue.tracks,
+            width: width,
+            height: height,
+          ),
         ),
       ),
     );

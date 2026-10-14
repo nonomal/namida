@@ -1,30 +1,251 @@
+import 'package:namida/class/sort_chain.dart';
+import 'package:namida/class/track.dart';
+import 'package:namida/controller/history_controller.dart';
+import 'package:namida/controller/search_sort_controller.dart';
 import 'package:namida/core/enums.dart';
 import 'package:namida/core/extensions.dart';
+import 'package:namida/youtube/class/youtube_id.dart';
+import 'package:namida/youtube/controller/youtube_history_controller.dart';
 
+// rewritten by claude, new one holds multi sort, shuffle, minimum filter and count, and applies them to tracks or videos
 class QueueInsertion {
   final int numberOfTracks;
   final bool insertNext;
-  final InsertionSortingType sortBy;
+  final int? sample;
+  final int? sampleDays;
+  final bool shuffle;
+  final SortChain<SortType> sorting;
+  final SortType? filterSort;
+  final Map<SortType, int> filterMinimums;
+  final List<SimilarTracksSource> similarSources;
 
   const QueueInsertion({
     required this.numberOfTracks,
     required this.insertNext,
-    required this.sortBy,
+    this.sample,
+    this.sampleDays,
+    this.shuffle = false,
+    this.sorting = const SortChain([]),
+    this.filterSort,
+    this.filterMinimums = const {},
+    this.similarSources = const [],
   });
 
-  factory QueueInsertion.fromJson(Map<String, dynamic> map) {
+  int? get maxCount => numberOfTracks == 0 ? null : numberOfTracks;
+  bool get isUnsorted => !shuffle && sorting.isEmpty;
+
+  int filterValueOf(SortType sort, TrackMinimum minimum) => filterMinimums[sort] ?? minimum.defaultValue;
+
+  QueueInsertion copyWith({
+    int? numberOfTracks,
+    bool? insertNext,
+    int? sample,
+    int? sampleDays,
+    bool? shuffle,
+    SortChain<SortType>? sorting,
+    Map<SortType, int>? filterMinimums,
+    List<SimilarTracksSource>? similarSources,
+  }) {
     return QueueInsertion(
-      numberOfTracks: map["numberOfTracks"],
-      insertNext: map["insertNext"],
-      sortBy: InsertionSortingType.values.getEnum(map['sortBy']) ?? InsertionSortingType.random,
+      numberOfTracks: numberOfTracks ?? this.numberOfTracks,
+      insertNext: insertNext ?? this.insertNext,
+      sample: sample ?? this.sample,
+      sampleDays: sampleDays ?? this.sampleDays,
+      shuffle: shuffle ?? this.shuffle,
+      sorting: sorting ?? this.sorting,
+      filterSort: filterSort,
+      filterMinimums: filterMinimums ?? this.filterMinimums,
+      similarSources: similarSources ?? this.similarSources,
     );
   }
 
+  QueueInsertion withFilterSort(SortType? filterSort) {
+    return QueueInsertion(
+      numberOfTracks: numberOfTracks,
+      insertNext: insertNext,
+      sample: sample,
+      sampleDays: sampleDays,
+      shuffle: shuffle,
+      sorting: sorting,
+      filterSort: filterSort,
+      filterMinimums: filterMinimums,
+      similarSources: similarSources,
+    );
+  }
+
+  /// filters, orders then limits. [tracks] is modified and must be owned by the caller.
+  List<Selectable> apply(List<Selectable> tracks) {
+    tracks = filtered(tracks);
+    if (shuffle) return _shuffled(tracks);
+    if (sorting.isNotEmpty) {
+      final tracksComparables = SearchSortController.inst.getTracksChainComparables(sorting);
+      final comparables = tracksComparables.mapKeys<Selectable>((e) => e.track);
+      tracks.sortByChain(comparables);
+    }
+    return _limited(tracks);
+  }
+
+  /// returns [tracks] itself when there is no active filter.
+  List<Selectable> filtered(List<Selectable> tracks) {
+    final filterSort = this.filterSort;
+    if (filterSort == null) return tracks;
+    final minimum = TrackMinimum.of(filterSort);
+    if (minimum == null) return tracks;
+    final value = filterValueOf(filterSort, minimum);
+    return minimum.filter(tracks, value);
+  }
+
+  /// same as [apply] for videos, which only support shuffling and listens count ordering.
+  List<YoutubeID> applyYoutube(List<YoutubeID> videos) {
+    if (shuffle) return _shuffled(videos);
+    final mostPlayedEntry = sorting.entries.firstWhereEff((e) => e.type == SortType.mostPlayed);
+    if (mostPlayedEntry != null) {
+      final listensMap = YoutubeHistoryController.inst.topTracksMapListens.value;
+      final reverse = sorting.reverse != mostPlayedEntry.reverse;
+      videos.sortByAltsPrecomputed([(e) => -(listensMap[e.id]?.length ?? 0)], reverse: reverse);
+    }
+    return _limited(videos);
+  }
+
+  List<T> _shuffled<T>(List<T> items) {
+    final maxCount = this.maxCount;
+    if (maxCount != null && maxCount < items.length) {
+      final sample = items.getRandomSample(maxCount);
+      sample.shuffle();
+      return sample;
+    }
+    items.shuffle();
+    return items;
+  }
+
+  List<T> _limited<T>(List<T> items) {
+    final maxCount = this.maxCount;
+    if (maxCount != null && maxCount < items.length) return items.sublist(0, maxCount);
+    return items;
+  }
+
+  factory QueueInsertion.fromJson(Map<String, dynamic> map) {
+    final legacySortBy = map['sortBy'];
+    final filterMinimumsJson = map['filterMinimums'];
+    final filterMinimums = <SortType, int>{};
+    if (filterMinimumsJson is Map) {
+      for (final e in filterMinimumsJson.entries) {
+        final sort = SortType.values.getEnum(e.key);
+        final value = e.value;
+        if (sort != null && value is int) filterMinimums[sort] = value;
+      }
+    }
+    final sortingJson = map['sorts_v2'];
+    final sorting = sortingJson is Map ? SortChain.fromMap(sortingJson, SortType.values) : _legacySorting(map);
+    final similarSourcesJson = map['similarSources'];
+    final similarSources = similarSourcesJson is List ? similarSourcesJson.map((e) => SimilarTracksSource.values.getEnum(e)).nonNulls.toFixedList() : const <SimilarTracksSource>[];
+    return QueueInsertion(
+      numberOfTracks: map['numberOfTracks'],
+      insertNext: map['insertNext'],
+      sample: map['sample'],
+      sampleDays: map['sampleDays'],
+      shuffle: map['shuffle'] ?? legacySortBy == 'random',
+      sorting: sorting,
+      filterSort: SortType.values.getEnum(map['filterSort']),
+      filterMinimums: filterMinimums,
+      similarSources: similarSources,
+    );
+  }
+
+  /// from before each sort could be reversed, `sortBy` is older than `sorts`.
+  static SortChain<SortType> _legacySorting(Map<String, dynamic> map) {
+    final legacySortBy = map['sortBy'];
+    final sortsJson = map['sorts'];
+    final entries = sortsJson is List ? SortEntry.listFromJson(sortsJson, SortType.values) : _legacySortByEntries(legacySortBy);
+    final reverse = map['sortReverse'] ?? legacySortBy == 'rating';
+    return SortChain(entries, reverse: reverse);
+  }
+
+  static List<SortEntry<SortType>> _legacySortByEntries(dynamic legacySortBy) => switch (legacySortBy) {
+    'listenCount' => const [SortEntry(SortType.mostPlayed)],
+    'rating' => const [SortEntry(SortType.rating)],
+    _ => const [],
+  };
+
   Map<String, dynamic> toJson() {
+    final filterSort = this.filterSort;
     return {
-      "numberOfTracks": numberOfTracks,
-      "insertNext": insertNext,
-      "sortBy": sortBy.convertToString,
+      'numberOfTracks': numberOfTracks,
+      'insertNext': insertNext,
+      if (sample != null) 'sample': sample,
+      if (sampleDays != null) 'sampleDays': sampleDays,
+      'shuffle': shuffle,
+      'sorts_v2': sorting.toJson(),
+      if (filterSort != null) 'filterSort': filterSort.name,
+      'filterMinimums': {for (final e in filterMinimums.entries) e.key.name: e.value},
+      if (similarSources.isNotEmpty) 'similarSources': [for (final source in similarSources) source.name],
     };
+  }
+}
+
+class TrackMinimum {
+  final int min;
+  final int max;
+  final int stepper;
+  final int defaultValue;
+  final String Function(int value) formatter;
+  final num? Function(Track tr) valueOf;
+
+  const TrackMinimum({
+    required this.min,
+    required this.max,
+    required this.stepper,
+    required this.defaultValue,
+    required this.formatter,
+    required this.valueOf,
+  });
+
+  static const supportedSorts = [
+    SortType.rating, SortType.mostPlayed, SortType.latestPlayed, SortType.duration, //
+    SortType.bitrate, SortType.bpm, SortType.size, SortType.year, //
+  ];
+
+  static TrackMinimum? of(SortType sort) => switch (sort) {
+    SortType.rating => TrackMinimum(min: 0, max: 100, stepper: 5, defaultValue: 75, formatter: (v) => '$v%', valueOf: (tr) => tr.effectiveRating),
+    SortType.mostPlayed => TrackMinimum(min: 0, max: 500, stepper: 1, defaultValue: 0, formatter: (v) => '$v', valueOf: _listensCountOf),
+    SortType.latestPlayed => _ofDaysSinceLastListen(),
+    SortType.duration => TrackMinimum(min: 0, max: 1200, stepper: 10, defaultValue: 0, formatter: (v) => v.secondsLabel, valueOf: (tr) => tr.durationMS / 1000),
+    SortType.bitrate => TrackMinimum(min: 0, max: 1411, stepper: 1, defaultValue: 0, formatter: (v) => '$v kb/s', valueOf: (tr) => tr.bitrate),
+    SortType.bpm => TrackMinimum(min: 0, max: 300, stepper: 1, defaultValue: 0, formatter: (v) => '$v BPM', valueOf: (tr) => tr.bpm),
+    SortType.size => TrackMinimum(min: 0, max: 200, stepper: 1, defaultValue: 0, formatter: (v) => '$v MB', valueOf: (tr) => tr.size / (1024 * 1024)),
+    SortType.year => TrackMinimum(min: 1900, max: DateTime.now().year, stepper: 1, defaultValue: 1900, formatter: (v) => '$v', valueOf: _yearOf),
+    _ => null,
+  };
+
+  static int _listensCountOf(Track tr) => HistoryController.inst.topTracksMapListens.value[tr]?.length ?? 0;
+
+  static TrackMinimum _ofDaysSinceLastListen() {
+    final nowMS = DateTime.now().millisecondsSinceEpoch;
+    return TrackMinimum(
+      min: 0,
+      max: 365,
+      stepper: 1,
+      defaultValue: 0,
+      formatter: (v) => v.displayDayKeyword,
+      valueOf: (tr) {
+        final lastListenMS = HistoryController.inst.topTracksMapListens.value[tr]?.lastOrNull;
+        if (lastListenMS == null) return double.infinity;
+        return (nowMS - lastListenMS) / Duration.millisecondsPerDay;
+      },
+    );
+  }
+
+  static int? _yearOf(Track tr) {
+    final year = tr.year;
+    if (year == 0) return null;
+    return year < 10000 ? year : year ~/ 10000;
+  }
+
+  bool isActive(int value) => value > min;
+
+  /// returns [tracks] itself when the minimum is inactive.
+  List<Selectable> filter(List<Selectable> tracks, int value) {
+    if (!isActive(value)) return tracks;
+    return tracks.where((e) => (valueOf(e.track) ?? -1) >= value).toList();
   }
 }

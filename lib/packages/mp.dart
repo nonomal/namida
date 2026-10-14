@@ -1,9 +1,10 @@
 import 'package:flutter/material.dart';
-import 'package:get/get.dart';
 
+import 'package:namida/controller/scroll_search_controller.dart';
 import 'package:namida/controller/wakelock_controller.dart';
 import 'package:namida/core/extensions.dart';
-import 'package:namida/ui/widgets/custom_widgets.dart';
+import 'package:namida/core/utils.dart';
+import 'package:namida/ui/widgets/animated_widgets.dart';
 
 /// Used to retain state for cases like navigating after pip mode.
 bool _wasExpanded = false;
@@ -15,30 +16,36 @@ bool _wasExpanded = false;
 double _maxHeight = 0;
 
 class NamidaYTMiniplayer extends StatefulWidget {
+  static void setInitialExpanded(bool expanded) => _wasExpanded = expanded;
+
+  final bool enforceExpanded;
   final double minHeight, maxHeight, bottomMargin;
-  final Widget Function(double height, double percentage) builder;
+
+  /// called on rebuilds only, per frame values come through the animations.
+  final Widget Function(Animation<double> percentage, Animation<double> reverseOpacityAnimation, double expandedHeight) builder;
   final Color bgColor;
   final void Function(double percentage)? onHeightChange;
+  final void Function(bool isExpanded)? onExpandedStateChange;
   final void Function(double dismissPercentage)? onDismissing;
   final Duration duration;
   final Curve curve;
-  final AnimationController? animationController;
   final void Function()? onDismiss;
   final bool displayBottomBGLayer;
   final void Function()? onAlternativePercentageExecute;
 
   const NamidaYTMiniplayer({
     super.key,
+    this.enforceExpanded = false,
     required this.minHeight,
     required this.maxHeight,
     required this.builder,
     required this.bgColor,
     this.onHeightChange,
+    this.onExpandedStateChange,
     this.onDismissing,
     this.bottomMargin = 0.0,
     this.duration = const Duration(milliseconds: 300),
     this.curve = Curves.decelerate,
-    this.animationController,
     this.onDismiss,
     this.displayBottomBGLayer = false,
     this.onAlternativePercentageExecute,
@@ -54,28 +61,60 @@ class NamidaYTMiniplayerState extends State<NamidaYTMiniplayer> with SingleTicke
   @override
   void initState() {
     super.initState();
+    final startExpanded = widget.enforceExpanded || _wasExpanded;
     if (_maxHeight < maxHeight) _maxHeight = maxHeight;
 
-    controller = widget.animationController ??
-        AnimationController(
-          vsync: this,
-          duration: Duration.zero,
-          lowerBound: 0,
-          upperBound: 1,
-          value: _wasExpanded ? 1.0 : widget.minHeight / _maxHeight,
-        );
+    controller = AnimationController(
+      vsync: this,
+      duration: Duration.zero,
+      lowerBound: 0,
+      upperBound: 1,
+      value: startExpanded ? 1.0 : widget.minHeight / _maxHeight,
+    );
 
     if (widget.onHeightChange != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _listenerHeightChange());
       controller.addListener(_listenerHeightChange);
     }
     if (widget.onDismissing != null) {
       controller.addListener(_listenerDismissing);
     }
 
-    _dragheight = _wasExpanded ? _maxHeight : widget.minHeight;
+    WidgetsBinding.instance.addPostFrameCallback((_) => animateToState(startExpanded));
 
-    WakelockController.inst.updateMiniplayerStatus(_wasExpanded);
+    WakelockController.inst.updateMiniplayerStatus(startExpanded);
   }
+
+  @override
+  void dispose() {
+    controller.dispose();
+    super.dispose();
+  }
+
+  // -- we using context directly. hopefully this doesn't cause war crimes
+  // void _ensureCorrectInitializedPadding() async {
+  //   await Future.delayed(Duration.zero);
+
+  //   for (int i = 0; i < 10; i++) {
+  //     if (!mounted) break;
+  //     // -- context access in build makes it awful for yt miniplayer (since it has MaterialPage),
+  //     // -- the keyboard keeps showing/hiding
+  //     // -- so yeah we only check once
+  //     final padding = MediaQuery.paddingOf(context);
+  //     if (_padding != padding) {
+  //       if (padding.bottom > _padding.bottom) {
+  //         // bottom only bcz.. well..
+  //         _padding = padding;
+  //         animateToState(_wasExpanded);
+  //         break;
+  //       } else {
+  //         _padding = padding;
+  //       }
+  //     }
+
+  //     await Future.delayed(Duration(milliseconds: 800));
+  //   }
+  // }
 
   void _listenerHeightChange() {
     widget.onHeightChange!(percentage);
@@ -93,59 +132,77 @@ class NamidaYTMiniplayerState extends State<NamidaYTMiniplayer> with SingleTicke
   double get _percentageMultiplier => _alternativePercentage && _isDraggingDownwards ? 0.25 : 1.0;
 
   bool _isDragManagedInternally = true;
-  void updatePercentageMultiplier(bool alt) {
-    _alternativePercentage = alt;
+
+  void setDragExternally(bool external) {
+    _alternativePercentage = external;
+    _isDragManagedInternally = !external;
   }
 
-  @override
-  void dispose() {
-    controller.dispose();
-    super.dispose();
+  void saveDragHeightStart() {
+    _startedDragAtHeight = _dragheight;
   }
 
-  bool get isExpanded => _dragheight >= maxHeight - widget.minHeight;
+  double? _startedDragAtHeight;
+
+  bool get isExpanded => percentage >= 0.5;
+
   bool get _dismissible => widget.onDismiss != null;
 
   double _dragheight = 0;
 
-  EdgeInsets _padding = const EdgeInsets.only();
+  EdgeInsets _padding = EdgeInsets.zero;
 
   double get maxHeight => widget.maxHeight - _padding.bottom - _padding.top;
   double get controllerHeight => controller.value * maxHeight;
   double get percentage => (controllerHeight - widget.minHeight) / (maxHeight - widget.minHeight);
-  double get dismissPercentage => (controllerHeight / widget.minHeight).clamp(0.0, 1.0);
+  double get dismissPercentage => (controllerHeight / widget.minHeight).clampDouble(0.0, 1.0);
 
-  void _updateHeight(double heightPre, {Duration? duration}) {
+  TickerFuture _updateHeight(double heightPre, {Duration? duration}) {
     final height = _dismissible ? heightPre : heightPre.withMinimum(widget.minHeight);
-    controller.animateTo(
+    _dragheight = height;
+    return controller.animateTo(
       height / maxHeight,
       duration: duration,
       curve: widget.curve,
     );
-    _dragheight = height;
   }
 
-  void animateToState(bool toExpanded, {Duration? dur, bool dismiss = false}) {
+  void animateToState(bool toExpanded, {Duration? dur, bool dismiss = false, bool bypassEnforceExpanded = false}) async {
+    if (widget.enforceExpanded && bypassEnforceExpanded == false) {
+      toExpanded = true;
+      dismiss = false;
+    }
+
     if (dismiss) {
       _updateHeight(0, duration: dur ?? widget.duration);
       WakelockController.inst.updateMiniplayerStatus(false);
       return;
     }
 
-    _updateHeight(toExpanded ? maxHeight : widget.minHeight, duration: dur ?? widget.duration);
     _wasExpanded = toExpanded;
     WakelockController.inst.updateMiniplayerStatus(toExpanded);
+
+    if (toExpanded) {
+      ScrollSearchController.inst.unfocusKeyboard();
+    }
+
+    await _updateHeight(toExpanded ? maxHeight : widget.minHeight, duration: dur ?? widget.duration);
+
+    if (widget.onExpandedStateChange != null) {
+      widget.onExpandedStateChange!(toExpanded);
+    }
   }
 
   void onVerticalDragUpdate(double dy) {
     _isDraggingDownwards = dy > 0;
+    if (_isDraggingDownwards && widget.enforceExpanded) return;
     _dragheight -= dy * _percentageMultiplier;
     _updateHeight(_dragheight, duration: Duration.zero);
   }
 
   void _resetValues() {
-    _isDragManagedInternally = false;
     _alternativePercentage = false;
+    _startedDragAtHeight = null;
   }
 
   void onVerticalDragEnd(double v) {
@@ -174,7 +231,8 @@ class NamidaYTMiniplayerState extends State<NamidaYTMiniplayer> with SingleTicke
       animateToState(true);
     } else {
       if (_alternativePercentage) {
-        widget.onAlternativePercentageExecute?.call();
+        final didDragDownwards = _startedDragAtHeight != null && (_startedDragAtHeight! - _dragheight) > 32.0;
+        if (didDragDownwards) widget.onAlternativePercentageExecute?.call();
         animateToState(_wasExpanded);
       } else {
         animateToState(false);
@@ -183,65 +241,100 @@ class NamidaYTMiniplayerState extends State<NamidaYTMiniplayer> with SingleTicke
     _resetValues();
   }
 
+  late final reverseOpacityAnimation = controller.drive(
+    Animatable.fromCallback(
+      (value) {
+        final inversePerc = 1 - percentage;
+        final val = (inversePerc * 8 - 7).clampDouble(0.0, 1.0);
+        if (val > 0.99) return 1.0;
+        if (val < 0.01) return 0.0;
+        return val;
+      },
+    ),
+  );
+  late final dismissPercentageAnimation = controller.drive(
+    Animatable.fromCallback(
+      (value) {
+        final controllerHeight = value * maxHeight;
+        return (controllerHeight / widget.minHeight).clampDouble(0.0, 1.0);
+      },
+    ),
+  );
+  late final percentageAnimation = controller.drive(
+    Animatable.fromCallback((_) => percentage),
+  );
+  late final _heightConstraints = controller.drive(
+    Animatable.fromCallback((_) => BoxConstraints.tightFor(height: controllerHeight)),
+  );
+  late final _bottomLayerConstraints = controller.drive(
+    Animatable.fromCallback((_) => BoxConstraints.tightFor(height: _computeTotalBottomPadding())),
+  );
+  late final _contentPadding = controller.drive(
+    Animatable.fromCallback((_) => EdgeInsets.only(top: _padding.top, bottom: _computeTotalBottomPadding())),
+  );
+
+  double _computeTotalBottomPadding() => _padding.bottom + (widget.bottomMargin * (1.0 - percentage)).clampDouble(0, widget.bottomMargin);
+
+  bool _isHeadingToCollapsed(double _) => _dragheight == widget.minHeight;
+
+  void _onTapWhileCollapsed() => animateToState(true);
+
+  void _onDragUpdate(DragUpdateDetails details) => onVerticalDragUpdate(details.delta.dy);
+
+  void _onDragEnd(DragEndDetails details) {
+    if (_isDragManagedInternally) onVerticalDragEnd(details.velocity.pixelsPerSecond.dy);
+  }
+
   @override
   Widget build(BuildContext context) {
-    final padding = MediaQuery.paddingOf(context);
-    _padding = padding;
-    animateToState(_wasExpanded);
-
+    _padding = MediaQuery.paddingOf(context);
     final maxWidth = context.width;
-    return AnimatedBuilder(
-        animation: controller,
-        builder: (context, _) {
-          final percentage = this.percentage;
-          final totalBottomPadding = _padding.bottom + (widget.bottomMargin * (1.0 - percentage)).clamp(0, widget.bottomMargin);
-          return Stack(
-            alignment: Alignment.bottomCenter,
-            children: [
-              if (widget.displayBottomBGLayer)
-                SizedBox(
-                  height: totalBottomPadding,
-                  width: maxWidth,
-                  child: ColoredBox(color: widget.bgColor),
+    final content = widget.builder(percentageAnimation, reverseOpacityAnimation, maxHeight);
+
+    return RepaintBoundary(
+      child: Stack(
+        alignment: Alignment.bottomCenter,
+        children: [
+          if (widget.displayBottomBGLayer)
+            SizedBox(
+              width: maxWidth,
+              child: ListenableConstrainedBox(
+                constraints: _bottomLayerConstraints,
+                child: ColoredBox(color: widget.bgColor),
+              ),
+            ),
+          ListenablePadding(
+            padding: _contentPadding,
+            child: Align(
+              alignment: Alignment.bottomCenter,
+              child: ValueConditionBuilder(
+                listenable: controller,
+                condition: _isHeadingToCollapsed,
+                builder: (context, isHeadingToCollapsed, child) => GestureDetector(
+                  onTap: isHeadingToCollapsed ? _onTapWhileCollapsed : null,
+                  onVerticalDragUpdate: _onDragUpdate,
+                  onVerticalDragEnd: _onDragEnd,
+                  child: child,
                 ),
-              Padding(
-                padding: EdgeInsets.only(
-                  top: _padding.top,
-                  bottom: totalBottomPadding,
-                ),
-                child: Align(
-                  alignment: Alignment.bottomCenter,
-                  child: GestureDetector(
-                    onTap: _dragheight == widget.minHeight ? () => animateToState(true) : null,
-                    onVerticalDragStart: (details) {
-                      _isDragManagedInternally = !_alternativePercentage;
-                    },
-                    onVerticalDragUpdate: (details) => onVerticalDragUpdate(details.delta.dy),
-                    // onVerticalDragCancel: () => !_isDragManagedInternally ? null : animateToState(_wasExpanded),
-                    onVerticalDragEnd: (details) {
-                      if (_isDragManagedInternally) onVerticalDragEnd(details.velocity.pixelsPerSecond.dy);
-                      _isDragManagedInternally = !_alternativePercentage;
-                    },
-                    child: Material(
-                      clipBehavior: Clip.hardEdge,
-                      type: MaterialType.transparency,
-                      child: NamidaOpacity(
-                        enabled: controllerHeight < widget.minHeight,
-                        opacity: dismissPercentage,
-                        child: SizedBox(
-                          height: controllerHeight,
-                          child: ColoredBox(
-                            color: widget.bgColor,
-                            child: widget.builder(controllerHeight, percentage),
-                          ),
-                        ),
+                child: Material(
+                  clipBehavior: Clip.hardEdge,
+                  type: MaterialType.transparency,
+                  child: FadeTransition(
+                    opacity: dismissPercentageAnimation,
+                    child: ListenableConstrainedBox(
+                      constraints: _heightConstraints,
+                      child: ColoredBox(
+                        color: widget.bgColor,
+                        child: content,
                       ),
                     ),
                   ),
                 ),
               ),
-            ],
-          );
-        });
+            ),
+          ),
+        ],
+      ),
+    );
   }
 }

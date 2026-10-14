@@ -1,11 +1,12 @@
 import 'package:namida/class/track.dart';
-import 'package:namida/core/constants.dart';
+import 'package:namida/class/video.dart';
 import 'package:namida/core/enums.dart';
 import 'package:namida/core/extensions.dart';
-import 'package:namida/core/functions.dart';
 
 class Queue {
-  final QueueSource source;
+  String getKey() => date.toString();
+
+  final QueueSourceBase source;
   final HomePageItems? homePageItem;
   final int date;
   final bool isFav;
@@ -19,34 +20,53 @@ class Queue {
     required this.tracks,
   });
 
-  /// Converts empty queue to AllTracksList.
+  /// // Converts empty queue to AllTracksList.
+  /// BREAKING(>v2.5.6): no longer reads empty queue as allTracks.
   factory Queue.fromJson(Map<String, dynamic> json) {
-    final res = (json['tracks'] as List? ?? []).mapped((e) => (e as String).toTrack());
-    final finalTracks = <Track>[];
-    if (res.isEmpty) {
-      finalTracks.addAll(allTracksInLibrary);
-    } else {
-      finalTracks.addAll(res);
-    }
+    final finalTracks =
+        (json['tracks'] as List?)?.map((e) {
+          if (e is Map) {
+            return Track.fromJson(e['t'] as String, isVideo: e['v'] == true);
+          }
+          return Track.fromJson(e as String, isVideo: false);
+        }).toList() ??
+        [];
+    return Queue.fromMeta(json, finalTracks);
+  }
+
+  factory Queue.fromMeta(Map<String, dynamic> json, List<Track> tracks) {
     return Queue(
-      source: QueueSource.values.getEnum(json['source'] ?? '') ?? QueueSource.others,
+      source: QueueSource.fromJson(json['source']) ?? QueueSourceYoutubeID.fromJson(json['source']) ?? QueueSource.others(null),
       homePageItem: HomePageItems.values.getEnum(json['homePageItem'] ?? ''),
       date: json['date'] ?? DateTime(1970),
       isFav: json['isFav'] ?? false,
-      tracks: finalTracks,
+      tracks: tracks,
     );
   }
 
-  /// Saves an empty queue in case its the same as the AllTracksList.
-  /// this should lower startup time and increase performance.
-  Map<String, dynamic> toJson() {
-    final finalTracks = checkIfQueueSameAsAllTracks(tracks) ? <Track>[] : tracks;
+  Map<String, dynamic> metaToJson() {
     return {
-      'source': source.convertToString,
-      'homePageItem': homePageItem?.convertToString,
+      'source': source.toJson(),
+      'homePageItem': homePageItem?.name,
       'date': date,
       'isFav': isFav,
-      'tracks': finalTracks.mapped((e) => e.path),
+    };
+  }
+
+  /// // Saves an empty queue in case its the same as the AllTracksList.
+  /// // this should lower startup time and increase performance.
+  /// BREAKING(>v2.5.6): no longer saving allTracks as empty queue.
+  Map<String, dynamic> toJson() {
+    return {
+      ...metaToJson(),
+      'tracks': tracks.map((e) {
+        return e is Video
+            ? {
+                't': e.toJson(),
+                'v': true,
+              }
+            : e.toJson();
+      }).toFixedList(),
     };
   }
 

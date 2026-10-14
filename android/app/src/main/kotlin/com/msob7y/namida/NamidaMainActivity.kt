@@ -1,0 +1,862 @@
+package com.msob7y.namida
+
+import android.Manifest
+import android.app.PictureInPictureParams
+import android.content.ActivityNotFoundException
+import android.content.ComponentName
+import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.content.res.Configuration
+import android.media.RingtoneManager
+import android.media.audiofx.AudioEffect
+import android.net.wifi.WifiManager
+import android.net.Uri
+import android.os.Build
+import android.os.Bundle
+import android.provider.Settings
+import android.util.Rational
+import android.widget.Toast
+import androidx.annotation.NonNull
+import androidx.annotation.RequiresApi
+import androidx.core.app.ActivityCompat
+import androidx.lifecycle.Lifecycle
+import com.ryanheise.audioservice.AudioServicePlugin
+import io.flutter.embedding.android.FlutterActivity
+import io.flutter.embedding.engine.FlutterEngine
+import io.flutter.plugin.common.MethodChannel
+import io.flutter.util.ViewUtils
+import io.flutter.Log;
+import java.io.File
+import java.util.concurrent.CompletableFuture
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+
+class NamidaMainActivity : FlutterActivity() {
+  companion object {
+    var currentLifecycle: Lifecycle? = null
+    var currentApplicationContext : Context? = null
+  }
+
+
+  private val CHANNELNAME = "namida"
+  private val CHANNELNAME_STORAGE = "namida/storage"
+  private val EVENTCHANNELNAME = "namida_events"
+  private lateinit var channel: MethodChannel
+  private lateinit var channelStorage: MethodChannel
+  private lateinit var context: Context
+  private var toast: Toast? = null
+  private var multicastLock: WifiManager.MulticastLock? = null
+
+  private val storageUtilsCompleter = CompletableFuture<StorageUtils>()
+  private val storageUtils: StorageUtils
+    get() {
+      return storageUtilsCompleter.get()
+    }
+
+  private val safUtils by lazy { SafUtils(context) }
+  private var pendingSafAccessResult: MethodChannel.Result? = null
+  private var pendingSafAccessPath: String? = null
+  private var pendingSafTreeResult: MethodChannel.Result? = null
+
+  override fun configureFlutterEngine(@NonNull flutterEngine: FlutterEngine) {
+    super.configureFlutterEngine(flutterEngine)
+
+    // -- the engine comes from audio_service without an activity, so flutter never reported the display size (dart sees -1 x -1)
+    ViewUtils.calculateMaximumDisplayMetrics(this, flutterEngine)
+
+    currentLifecycle = lifecycle
+
+    try {
+      flutterEngine.plugins.add(FAudioTagger());
+    } catch (e: Exception) {
+      Log.e("NamidaMainActivity", "Error registering plugin FAudioTagger, com.msob7y.namida.FAudioTagger", e);
+    }
+
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+      pipBuilder = PictureInPictureParams.Builder()
+    }
+
+    
+    registerNamidaChannels(flutterEngine)
+  }
+
+  /// opens the share chooser as a separate task, otherwise the new app could open replacing namida
+  private fun shareFilesExternally(paths: List<String>): Boolean {
+    if (paths.isEmpty()) return false
+    try {
+      val authority = "$packageName.fileprovider"
+      val uris = ArrayList<Uri>(paths.size)
+      var shareDir: File? = null
+      for (path in paths) {
+        val source = File(path)
+        val uri =
+            try {
+              // -- served in place, no copy
+              androidx.core.content.FileProvider.getUriForFile(this, authority, source)
+            } catch (_: IllegalArgumentException) {
+              // -- outside every configured root (ex. another volume), fall back to a copy
+              val dir = shareDir ?: File(cacheDir, "share_plus").also { it.mkdirs(); shareDir = it }
+              val target = File(dir, source.name)
+              source.copyTo(target, overwrite = true)
+              androidx.core.content.FileProvider.getUriForFile(this, authority, target)
+            }
+        uris.add(uri)
+      }
+      val mime = android.webkit.MimeTypeMap.getSingleton().getMimeTypeFromExtension(File(paths[0]).extension.lowercase()) ?: "*/*"
+      val intent = Intent().apply {
+        if (uris.size == 1) {
+          action = Intent.ACTION_SEND
+          putExtra(Intent.EXTRA_STREAM, uris[0])
+        } else {
+          action = Intent.ACTION_SEND_MULTIPLE
+          putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris)
+        }
+        type = mime
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+      }
+      val chooser = Intent.createChooser(intent, null).apply {
+        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+      }
+      startActivity(chooser)
+      return true
+    } catch (e: Exception) {
+      return false
+    }
+  }
+
+  private fun registerNamidaChannels(@NonNull flutterEngine: FlutterEngine) {
+    val messenger = flutterEngine.dartExecutor.binaryMessenger
+    channel = MethodChannel(messenger, CHANNELNAME)
+
+    channel.setMethodCallHandler { call, result ->
+      when (call.method) {
+        "sdk" -> result.success(Build.VERSION.SDK_INT)
+        "consumeExitReports" -> {
+          CoroutineScope(Dispatchers.IO).launch {
+            val reports = try {
+              ProcessExitReporter.consume(context)
+            } catch (_: Exception) {
+              emptyList()
+            }
+            withContext(Dispatchers.Main) { result.success(reports) }
+          }
+        }
+        "sendBroadcast" -> {
+          val action = call.argument<String>("action")
+          val extras = call.argument<Map<String, Any?>>("extras")
+          if (action == null) {
+            result.success(false)
+          } else {
+            val intent = Intent(action)
+            intent.addFlags(Intent.FLAG_INCLUDE_STOPPED_PACKAGES)
+            extras?.forEach { (key, value) ->
+              when (value) {
+                is String -> intent.putExtra(key, value)
+                is Boolean -> intent.putExtra(key, value)
+                is Int -> intent.putExtra(key, value)
+                is Long -> intent.putExtra(key, value)
+                is Double -> intent.putExtra(key, value)
+              }
+            }
+            sendBroadcast(intent)
+            result.success(true)
+          }
+        }
+        "sendSuperLyric" -> {
+          val sent = SuperLyricPublisher.send(
+            title = call.argument<String>("title"),
+            artist = call.argument<String>("artist"),
+            album = call.argument<String>("album"),
+            text = call.argument<String>("text"),
+            startMS = call.argument<Number>("startMS")?.toLong() ?: 0L,
+            endMS = call.argument<Number>("endMS")?.toLong() ?: 0L,
+          )
+          result.success(sent)
+        }
+        "releaseSuperLyric" -> {
+          SuperLyricPublisher.release()
+          result.success(null)
+        }
+        "setMulticastLock" -> {
+          val enabled = call.argument<Boolean>("enabled") ?: false
+          try {
+            if (enabled) {
+              if (multicastLock == null) {
+                val wifi = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+                multicastLock = wifi.createMulticastLock("namida_sync").apply { setReferenceCounted(false) }
+              }
+              multicastLock?.acquire()
+            } else {
+              multicastLock?.let { if (it.isHeld) it.release() }
+            }
+            result.success(true)
+          } catch (e: Exception) {
+            result.error("MULTICAST_LOCK", e.message, null)
+          }
+        }
+        "setUsbDacHandlerEnabled" -> {
+          val enabled = call.argument<Boolean>("enabled") ?: false
+          val state = if (enabled) PackageManager.COMPONENT_ENABLED_STATE_ENABLED else PackageManager.COMPONENT_ENABLED_STATE_DISABLED
+          packageManager.setComponentEnabledSetting(
+            ComponentName(this, "com.msob7y.namida.UsbDacHandler"),
+            state,
+            PackageManager.DONT_KILL_APP,
+          )
+          result.success(null)
+        }
+        "showToast" -> {
+          try {
+            val durInSeconds = call.argument<Number?>("seconds")
+            val duration = durInSeconds?.toInt() ?: 1
+            val text = call.argument<String?>("text")
+            showToast(text, duration)
+            result.success(true)
+          } catch (e: Exception) {
+            result.error("NAMIDA TOAST", "Error showing toast", e)
+            println(e)
+          }
+        }
+
+        "consumeSelfSentMediaCommand" -> {
+          result.success(NamidaConstants.selfSentMediaCommand)
+          NamidaConstants.selfSentMediaCommand = false
+        }
+
+        "cancelToast" -> {
+          cancelToast()
+          result.success(true)
+        }
+
+        "setCanEnterPip" -> {
+          val canEnter = call.argument<Boolean?>("canEnter")
+          if (canEnter != null) canEnterPip = canEnter
+          result.success(null)
+        }
+
+        "updatePipRatio" -> {
+          if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && isInPip()) {
+            updatePipRatio(call.argument<Int?>("width"), call.argument<Int?>("height"))
+            result.success(true)
+          } else {
+            result.success(false)
+          }
+        }
+
+        "setMusicAs" -> {
+          val path = call.argument<String?>("path")
+          val types = call.argument<List<Int>?>("types")
+          if (path != null && types != null) {
+            result.success(setMusicAs(path, types, true))
+          } else {
+            result.success(false)
+          }
+        }
+
+        "setMonoAudio" -> {
+          // -- not really supported, open accessibility instead
+          try {
+            val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
+              addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+              val args = Bundle().apply { putString("preference_key", "mono_audio") }
+              putExtra(":settings:show_fragment_args", args)
+              putExtra(":settings:fragment_args_key", "mono_audio")
+            }
+            startActivity(intent)
+            result.success(true)
+          } catch (e: Exception) {
+            result.success(false)
+          }
+        }
+
+        "openEqualizer" -> {
+          result.success(openSystemEqualizer(call.argument<Int?>("sessionId"), call.argument<String?>("package")))
+        }
+
+        "shareFiles" -> {
+          val paths = call.argument<List<String>>("paths") ?: emptyList()
+          result.success(shareFilesExternally(paths))
+        }
+
+        "openHomeWidgetSettings" -> {
+          try {
+            startActivity(
+              Intent(this, com.msob7y.namida.glance.SchwarzConfigActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+              }
+            )
+            result.success(true)
+          } catch (_: Exception) {
+            result.success(false)
+          }
+        }
+
+        "openNamidaSync" -> {
+          val backupPath = call.argument<String>("backupPath")
+          val musicFolders = call.argument<String>("musicFolders")
+          try {
+              val intent = Intent()
+              intent.setClassName("com.sanskar.namidasync", "com.sanskar.namidasync.MainActivity")
+              intent.action = Intent.ACTION_MAIN
+              intent.putExtra("backupPath", backupPath)
+              intent.putExtra("musicFolders", musicFolders)
+              intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+              startActivity(intent)
+              result.success(true)
+          } catch (e: Exception) {
+              result.error("LAUNCH_FAILED", "Could not launch Namida Sync: ${e.message}", null)
+          }
+        }
+
+				// SPLASH_AUTO_GENERATED START
+        "changeAppIcon" -> {
+          val key = call.argument<String>("key")
+          val nativeIcon = when (key) {
+            "namida" -> LauncherIcon.DEFAULT
+            "cutsie" -> LauncherIcon.CUTSIE
+            "jellyda" -> LauncherIcon.JELLYDA
+            "eddy" -> LauncherIcon.EDDY
+            "namichin" -> LauncherIcon.NAMICHIN
+            "space" -> LauncherIcon.SPACE
+            "retro" -> LauncherIcon.RETRO
+            "ookami" -> LauncherIcon.OOKAMI
+            "original" -> LauncherIcon.ORIGINAL
+            "enhanced" -> LauncherIcon.ENHANCED
+            "hollow" -> LauncherIcon.HOLLOW
+            "pastel" -> LauncherIcon.PASTEL
+            "monet" -> LauncherIcon.MONET
+            "glowy" -> LauncherIcon.GLOWY
+            "spooky" -> LauncherIcon.SPOOKY
+            "namiween" -> LauncherIcon.NAMIWEEN
+            "tired" -> LauncherIcon.TIRED
+            else -> null
+          }
+
+          if (nativeIcon != null) {
+              LauncherIconController.setIcon(nativeIcon)
+              result.success(true)
+          } else {
+              result.error("INVALID_ICON", "No matching icon for key: $key", null)
+          }
+        }
+        "isAppIconEnabled" -> {
+          val key = call.argument<String>("key")
+          val nativeIcon = when (key) {
+            "namida" -> LauncherIcon.DEFAULT
+            "cutsie" -> LauncherIcon.CUTSIE
+            "jellyda" -> LauncherIcon.JELLYDA
+            "eddy" -> LauncherIcon.EDDY
+            "namichin" -> LauncherIcon.NAMICHIN
+            "space" -> LauncherIcon.SPACE
+            "retro" -> LauncherIcon.RETRO
+            "ookami" -> LauncherIcon.OOKAMI
+            "original" -> LauncherIcon.ORIGINAL
+            "enhanced" -> LauncherIcon.ENHANCED
+            "hollow" -> LauncherIcon.HOLLOW
+            "pastel" -> LauncherIcon.PASTEL
+            "monet" -> LauncherIcon.MONET
+            "glowy" -> LauncherIcon.GLOWY
+            "spooky" -> LauncherIcon.SPOOKY
+            "namiween" -> LauncherIcon.NAMIWEEN
+            "tired" -> LauncherIcon.TIRED
+            else -> null
+          }
+
+          if (nativeIcon != null) {
+              val enabled = LauncherIconController.isEnabled(nativeIcon)
+              result.success(enabled)
+          } else {
+              result.error("INVALID_ICON", "No matching icon for key: $key", null)
+          }
+        }
+        // SPLASH_AUTO_GENERATED END
+
+        else -> result.notImplemented()
+      }
+    }
+
+    channelStorage = MethodChannel(messenger, CHANNELNAME_STORAGE)
+    channelStorage.setMethodCallHandler { call, result ->
+      when (call.method) {
+        "getStorageDirs" -> {
+          storageUtils.fillStoragePaths()
+          result.success(storageUtils.storagePaths)
+        }
+
+        "getStorageDirsData" -> {
+          result.success(storageUtils.getStorageDirsData())
+        }
+
+        "getStorageDirsCache" -> {
+          result.success(storageUtils.getStorageDirsCache())
+        }
+
+        "getRealPath" -> {
+          val contentUri = call.argument<String?>("contentUri")
+          val realPath = storageUtils.contentUriToPath(Uri.parse(contentUri))
+          result.success(realPath)
+        }
+
+        "pickFile" -> {
+          checkStorageReadPermission()
+          val note = call.argument("note") as String?
+          if (note != null && note != "") showToast(note, 3)
+          val multiple = call.argument<Boolean?>("multiple") ?: false
+          val allowedExtensions = call.argument("allowedExtensions") as List<String>?
+          val type = call.argument("type") as String?
+          val initialDirectory = call.argument("initialDirectory") as String?
+          val error =
+            FileSysPicker.pickFile(
+              result,
+              activity,
+              NamidaRequestCodes.REQUEST_CODE_FILES_PICKER,
+              multiple,
+              allowedExtensions,
+              type,
+              initialDirectory
+            )
+          if (error != null) showToast(error, 3)
+        }
+
+        "pickDirectory" -> {
+          checkStorageReadPermission()
+          val note = call.argument("note") as String?
+          val initialDirectory = call.argument("initialDirectory") as String?
+          if (note != null && note != "") showToast(note, 3)
+          val error =
+            FileSysPicker.pickDirectory(
+              result,
+              activity,
+              NamidaRequestCodes.REQUEST_CODE_FILES_PICKER,
+              initialDirectory,
+            )
+          if (error != null) showToast(error, 3)
+        }
+
+        "safHasAccess" -> {
+          val path = call.argument<String?>("path")
+          result.success(path != null && safUtils.findDocumentUri(path) != null)
+        }
+
+        "safRequestAccess" -> {
+          val path = call.argument<String?>("path")
+          if (path == null || pendingSafAccessResult != null) {
+            result.success(false)
+          } else {
+            val note = call.argument<String?>("note")
+            if (note != null && note != "") showToast(note, 5)
+            pendingSafAccessResult = result
+            pendingSafAccessPath = path
+            try {
+              startActivityForResult(
+                safUtils.buildPickerIntent(path),
+                NamidaRequestCodes.REQUEST_CODE_SAF_ACCESS_PICKER
+              )
+            } catch (e: Exception) {
+              pendingSafAccessResult = null
+              pendingSafAccessPath = null
+              showToast(e.message, 3)
+              result.success(false)
+            }
+          }
+        }
+
+        "safCopyFile" -> {
+          val source = call.argument<String?>("source")
+          val dest = call.argument<String?>("dest")
+          if (source == null || dest == null) {
+            result.success("source or dest parameters aren't provided")
+          } else {
+            CoroutineScope(Dispatchers.IO).launch {
+              val error = safUtils.copyFileToDocument(source, dest)
+              withContext(Dispatchers.Main) { result.success(error) }
+            }
+          }
+        }
+
+        "safPickTree" -> {
+          if (pendingSafTreeResult != null) {
+            result.success(null)
+          } else {
+            val note = call.argument<String?>("note")
+            if (note != null && note != "") showToast(note, 5)
+            pendingSafTreeResult = result
+            try {
+              startActivityForResult(
+                safUtils.buildTreePickerIntent(),
+                NamidaRequestCodes.REQUEST_CODE_SAF_TREE_PICKER
+              )
+            } catch (e: Exception) {
+              pendingSafTreeResult = null
+              showToast(e.message, 3)
+              result.success(null)
+            }
+          }
+        }
+
+        "safTreeHasAccess" -> {
+          val treeUri = call.argument<String?>("treeUri")
+          result.success(treeUri != null && safUtils.hasTreeAccess(Uri.parse(treeUri)))
+        }
+
+        "safListTree" -> {
+          val treeUri = call.argument<String?>("treeUri")
+          if (treeUri == null) {
+            result.success(null)
+          } else {
+            CoroutineScope(Dispatchers.IO).launch {
+              val listing = safUtils.listTree(Uri.parse(treeUri))
+              withContext(Dispatchers.Main) { result.success(listing) }
+            }
+          }
+        }
+
+        "safCopyDocument" -> {
+          val documentUri = call.argument<String?>("documentUri")
+          val dest = call.argument<String?>("dest")
+          if (documentUri == null || dest == null) {
+            result.success("documentUri or dest parameters aren't provided")
+          } else {
+            CoroutineScope(Dispatchers.IO).launch {
+              val error = safUtils.copyDocumentToFile(Uri.parse(documentUri), dest)
+              withContext(Dispatchers.Main) { result.success(error) }
+            }
+          }
+        }
+
+        else -> result.notImplemented()
+      }
+    }
+
+    pipEventChannel = BetterEventChannel(messenger, EVENTCHANNELNAME)
+  }
+
+  private fun showToast(text: String?, duration: Int) {
+    cancelToast()
+    toast = Toast.makeText(context, text, duration)
+    toast?.show()
+  }
+
+  private fun cancelToast() {
+    toast?.cancel()
+    toast = null
+  }
+
+  override fun provideFlutterEngine(@NonNull context: Context): FlutterEngine {
+    this.context = context
+    try {
+      storageUtilsCompleter.complete(StorageUtils(context))
+    } catch (_: Exception) {
+    }
+    return AudioServicePlugin.getFlutterEngine(context)
+  }
+
+  override fun onUserLeaveHint() {
+    channel.invokeMethod("onUserLeaveHint", null)
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+      try {
+        if (canEnterPip &&
+          com.ryanheise.just_audio.MainMethodCallHandler.willPlayWhenReady() &&
+          com.ryanheise.just_audio.MainMethodCallHandler.hasVideo() &&
+          !isInPip()
+        ) {
+          enterPip()
+        }
+      } catch (_: Exception) {
+        // -- non initialized handler
+      }
+    }
+    super.onUserLeaveHint()
+  }
+
+  override fun onCreate(savedInstanceState: Bundle?) {
+    try {
+      currentApplicationContext = getApplicationContext();
+    } catch (e: Exception) {
+    }
+    ProcessExitReporter.installJavaCrashRecorder(applicationContext)
+
+    super.onCreate(savedInstanceState)
+    if (intent?.action == NamidaConstants.BABE_WAKE_UP) {
+      moveTaskToBack(true)
+    }
+    DisplayRefreshRate.applyMax(this)
+    LauncherIconController.tryFixLauncherIconIfNeeded();
+  }
+
+  override fun onWindowFocusChanged(hasFocus: Boolean) {
+    // -- some roms reset the window attributes while the app is in the background
+    if (hasFocus) DisplayRefreshRate.applyMax(this)
+    super.onWindowFocusChanged(hasFocus)
+  }
+
+  override fun onResume() {
+    channel.invokeMethod("onResume", null)
+    if (FileSysPicker.pendingPickerResult != null) {
+      FileSysPicker.finishWithSuccess(mutableListOf())
+    }
+    if (pendingSafAccessResult != null) {
+      // -- onActivityResult is normally called before onResume, just for safety
+      pendingSafAccessResult?.success(false)
+      pendingSafAccessResult = null
+      pendingSafAccessPath = null
+    }
+    super.onResume()
+  }
+
+  override fun onPostResume() {
+    channel.invokeMethod("onPostResume", null)
+    super.onPostResume()
+  }
+
+  override fun onStop() {
+    channel.invokeMethod("onStop", null)
+    super.onStop()
+  }
+
+  override fun onDestroy() {
+    channel.invokeMethod("onDestroy", null)
+    pipEventChannel?.endOfStream()
+    super.onDestroy()
+  }
+
+  override fun onNewIntent(@NonNull intent: Intent) {
+    channel.invokeMethod("onNewIntent", null)
+    super.onNewIntent(intent)
+  }
+
+  // ------- PIP -------
+
+  private var canEnterPip: Boolean = false
+  private var pipEventChannel: BetterEventChannel? = null
+  private var pipBuilder: PictureInPictureParams.Builder? = null
+
+  public fun isInPip(): Boolean {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+      return isInPictureInPictureMode
+    }
+    return false
+  }
+
+  override public fun onPictureInPictureModeChanged(
+    isInPictureInPictureMode: Boolean,
+    newConfig: Configuration
+  ) {
+    pipEventChannel?.success(isInPictureInPictureMode)
+  }
+
+  @RequiresApi(api = Build.VERSION_CODES.O)
+  private fun enterPip() {
+    val rational =
+      com.ryanheise.just_audio.MainMethodCallHandler.getVideoRational() ?: Rational(1, 1)
+    val pipB = pipBuilder
+    if (pipB != null) {
+      pipB.setAspectRatio(rational)
+      activity.enterPictureInPictureMode(pipB.build())
+    }
+  }
+
+  @RequiresApi(api = Build.VERSION_CODES.O)
+  private fun updatePipRatio(width: Int?, height: Int?) {
+    if (width == null || height == null) return
+    val pipB = pipBuilder
+    if (pipB == null) return
+    pipB.setAspectRatio(Rational(width, height))
+    activity.setPictureInPictureParams(pipB.build())
+  }
+
+  // ------- RINGTONE -------
+
+  private var SET_AS_LATEST_FILE_PATH: String? = null
+  private var SET_AS_LATEST_TYPES: List<Int>? = null
+
+  private fun setMusicAs(path: String, types: List<Int>, requestPermission: Boolean): Boolean {
+    val hasPermission = checkSystemWritePermission(path, types, requestPermission)
+    if (!hasPermission) return false
+
+    val successNames = ArrayList<String>()
+    for (type in types) {
+      val res = RingtoneController().setAsRingtoneOrNotification(context, File(path), type)
+      if (res != null) {
+        showToast("error setting: ${res.message}", 3)
+      } else {
+
+        val typeName =
+          when (type) {
+            RingtoneManager.TYPE_RINGTONE -> "ringtone"
+            RingtoneManager.TYPE_NOTIFICATION -> "notification"
+            RingtoneManager.TYPE_ALARM -> "alarm"
+            else -> ""
+          }
+        successNames.add(typeName)
+      }
+    }
+
+    if (successNames.size == types.size) {
+      val names = successNames.joinToString(separator = ", ")
+      showToast("successfully set as: ${names}", 3)
+      return true
+    } else {
+      return false
+    }
+  }
+
+  private fun checkSystemWritePermission(
+    path: String,
+    types: List<Int>,
+    requestPermission: Boolean
+  ): Boolean {
+    var hasPermission: Boolean = true
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+      hasPermission = Settings.System.canWrite(this)
+      if (hasPermission) {
+        SET_AS_LATEST_FILE_PATH = null
+        SET_AS_LATEST_TYPES = null
+      } else if (requestPermission) {
+        SET_AS_LATEST_FILE_PATH = path
+        SET_AS_LATEST_TYPES = types
+        showToast("please allow modifying system settings permission", 3)
+        openAndroidPermissionsMenu()
+      }
+    }
+    return hasPermission
+  }
+
+  private fun openAndroidPermissionsMenu() {
+    val intent = Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS)
+    intent.data = Uri.parse("package:" + packageName)
+    startActivityForResult(intent, NamidaRequestCodes.REQUEST_CODE_WRITE_SETTINGS)
+  }
+
+  override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+    super.onActivityResult(requestCode, resultCode, data)
+
+    if (requestCode == NamidaRequestCodes.REQUEST_CODE_WRITE_SETTINGS) {
+      if (Settings.System.canWrite(this)) {
+        if (SET_AS_LATEST_FILE_PATH != null && SET_AS_LATEST_TYPES != null) {
+          setMusicAs(SET_AS_LATEST_FILE_PATH!!, SET_AS_LATEST_TYPES!!, false)
+        }
+      } else {
+        showToast("Couldn't set, permission wasn't granted", 3)
+      }
+      SET_AS_LATEST_FILE_PATH = null
+      SET_AS_LATEST_TYPES = null
+    } else if (requestCode == NamidaRequestCodes.REQUEST_CODE_FILES_PICKER) {
+      if (resultCode == RESULT_OK) {
+        FileSysPicker.onPickerResult(data, storageUtils)
+      } else if (resultCode == RESULT_CANCELED) {
+        FileSysPicker.finishWithSuccess(mutableListOf())
+      }
+    } else if (requestCode == NamidaRequestCodes.REQUEST_CODE_SAF_ACCESS_PICKER) {
+      val pendingResult = pendingSafAccessResult
+      val requestedPath = pendingSafAccessPath
+      pendingSafAccessResult = null
+      pendingSafAccessPath = null
+      var granted = false
+      if (resultCode == RESULT_OK) {
+        val uri = data?.data
+        if (uri != null) {
+          try {
+            safUtils.persistPermission(uri)
+            // -- the user might have picked a folder that doesn't contain the requested path
+            granted = requestedPath != null && safUtils.findDocumentUri(requestedPath) != null
+          } catch (e: Exception) {
+            showToast(e.message, 3)
+          }
+        }
+      }
+      pendingResult?.success(granted)
+    } else if (requestCode == NamidaRequestCodes.REQUEST_CODE_SAF_TREE_PICKER) {
+      val pendingResult = pendingSafTreeResult
+      pendingSafTreeResult = null
+      var treeUri: String? = null
+      if (resultCode == RESULT_OK) {
+        val uri = data?.data
+        if (uri != null) {
+          try {
+            safUtils.persistReadPermission(uri)
+            treeUri = uri.toString()
+          } catch (e: Exception) {
+            showToast(e.message, 3)
+          }
+        }
+      }
+      pendingResult?.success(treeUri)
+    }
+  }
+
+  // ------- EQUALIZER -------
+
+  private fun openSystemEqualizer(sessionId: Int?, customPackage: String? = null): Boolean {
+    if (customPackage != null && customPackage.isNotEmpty() && tryOpenCustomEq(sessionId, customPackage)) return true
+    return tryOpenDefaultEq(sessionId)
+  }
+
+  private fun tryOpenCustomEq(sessionId: Int?, pkg: String): Boolean {
+    val intent = context.packageManager.getLaunchIntentForPackage(pkg)
+    if (intent == null) {
+      showToast("\"${pkg}\" was not found", 3)
+      return false
+    }
+    intent.putExtra(AudioEffect.EXTRA_AUDIO_SESSION, sessionId)
+    intent.putExtra(AudioEffect.EXTRA_CONTENT_TYPE, AudioEffect.CONTENT_TYPE_MUSIC)
+    return try {
+      activity.startActivityForResult(intent, NamidaRequestCodes.REQUEST_CODE_OPEN_EQ)
+      true
+    } catch (_: ActivityNotFoundException) {
+      showToast("\"${pkg}\" was not found", 3)
+      false
+    } catch (e: Exception) {
+      showToast(e.message, 3)
+      false
+    }
+  }
+
+  private fun tryOpenDefaultEq(sessionId: Int?): Boolean {
+    val intent = Intent(AudioEffect.ACTION_DISPLAY_AUDIO_EFFECT_CONTROL_PANEL).apply {
+      putExtra(AudioEffect.EXTRA_PACKAGE_NAME, context.packageName)
+      putExtra(AudioEffect.EXTRA_AUDIO_SESSION, sessionId)
+      putExtra(AudioEffect.EXTRA_CONTENT_TYPE, AudioEffect.CONTENT_TYPE_MUSIC)
+      flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_MULTIPLE_TASK
+    }
+    return try {
+      activity.startActivityForResult(intent, NamidaRequestCodes.REQUEST_CODE_OPEN_EQ)
+      true
+    } catch (_: ActivityNotFoundException) {
+      showToast("No Built-in Equalizer was found", 3)
+      false
+    } catch (e: Exception) {
+      showToast(e.message, 3)
+      false
+    }
+  }
+
+  fun checkStorageReadPermission() {
+    if (Build.VERSION.SDK_INT < 33) {
+      val granted =
+        ActivityCompat.checkSelfPermission(activity, Manifest.permission.READ_EXTERNAL_STORAGE) ==
+            PackageManager.PERMISSION_GRANTED
+      if (!granted) {
+        ActivityCompat.requestPermissions(
+          activity,
+          arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE),
+          NamidaRequestCodes.REQUEST_CODE_STORAGE_READ_PERMISSION
+        )
+      }
+    }
+  }
+}
+
+class NamidaRequestCodes {
+  companion object {
+    val REQUEST_CODE_OPEN_EQ = 47
+    val REQUEST_CODE_WRITE_SETTINGS = 9696
+    val REQUEST_CODE_FILES_PICKER = 911
+    val REQUEST_CODE_SAF_ACCESS_PICKER = 913
+    val REQUEST_CODE_SAF_TREE_PICKER = 914
+    val REQUEST_CODE_STORAGE_READ_PERMISSION = 899
+  }
+}

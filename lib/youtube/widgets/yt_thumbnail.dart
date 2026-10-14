@@ -1,76 +1,101 @@
 import 'dart:async';
 import 'dart:io';
-import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:get/get.dart';
 
 import 'package:namida/base/loading_items_delay.dart';
 import 'package:namida/class/color_m.dart';
+import 'package:namida/controller/connectivity.dart';
 import 'package:namida/controller/current_color.dart';
 import 'package:namida/controller/settings_controller.dart';
 import 'package:namida/controller/thumbnail_manager.dart';
 import 'package:namida/core/constants.dart';
 import 'package:namida/core/extensions.dart';
 import 'package:namida/core/icon_fonts/broken_icons.dart';
+import 'package:namida/core/utils.dart';
 import 'package:namida/ui/widgets/artwork.dart';
 import 'package:namida/ui/widgets/custom_widgets.dart';
-import 'package:namida/youtube/controller/youtube_controller.dart';
+import 'package:namida/youtube/controller/youtube_info_controller.dart';
+
+enum ThumbnailType {
+  video(Broken.video),
+  playlist(Broken.music_library_2),
+  channel(Broken.user),
+  comment(Broken.document),
+  other(null)
+  ;
+
+  final IconData? icon;
+  const ThumbnailType(this.icon);
+}
 
 class YoutubeThumbnail extends StatefulWidget {
-  final String? channelUrl;
   final String? videoId;
+  final String? customUrl;
+  final String? urlSymLinkId;
   final double? height;
   final double width;
   final double borderRadius;
   final bool isCircle;
   final EdgeInsetsGeometry? margin;
+  final void Function()? onImageFetchStart;
   final void Function(File? imageFile)? onImageReady;
   final void Function(NamidaColor? color)? onColorReady;
-  final List<Widget> onTopWidgets;
+  final List<Widget> Function(NamidaColor? color)? onTopWidgets;
   final String? smallBoxText;
   final IconData? smallBoxIcon;
   final bool displayFallbackIcon;
-  final String? localImagePath;
   final bool extractColor;
   final double blur;
+  final ValueListenable<double>? glowOpacity;
   final bool compressed;
   final bool isImportantInCache;
   final bool preferLowerRes;
-  final String channelIDForHQImage;
-  final bool hqChannelImage;
-  final bool isPlaylist;
+  final ThumbnailType type;
   final double? iconSize;
   final List<BoxShadow>? boxShadow;
   final bool forceSquared;
+  final bool? fetchMissingIfRequired;
+  final BoxFit fit;
+  final AlignmentGeometry alignment;
+  final int fadeMilliSeconds;
+  final bool disableBlurBgSizeShrink;
+  final bool allowFloating;
 
   const YoutubeThumbnail({
     required super.key,
-    this.channelUrl,
     this.videoId,
+    this.customUrl,
+    this.urlSymLinkId,
     this.height,
     required this.width,
     this.borderRadius = 12.0,
     this.isCircle = false,
     this.margin,
+    this.onImageFetchStart,
     this.onImageReady,
     this.onColorReady,
-    this.onTopWidgets = const <Widget>[],
+    this.onTopWidgets,
     this.smallBoxText,
     this.smallBoxIcon,
     this.displayFallbackIcon = true,
-    this.localImagePath,
     this.extractColor = false,
-    this.blur = 1.5,
+    this.blur = 5.0,
+    this.glowOpacity,
     this.compressed = true,
     required this.isImportantInCache,
     this.preferLowerRes = true,
-    this.channelIDForHQImage = '',
-    this.hqChannelImage = false,
-    this.isPlaylist = false,
+    required this.type,
     this.iconSize,
     this.boxShadow,
     this.forceSquared = true,
+    this.fetchMissingIfRequired,
+    this.fit = BoxFit.cover,
+    this.alignment = Alignment.center,
+    this.fadeMilliSeconds = 200,
+    this.disableBlurBgSizeShrink = false,
+    this.allowFloating = false,
   });
 
   @override
@@ -78,196 +103,277 @@ class YoutubeThumbnail extends StatefulWidget {
 }
 
 class _YoutubeThumbnailState extends State<YoutubeThumbnail> with LoadingItemsDelayMixin {
-  String? imagePath;
+  static const _maxRetries = 3;
+
+  String? imagePath = ArtworkWidget.kImagePathInitialValue;
   NamidaColor? imageColors;
   Color? smallBoxDynamicColor;
 
-  bool get canFetchYTImage => widget.videoId != null || widget.channelUrl != null;
-  bool get canFetchImage => widget.localImagePath != null || canFetchYTImage;
+  Timer? _retryTimer;
+  int _retryCount = 0;
+  bool _waitingForConnection = false;
 
-  Timer? _dontTouchMeImFetchingThumbnail;
-
-  Uint8List? imageBytes;
+  bool? requestedThumbnailTemp;
+  bool? requestedThumbnailNonTemp;
 
   @override
   void initState() {
     super.initState();
-    _getThumbnail();
+    if (!_applyCachedSync(notify: false)) _fetchThumbnail();
+  }
+
+  String? get _normalizedVideoId {
+    final videoId = widget.videoId;
+    return videoId == null || videoId.isEmpty ? null : videoId;
+  }
+
+  /// a cached thumbnail has to be known before the first frame, otherwise the fallback icon shows.
+  bool _applyCachedSync({required bool notify}) {
+    final cached = _cachedFileSync();
+    if (cached == null) return false;
+    if (notify) {
+      refreshState(() => imagePath = cached.path);
+    } else {
+      imagePath = cached.path;
+    }
+    widget.onImageReady?.call(cached);
+    _extractColors();
+    return true;
+  }
+
+  File? _cachedFileSync() {
+    final manager = ThumbnailManager.inst;
+    final videoId = _normalizedVideoId;
+    final file = manager.getYoutubeThumbnailFromCacheSync(
+      id: videoId,
+      customUrl: widget.customUrl,
+      isTemp: false,
+      type: widget.type,
+    );
+    if (file != null) return file;
+    if (!widget.isImportantInCache || widget.preferLowerRes) {
+      return manager.getYoutubeThumbnailFromCacheSync(
+        id: videoId,
+        customUrl: widget.customUrl,
+        isTemp: true,
+        type: widget.type,
+      );
+    }
+    return null;
   }
 
   @override
   void dispose() {
-    final allLinks = [widget.channelUrl];
-    if (widget.videoId != null) allLinks.addAll(YTThumbnail(widget.videoId!).allQualitiesByHighest);
-    ThumbnailManager.inst.closeThumbnailClients(allLinks);
-    _dontTouchMeImFetchingThumbnail?.cancel();
-    _dontTouchMeImFetchingThumbnail = null;
+    _retryTimer?.cancel();
+    _retryTimer = null;
+    _unregisterConnectionListener();
+    if (widget.videoId?.isNotEmpty == true) {
+      if (requestedThumbnailTemp == true) ThumbnailManager.inst.closeThumbnailClients(widget.videoId!, true);
+      if (requestedThumbnailNonTemp == true) ThumbnailManager.inst.closeThumbnailClients(widget.videoId!, false);
+    }
+    if (widget.customUrl != null) {
+      if (requestedThumbnailTemp == true) ThumbnailManager.inst.closeThumbnailClients(widget.customUrl!, true);
+      if (requestedThumbnailNonTemp == true) ThumbnailManager.inst.closeThumbnailClients(widget.customUrl!, false);
+    }
     super.dispose();
   }
 
-  Future<void> _getThumbnail() async {
-    if (_dontTouchMeImFetchingThumbnail?.isActive == true) return;
-    if (imagePath != null && imageColors != null) return;
-    _dontTouchMeImFetchingThumbnail = null;
-    _dontTouchMeImFetchingThumbnail = Timer(const Duration(seconds: 8), () {});
+  Future<void> _fetchThumbnail() async {
+    final videoId = _normalizedVideoId;
 
-    imagePath = widget.localImagePath;
+    File? res;
+    widget.onImageFetchStart?.call();
 
-    if (imagePath == null) {
-      final fetchHQChImg = widget.channelIDForHQImage != '';
-      final finalChAvatarUrl = fetchHQChImg ? widget.channelIDForHQImage : widget.channelUrl;
-
-      File? res = ThumbnailManager.inst.getYoutubeThumbnailFromCacheSync(
-        id: widget.videoId,
-        channelUrl: finalChAvatarUrl,
+    await Future.delayed(Duration.zero);
+    if (!await canStartLoadingItems()) return;
+    if (videoId != null) {
+      // -- for video:
+      // --- isImportantInCache -> fetch to file
+      // --- !isImportantInCache -> fetch lowres temp file only
+      if (widget.isImportantInCache && !widget.preferLowerRes) {
+        requestedThumbnailNonTemp = true;
+        res = await ThumbnailManager.inst.getYoutubeThumbnailAndCache(
+          id: videoId,
+          isImportantInCache: true,
+          type: widget.type,
+        );
+      } else {
+        res = await ThumbnailManager.inst.getLowResYoutubeVideoThumbnail(videoId);
+      }
+    } else {
+      // for channels/playlists -> default
+      widget.isImportantInCache ? requestedThumbnailNonTemp = true : requestedThumbnailTemp = true;
+      res = await ThumbnailManager.inst.getYoutubeThumbnailAndCache(
+        customUrl: widget.customUrl,
+        symlinkId: widget.urlSymLinkId,
+        isImportantInCache: widget.isImportantInCache,
+        type: widget.type,
       );
-      imagePath = res?.path;
-
-      if (res == null) {
-        await Future.delayed(Duration.zero);
-        if (!await canStartLoadingItems()) return;
-        if (widget.videoId != null) {
-          // -- for video:
-          // --- isImportantInCache -> fetch to file
-          // --- !isImportantInCache -> fetch lowres bytes only
-          if (widget.isImportantInCache) {
-            res = await ThumbnailManager.inst.getYoutubeThumbnailAndCache(
-              id: widget.videoId,
-              channelUrlOrID: finalChAvatarUrl,
-              hqChannelImage: fetchHQChImg,
-              isImportantInCache: true,
-              bytesIfWontWriteToFile: (bytes) {
-                if (mounted) setState(() => imageBytes = bytes);
-              },
-            );
-          } else {
-            final lowerRes = await ThumbnailManager.inst.getYoutubeThumbnailAsBytes(
-              youtubeId: widget.videoId,
-              lowerResYTID: true,
-              keepInMemory: true,
-            );
-            if (lowerRes != null && lowerRes.isNotEmpty) {
-              if (mounted) setState(() => imageBytes = lowerRes);
-            }
-          }
-        } else {
-          // for channels/playlists -> default
-          res = await ThumbnailManager.inst.getYoutubeThumbnailAndCache(
-            id: widget.videoId,
-            channelUrlOrID: finalChAvatarUrl,
-            hqChannelImage: fetchHQChImg,
-            isImportantInCache: widget.isImportantInCache,
-            bytesIfWontWriteToFile: (bytes) {
-              if (mounted) setState(() => imageBytes = bytes);
-            },
-          );
-        }
-      }
-
-      widget.onImageReady?.call(res);
-
-      // -- only put the image if bytes are NOT valid, or if specified by parent
-      if (imagePath == null && (!widget.preferLowerRes || (imageBytes?.isEmpty ?? true))) {
-        if (mounted) setState(() => imagePath = res?.path);
-      }
     }
 
-    if (imageColors == null && widget.extractColor && imagePath != null) {
-      final c = await CurrentColor.inst.extractPaletteFromImage(
-        imagePath!,
-        useIsolate: true,
-        paletteSaveDirectory: Directory(AppDirs.YT_PALETTES),
-      );
-      imageColors = c ?? NamidaColor(used: null, mix: playerStaticColor, palette: [playerStaticColor]);
-      widget.onColorReady?.call(c);
-      if (mounted) setState(() => smallBoxDynamicColor = c?.color);
+    if (res == null && widget.fetchMissingIfRequired == true && videoId != null) {
+      res = await YoutubeInfoController.missingInfo.fetchMissingThumbnail(videoId);
+    }
+
+    if (res == null && mounted) _scheduleRetry(videoId);
+
+    widget.onImageReady?.call(res);
+
+    String? newPath = res?.path;
+    newPath ??= ArtworkWidget.kImagePathInitialValue;
+    if (imagePath != newPath) {
+      refreshState(() => imagePath = newPath);
+    }
+
+    await _extractColors();
+
+    if (imagePath == ArtworkWidget.kImagePathInitialValue && widget.displayFallbackIcon) {
+      if (mounted) setState(() => imagePath = null);
     }
   }
 
-  Key get thumbKey => Key("$smallBoxDynamicColor${widget.videoId}${widget.channelUrl}${widget.channelIDForHQImage}${imageBytes?.length}$imagePath${widget.smallBoxText}");
+  Future<void> _extractColors() async {
+    if (imageColors != null || !widget.extractColor) return;
+    final imagePath = this.imagePath;
+    if (imagePath == null || imagePath == ArtworkWidget.kImagePathInitialValue) return;
+    final c = await CurrentColor.inst.extractPaletteFromImage(
+      imagePath,
+      paletteSaveDirectory: Directory(AppDirs.YT_PALETTES),
+    );
+    imageColors = c ?? NamidaColor.single(playerStaticColor);
+    widget.onColorReady?.call(c);
+    if (mounted) setState(() => smallBoxDynamicColor = c?.color);
+  }
+
+  void _scheduleRetry(String? videoId) {
+    if (_retryCount >= _maxRetries) return;
+    if (videoId != null && ThumbnailManager.inst.isThumbnailNotFound(videoId)) return;
+    if (ConnectivityController.inst.hasConnection) {
+      _retryTimer = Timer(Duration(seconds: 2 << _retryCount), _retry);
+    } else if (!_waitingForConnection) {
+      _waitingForConnection = true;
+      ConnectivityController.inst.registerOnConnectionRestored(_onConnectionRestored);
+    }
+  }
+
+  void _onConnectionRestored() {
+    // -- deferred, the controller is iterating its listeners
+    _retryTimer?.cancel();
+    _retryTimer = Timer(Duration.zero, _retry);
+  }
+
+  void _retry() {
+    _retryTimer = null;
+    _unregisterConnectionListener();
+    if (!mounted) return;
+    _retryCount++;
+    imagePath ??= ArtworkWidget.kImagePathInitialValue;
+    if (!_applyCachedSync(notify: true)) _fetchThumbnail();
+  }
+
+  void _unregisterConnectionListener() {
+    if (!_waitingForConnection) return;
+    _waitingForConnection = false;
+    ConnectivityController.inst.removeOnConnectionRestored(_onConnectionRestored);
+  }
+
+  Key get thumbKey => Key("$smallBoxDynamicColor${widget.videoId}${widget.customUrl}${widget.urlSymLinkId}$imagePath${widget.smallBoxText}");
 
   @override
   Widget build(BuildContext context) {
+    // -- otherwise can appear cropped
+    // -- the image needs to be already squared or has wider width, otherwise will appear contained
+    // -- that's why this check is done only for yt avatar thumbnails since they are usually squared
+    final fit = widget.isCircle ? BoxFit.fitHeight : widget.fit;
     return Padding(
       padding: widget.margin ?? EdgeInsets.zero,
       child: ArtworkWidget(
         key: thumbKey,
-        onError: () {
-          imagePath = null;
-          imageColors = null;
-          smallBoxDynamicColor = null;
-          _getThumbnail();
-        },
         isCircle: widget.isCircle,
         bgcolor: context.theme.cardColor.withAlpha(60),
         compressed: widget.compressed,
-        blur: widget.isCircle ? 0.0 : widget.blur,
+        blur: widget.blur,
+        glowOpacity: widget.glowOpacity,
+        disableBlurBgSizeShrink: widget.disableBlurBgSizeShrink,
         borderRadius: widget.isCircle ? 0.0 : widget.borderRadius,
-        fadeMilliSeconds: 300,
-        bytes: imageBytes,
+        fadeMilliSeconds: widget.fadeMilliSeconds,
         path: imagePath,
         height: widget.height,
         width: widget.width,
         thumbnailSize: widget.width,
         boxShadow: widget.boxShadow,
-        icon: widget.isPlaylist
-            ? Broken.music_library_2
-            : widget.channelUrl != null
-                ? Broken.user
-                : Broken.video,
-        iconSize: widget.iconSize ?? (widget.channelUrl != null ? null : widget.width * 0.3),
+        icon: widget.type.icon ?? Broken.musicnote,
+        iconSize: widget.iconSize ?? widget.width * 0.3,
         forceSquared: widget.forceSquared,
         // cacheHeight: (widget.height?.round() ?? widget.width.round()) ~/ 1.2,
         onTopWidgets: [
-          ...widget.onTopWidgets,
+          ...?widget.onTopWidgets?.call(imageColors),
           if (widget.smallBoxText != null || widget.smallBoxIcon != null)
             Positioned(
               bottom: 0.0,
               right: 0.0,
-              child: Container(
-                clipBehavior: Clip.hardEdge,
-                margin: const EdgeInsets.all(2.0),
-                padding: const EdgeInsets.symmetric(horizontal: 3.0, vertical: 1.0),
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(5.0.multipliedRadius),
-                  color: Colors.black.withOpacity(0.3),
-                ),
-                child: NamidaBgBlur(
-                  blur: 2.0,
-                  enabled: settings.enableBlurEffect.value,
-                  child: widget.smallBoxIcon != null
-                      ? Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(
-                              widget.smallBoxIcon,
-                              size: 15.0,
-                              color: Colors.white.withOpacity(0.8),
-                            ),
-                            if (widget.smallBoxText != null) ...[
-                              const SizedBox(width: 2.0),
-                              Text(
-                                widget.smallBoxText!,
-                                style: context.textTheme.displaySmall?.copyWith(
-                                  color: Colors.white.withOpacity(0.8),
-                                  fontWeight: FontWeight.w600,
-                                ),
-                              ),
-                            ],
-                          ],
-                        )
-                      : Text(
-                          widget.smallBoxText!,
-                          style: context.textTheme.displaySmall?.copyWith(
-                            color: Colors.white.withOpacity(0.8),
-                            fontWeight: FontWeight.w500,
-                          ),
-                        ),
-                ),
+              child: YtThumbnailOverlayBox(
+                text: widget.smallBoxText,
+                icon: widget.smallBoxIcon,
               ),
-            )
+            ),
         ],
-        displayIcon: widget.displayFallbackIcon,
+        displayIcon: true,
+        fit: fit,
+        alignment: widget.alignment,
+        extractInternally: false,
+        allowFloating: widget.allowFloating,
+      ),
+    );
+  }
+}
+
+class YtThumbnailOverlayBox extends StatelessWidget {
+  final String? text;
+  final IconData? icon;
+
+  const YtThumbnailOverlayBox({
+    super.key,
+    required this.text,
+    required this.icon,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final textTheme = context.textTheme;
+    return Padding(
+      padding: const EdgeInsets.all(2.0),
+      child: NamidaBgBlurClipped(
+        blur: 2.0,
+        enabled: settings.enableBlurEffect.value,
+        clipBehavior: Clip.hardEdge,
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(5.0.multipliedRadius),
+          color: Colors.black.withOpacityExt(0.3),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 3.0, vertical: 1.0),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (icon != null)
+                Icon(
+                  icon,
+                  size: 13.0,
+                  color: Colors.white.withOpacityExt(0.8),
+                ),
+              if (text != null && icon != null) const SizedBox(width: 2.0),
+              if (text != null)
+                Text(
+                  text!,
+                  style: textTheme.displaySmall?.copyWith(
+                    color: Colors.white.withOpacityExt(0.8),
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+            ],
+          ),
+        ),
       ),
     );
   }

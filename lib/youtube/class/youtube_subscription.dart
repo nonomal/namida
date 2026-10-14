@@ -2,12 +2,14 @@ class YoutubeSubscription {
   final String title;
   final String channelID;
   final bool? subscribed;
+  final List<String> groups;
   DateTime? lastFetched;
 
   YoutubeSubscription({
     String? title,
     required this.channelID,
     required this.subscribed,
+    this.groups = const [],
     this.lastFetched,
   }) : title = title ?? '';
 
@@ -16,6 +18,7 @@ class YoutubeSubscription {
       title: json['title'] ?? '',
       channelID: json['channelID'] ?? '',
       subscribed: json['subscribed'],
+      groups: (json['groups'] as List?)?.cast<String>() ?? [],
       lastFetched: DateTime.fromMillisecondsSinceEpoch(json['lastFetched'] ?? 0),
     );
   }
@@ -25,20 +28,22 @@ class YoutubeSubscription {
       "title": title,
       "channelID": channelID,
       "subscribed": subscribed,
+      "groups": groups,
       "lastFetched": lastFetched?.millisecondsSinceEpoch,
     };
   }
 
   @override
-  bool operator ==(other) {
-    if (other is YoutubeSubscription) {
-      return title == other.title && channelID == other.channelID && subscribed == other.subscribed && lastFetched == other.lastFetched;
-    }
-    return false;
+  bool operator ==(Object other) {
+    if (identical(this, other)) return true;
+    if (other is! YoutubeSubscription) return false;
+    return other.title == title && other.channelID == channelID && other.subscribed == subscribed && other.lastFetched == lastFetched;
   }
 
   @override
-  int get hashCode => "${title}_${channelID}_${subscribed}_$lastFetched".hashCode;
+  int get hashCode {
+    return title.hashCode ^ channelID.hashCode ^ subscribed.hashCode ^ lastFetched.hashCode;
+  }
 
   @override
   String toString() => "YoutubeSubscription(title: $title, channelID: $channelID, subscribed: $subscribed, lastFetched: $lastFetched)";

@@ -1,41 +1,178 @@
-import 'package:flutter/material.dart';
+import 'dart:io';
 
-import 'package:get/get.dart';
+import 'package:flutter/material.dart';
 
 import 'package:namida/class/folder.dart';
 import 'package:namida/class/track.dart';
+import 'package:namida/controller/directory_index.dart';
+import 'package:namida/controller/folders_controller.dart';
+import 'package:namida/controller/indexer_controller.dart';
 import 'package:namida/controller/settings_controller.dart';
 import 'package:namida/core/dimensions.dart';
 import 'package:namida/core/extensions.dart';
-import 'package:namida/core/functions.dart';
 import 'package:namida/core/icon_fonts/broken_icons.dart';
+import 'package:namida/core/utils.dart';
 import 'package:namida/ui/dialogs/common_dialogs.dart';
 import 'package:namida/ui/widgets/artwork.dart';
 import 'package:namida/ui/widgets/custom_widgets.dart';
 
-class FolderTile extends StatelessWidget {
+class FolderTile extends StatefulWidget {
   final Folder folder;
-  final List<Track>? dummyTracks;
+  final Folder? highlightedFolder;
+  final FoldersController controller;
+  final List<Track> tracks;
+  final bool isTracksRecursive;
+  final bool isHome;
+  final int dirInsideCount;
+  final String? title;
   final String? subtitle;
 
   const FolderTile({
     super.key,
     required this.folder,
-    this.dummyTracks,
+    required this.highlightedFolder,
+    required this.controller,
+    required this.tracks,
+    required this.isTracksRecursive,
+    required this.isHome,
+    required this.dirInsideCount,
+    this.title,
     this.subtitle,
   });
 
   @override
+  State<FolderTile> createState() => _FolderTileState();
+}
+
+class _FolderTileState extends State<FolderTile> {
+  void _showFolderDialog({bool? preferRecursive}) {
+    bool isRecursive = widget.isTracksRecursive;
+    List<Track> tracks = this.widget.tracks;
+    if (preferRecursive == false && widget.isTracksRecursive) {
+      final newDirectTracks = widget.controller.folderToTracks(widget.folder) ?? [];
+      if (newDirectTracks.isNotEmpty) {
+        isRecursive = false;
+        tracks = newDirectTracks;
+      }
+    } else if (preferRecursive == true && !widget.isTracksRecursive) {
+      final newRecursiveTracks = widget.controller.getNodeTracks(widget.folder, recursive: true);
+      if (newRecursiveTracks.isNotEmpty) {
+        isRecursive = true;
+        tracks = newRecursiveTracks;
+      }
+    }
+    NamidaDialogs.inst.showFolderDialog(
+      folder: widget.folder,
+      controller: widget.controller,
+      tracks: tracks,
+      isTracksRecursive: isRecursive,
+    );
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final dirInside = folder.getDirectoriesInside();
-    final tracks = dummyTracks ?? folder.tracks;
+    final theme = context.theme;
+    final textTheme = theme.textTheme;
+    final double iconSize = (settings.trackThumbnailSizeinList.value * 0.85).clampDouble(0, settings.trackListTileHeight.value);
+    final double thumbSize = iconSize * 0.7;
+    final extraInfo = widget.folder.getExtraInfoOrFetch(refreshState);
+
+    String folderTitle = widget.title ?? widget.folder.folderNameRaw;
+    String? subtitle = widget.subtitle;
+    Widget? trailingWidget;
+    if (widget.isHome) {
+      try {
+        if (widget.folder.isNetworkRoot) {
+          final server = DirectoryIndexServer.parseFromEncodedUrlPath(widget.folder.path);
+          folderTitle = server.toSourceInfo();
+          subtitle = server.toTypeAndUserInfo();
+          final assetImagePath = server.type.toAssetImage();
+          trailingWidget = assetImagePath == null
+              ? null
+              : Image.asset(
+                  assetImagePath,
+                  height: 18.0,
+                );
+        } else {
+          if (Platform.isAndroid) {
+            if (folderTitle == 'emulated') {
+              folderTitle = 'Internal Storage';
+            }
+          }
+        }
+      } catch (_) {}
+    }
+
+    final subtitleTextStyle = textTheme.displaySmall?.copyWith(fontSize: 12.0);
+    final subtitleFirstPart = widget.tracks.isEmpty
+        ? null
+        : <Widget>[
+            Icon(
+              Broken.musicnote,
+              size: 12.0,
+            ),
+            SizedBox(width: 4.0),
+            Text(
+              '${widget.tracks.length}',
+              overflow: TextOverflow.ellipsis,
+              softWrap: false,
+              style: subtitleTextStyle,
+            ),
+          ];
+    final subtitleSecondPart = widget.dirInsideCount <= 0
+        ? null
+        : <Widget>[
+            Icon(
+              Broken.folder,
+              size: 12.0,
+            ),
+            SizedBox(width: 4.0),
+            Text(
+              '${widget.dirInsideCount}',
+              overflow: TextOverflow.ellipsis,
+              softWrap: false,
+              style: subtitleTextStyle,
+            ),
+          ];
+    final subtitleRowChildren = <Widget>[
+      ...?subtitleFirstPart,
+      if (subtitleFirstPart != null && subtitleSecondPart != null)
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 4.0),
+          child: Text(
+            '•',
+            overflow: TextOverflow.ellipsis,
+            softWrap: false,
+            style: subtitleTextStyle,
+          ),
+        ),
+      ...?subtitleSecondPart,
+    ];
+
+    final thumbnailCoverPath = Indexer.inst.getFallbackFolderArtworkPath(folder: widget.folder);
+
+    final shouldHighlight = widget.folder == widget.highlightedFolder;
+    final bgColor = shouldHighlight ? Color.alphaBlend(theme.focusColor.withOpacityExt(0.25), theme.cardColor) : theme.cardColor;
+    final border = shouldHighlight
+        ? Border(
+            left: BorderSide(
+              color: theme.colorScheme.secondary.withOpacityExt(0.5),
+              width: 2.0,
+            ),
+          )
+        : null;
+
     return Padding(
       padding: const EdgeInsets.only(bottom: Dimensions.tileBottomMargin, right: Dimensions.tileBottomMargin, left: Dimensions.tileBottomMargin),
       child: NamidaInkWell(
-        bgColor: context.theme.cardColor,
+        decoration: BoxDecoration(
+          color: bgColor,
+          border: border,
+        ),
         borderRadius: 10.0,
-        onTap: () => NamidaOnTaps.inst.onFolderTap(folder),
-        onLongPress: () => NamidaDialogs.inst.showFolderDialog(folder: folder, tracks: tracks),
+        onTap: () => widget.controller.stepIn(widget.folder),
+        onLongPress: _showFolderDialog,
+        enableSecondaryTap: true,
         child: Padding(
           padding: const EdgeInsets.symmetric(vertical: Dimensions.tileVerticalPadding),
           child: Row(
@@ -51,21 +188,33 @@ class FolderTile extends StatelessWidget {
                       children: [
                         Icon(
                           Broken.folder,
-                          size: (settings.trackThumbnailSizeinList.value / 1.35).clamp(0, settings.trackListTileHeight.value),
+                          size: iconSize,
                         ),
                         Positioned(
-                          child: Padding(
-                            padding: const EdgeInsets.only(top: 8.0),
-                            child: ArtworkWidget(
-                              key: ValueKey(tracks.firstOrNull),
-                              track: tracks.firstOrNull,
-                              blur: 0,
-                              borderRadius: 6,
-                              thumbnailSize: (settings.trackThumbnailSizeinList.value / 2.6).clamp(0, settings.trackListTileHeight.value * 0.5),
-                              path: tracks.firstOrNull?.pathToImage,
-                              forceSquared: true,
-                            ),
-                          ),
+                          child: thumbnailCoverPath != null
+                              ? ArtworkWidget(
+                                  key: ValueKey(thumbnailCoverPath),
+                                  track: widget.tracks.firstOrNull, // fallback
+                                  blur: 3.0,
+                                  borderRadius: 6.0,
+                                  thumbnailSize: thumbSize,
+                                  path: thumbnailCoverPath,
+                                  forceSquared: true,
+                                )
+                              : widget.tracks.isEmpty && widget.dirInsideCount > 0
+                              ? Icon(
+                                  Broken.folder_open,
+                                  size: thumbSize * 0.75,
+                                )
+                              : ArtworkWidget(
+                                  key: ValueKey(widget.tracks.firstOrNull),
+                                  track: widget.tracks.firstOrNull,
+                                  blur: 3.0,
+                                  borderRadius: 6.0,
+                                  thumbnailSize: thumbSize,
+                                  path: widget.tracks.firstOrNull?.pathToImage,
+                                  forceSquared: true,
+                                ),
                         ),
                       ],
                     ),
@@ -78,35 +227,53 @@ class FolderTile extends StatelessWidget {
                   mainAxisAlignment: MainAxisAlignment.center,
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      folder.folderName,
-                      style: context.textTheme.displayMedium!,
-                    ),
+                    extraInfo != null && extraInfo.isNotEmpty
+                        ? Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text(
+                                folderTitle,
+                                style: textTheme.displayMedium,
+                              ),
+                              Text(
+                                ' - ($extraInfo)',
+                                style: textTheme.displaySmall,
+                              ),
+                            ],
+                          )
+                        : Text(
+                            folderTitle,
+                            style: textTheme.displayMedium,
+                          ),
                     if (subtitle != null)
                       Text(
-                        subtitle!,
+                        subtitle,
                         overflow: TextOverflow.ellipsis,
                         maxLines: 1,
-                        style: context.textTheme.displaySmall!,
+                        style: textTheme.displaySmall,
                       ),
-                    Text(
-                      [
-                        tracks.displayTrackKeyword,
-                        if (dirInside.isNotEmpty) dirInside.length.displayFolderKeyword,
-                      ].join(' - '),
-                      overflow: TextOverflow.ellipsis,
-                      maxLines: 1,
-                      style: context.textTheme.displaySmall!,
-                    ),
+                    if (subtitleRowChildren.isNotEmpty) ...[
+                      SizedBox(height: 4.0),
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.center,
+                        mainAxisSize: MainAxisSize.min,
+                        children: subtitleRowChildren,
+                      ),
+                    ],
                   ],
                 ),
               ),
+              if (trailingWidget != null) ...[
+                const SizedBox(width: 2.0),
+                trailingWidget,
+              ],
               const SizedBox(
                 width: 2.0,
               ),
               MoreIcon(
                 padding: 6.0,
-                onPressed: () => NamidaDialogs.inst.showFolderDialog(folder: folder, tracks: tracks),
+                onPressed: () => _showFolderDialog(preferRecursive: false),
+                onLongPress: () => _showFolderDialog(),
               ),
               const SizedBox(
                 width: 4.0,

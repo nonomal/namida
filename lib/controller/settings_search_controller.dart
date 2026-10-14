@@ -1,12 +1,14 @@
 import 'package:flutter/material.dart';
-import 'package:get/get.dart';
 
 import 'package:namida/base/setting_subpage_provider.dart';
+import 'package:namida/class/route.dart';
 import 'package:namida/controller/navigator_controller.dart';
+import 'package:namida/core/constants.dart';
 import 'package:namida/core/enums.dart';
 import 'package:namida/core/extensions.dart';
 import 'package:namida/core/icon_fonts/broken_icons.dart';
 import 'package:namida/core/translations/language.dart';
+import 'package:namida/core/utils.dart';
 import 'package:namida/ui/pages/settings_page.dart';
 import 'package:namida/ui/widgets/settings/advanced_settings.dart';
 import 'package:namida/ui/widgets/settings/backup_restore_settings.dart';
@@ -18,83 +20,90 @@ import 'package:namida/ui/widgets/settings/theme_settings.dart';
 import 'package:namida/ui/widgets/settings/youtube_settings.dart';
 
 extension _SettSearcherUtils on SettingSubpageEnum {
-  CustomCollapsedListTile? toSettingSubPageDetails({Enum? initialItem}) {
+  CustomCollapsedListTile? toSettingSubPageDetails({SettingEntry? initialItem}) {
     switch (this) {
       case SettingSubpageEnum.theme:
         return CustomCollapsedListTile(
-          title: lang.THEME_SETTINGS,
-          subtitle: lang.THEME_SETTINGS_SUBTITLE,
+          title: () => lang.themeSettings,
+          subtitle: lang.themeSettingsSubtitle,
           icon: Broken.brush_2,
-          page: ThemeSetting(initialItem: initialItem),
+          page: () => ThemeSetting(initialItem: initialItem),
         );
       case SettingSubpageEnum.indexer:
         return CustomCollapsedListTile(
-          title: lang.INDEXER,
-          subtitle: lang.INDEXER_SUBTITLE,
+          title: () => lang.indexer,
+          subtitle: lang.indexerSubtitle,
           icon: Broken.component,
-          page: IndexerSettings(initialItem: initialItem),
+          page: () => IndexerSettings(initialItem: initialItem),
         );
 
       case SettingSubpageEnum.playback:
         return CustomCollapsedListTile(
-          title: lang.PLAYBACK_SETTING,
-          subtitle: lang.PLAYBACK_SETTING_SUBTITLE,
+          title: () => lang.playbackSetting,
+          subtitle: lang.playbackSettingSubtitle,
           icon: Broken.play_cricle,
-          page: PlaybackSettings(initialItem: initialItem),
+          page: () => PlaybackSettings(initialItem: initialItem),
         );
       case SettingSubpageEnum.customization:
         return CustomCollapsedListTile(
-          title: lang.CUSTOMIZATIONS,
-          subtitle: lang.CUSTOMIZATIONS_SUBTITLE,
+          title: () => lang.customizations,
+          subtitle: lang.customizationsSubtitle,
           icon: Broken.brush_1,
-          page: CustomizationSettings(initialItem: initialItem),
+          page: () => CustomizationSettings(initialItem: initialItem),
         );
 
       case SettingSubpageEnum.youtube:
         return CustomCollapsedListTile(
-          title: lang.YOUTUBE,
-          subtitle: lang.YOUTUBE_SETTINGS_SUBTITLE,
+          title: () => lang.youtube,
+          subtitle: lang.youtubeSettingsSubtitle,
           icon: Broken.video,
-          page: YoutubeSettings(initialItem: initialItem),
+          page: () => YoutubeSettings(initialItem: initialItem),
         );
 
       case SettingSubpageEnum.extra:
         return CustomCollapsedListTile(
-          title: lang.EXTRAS,
-          subtitle: lang.EXTRAS_SUBTITLE,
+          title: () => lang.extras,
+          subtitle: lang.extrasSubtitle,
           icon: Broken.command_square,
-          page: ExtrasSettings(initialItem: initialItem),
+          page: () => ExtrasSettings(initialItem: initialItem),
         );
       case SettingSubpageEnum.backupRestore:
         return CustomCollapsedListTile(
-          title: lang.BACKUP_AND_RESTORE,
-          subtitle: lang.BACKUP_AND_RESTORE_SUBTITLE,
+          title: () => lang.backupAndRestore,
+          subtitle: lang.backupAndRestoreSubtitle,
           icon: Broken.refresh_circle,
-          page: BackupAndRestore(initialItem: initialItem),
+          page: () => BackupAndRestore(initialItem: initialItem),
         );
 
       case SettingSubpageEnum.advanced:
         return CustomCollapsedListTile(
-          title: lang.ADVANCED_SETTINGS,
-          subtitle: lang.ADVANCED_SETTINGS_SUBTITLE,
+          title: () => lang.advancedSettings,
+          subtitle: lang.advancedSettingsSubtitle,
           icon: Broken.hierarchy_3,
-          page: AdvancedSettings(initialItem: initialItem),
+          page: () => AdvancedSettings(initialItem: initialItem),
         );
-      default:
-        return null;
     }
   }
 }
 
 class SettingSearchResultItem {
   final SettingSubpageEnum? page;
-  final Enum key;
+  final SettingEntry key;
   final List<String> titles;
+  final int matchedTitleIndex;
+
+  final List<String> parentTitles;
+
+  /// its own, or the nearest parent's.
+  final NamidaFeaturesAvailablityBase? availability;
 
   const SettingSearchResultItem({
     required this.page,
     required this.key,
     required this.titles,
+    required this.matchedTitleIndex,
+    required this.parentTitles,
+    required this.availability,
   });
 }
 
@@ -102,82 +111,147 @@ class SettingsSearchController {
   static final SettingsSearchController inst = SettingsSearchController._internal();
   SettingsSearchController._internal();
 
-  final _map = <SettingSubpageEnum, Map<int, GlobalKey>>{};
-  var _allWidgets = <(SettingSubpageProvider, Map<Enum, List<String>>)>[];
+  final _targetKeys = <SettingEntry, GlobalKey>{};
+
+  GlobalKey getTargetKey(SettingEntry key) => _targetKeys[key] ??= GlobalKey();
+
+  final _searchIndex = <_SettingSearchIndexItem>[];
   final searchResults = <SettingSubpageEnum, List<SettingSearchResultItem>>{}.obs;
   final subpagesDetails = <SettingSubpageEnum, CustomCollapsedListTile?>{};
 
-  bool get canShowSearch => _canShowSearch.value;
+  RxBaseCore<bool> get canShowSearch => _canShowSearch;
   final _canShowSearch = false.obs;
 
-  void closeSearch() {
-    _allWidgets.clear();
-    searchResults.clear();
-    _canShowSearch.value = false;
-  }
+  RxBaseCore<bool> get isModifiedOnly => _isModifiedOnly;
+  final _isModifiedOnly = false.obs;
 
-  GlobalKey getSettingWidgetGlobalKey(SettingSubpageEnum settingPage, Enum key) {
-    final keyIndex = key.index;
-    final c = SettingsSearchController.inst;
-    final r = settingPage;
-    c._map[r] ??= {};
-    c._map[r]![keyIndex] ??= GlobalKey();
-    return c._map[r]![keyIndex]!;
+  RxBaseCore<int> get modifiedCount => _modifiedCount;
+  final _modifiedCount = 0.obs;
+
+  String _query = '';
+
+  void closeSearch() {
+    _searchIndex.clear();
+    subpagesDetails.clear();
+    searchResults.clear();
+    _query = '';
+    _isModifiedOnly.value = false;
+    _canShowSearch.value = false;
   }
 
   void onSearchTap({required bool isOpen}) {
     if (isOpen) {
-      const theme = ThemeSetting();
-      const indexer = IndexerSettings();
-      const playback = PlaybackSettings();
-      const customization = CustomizationSettings();
-      const youtube = YoutubeSettings();
-      const extras = ExtrasSettings();
-      const backupAndRestore = BackupAndRestore();
-      const advanced = AdvancedSettings();
-      _allWidgets = [
-        (theme, theme.lookupMap),
-        (indexer, indexer.lookupMap),
-        (playback, playback.lookupMap),
-        (customization, customization.lookupMap),
-        (youtube, youtube.lookupMap),
-        (extras, extras.lookupMap),
-        (backupAndRestore, backupAndRestore.lookupMap),
-        (advanced, advanced.lookupMap),
+      _searchIndex.clear();
+      final settingsWidgets = [
+        ThemeSetting(),
+        IndexerSettings(),
+        PlaybackSettings(),
+        CustomizationSettings(),
+        YoutubeSettings(),
+        ExtrasSettings(),
+        BackupAndRestore(),
+        AdvancedSettings(),
       ];
-      for (final p in _allWidgets) {
-        subpagesDetails[p.$1.settingPage] = p.$1.settingPage.toSettingSubPageDetails();
+      for (final p in settingsWidgets) {
+        subpagesDetails[p.settingPage] = p.settingPage.toSettingSubPageDetails();
+        final page = p.settingPage;
+        _addEntriesToIndex(page, p.headerEntries, const [], null);
+        for (final section in p.sections) {
+          _addEntriesToIndex(page, section, const [], null);
+        }
       }
+      _refreshModifiedCount();
       _canShowSearch.value = true;
     } else {
       closeSearch();
     }
   }
 
+  void _addToIndex(SettingSubpageEnum page, SettingEntry key, List<String> titles, List<String> parentTitles, NamidaFeaturesAvailablityBase? availability) {
+    _searchIndex.add((
+      page: page,
+      key: key,
+      titles: titles,
+      titlesCleaned: titles.map((title) => title.cleanUpForComparison).toFixedList(),
+      parentTitles: parentTitles,
+      availability: availability,
+    ));
+  }
+
+  void _addEntriesToIndex(SettingSubpageEnum page, List<SettingEntry> entries, List<String> parentTitles, NamidaFeaturesAvailablityBase? parentAvailability) {
+    for (final entry in entries) {
+      final isVisible = entry.visibleWhen?.call();
+      if (isVisible == false) continue;
+      final titles = entry.getSearchTitles();
+      final availability = entry.availability ?? parentAvailability;
+      _addToIndex(page, entry, titles, parentTitles, availability);
+      final children = entry.children;
+      if (children.isEmpty) continue;
+      final childrenParentTitles = [...parentTitles, titles.first];
+      _addEntriesToIndex(page, children, childrenParentTitles, availability);
+    }
+  }
+
   void onSearchChanged(String val) {
+    _query = val;
+    _refreshResults();
+  }
+
+  void toggleModifiedOnly() {
+    _isModifiedOnly.value = !_isModifiedOnly.value;
+    _refreshResults();
+  }
+
+  void toggle(SettingToggle entry) {
+    entry.toggle();
+    _refreshModifiedCount();
+  }
+
+  void resetToDefault(SettingEntry entry) {
+    entry.resetToDefault();
+    _refreshModifiedCount();
+    _refreshResults();
+  }
+
+  void _refreshModifiedCount() {
+    _modifiedCount.value = _searchIndex.where((item) => item.key.isModified()).length;
+  }
+
+  void _refreshResults() {
+    final isModifiedOnly = _isModifiedOnly.value;
+    final query = _query;
     final res = <SettingSubpageEnum, List<SettingSearchResultItem>>{};
-    _allWidgets.loop((widget, index) {
-      for (final e in widget.$2.entries) {
-        final match = e.value.any((element) => element.cleanUpForComparison.contains(val.cleanUpForComparison));
-        if (match) {
-          final p = widget.$1.settingPage;
+    if (query.isEmpty && !isModifiedOnly) {
+      searchResults.value = res;
+      return;
+    }
+    final valCleaned = query.cleanUpForComparison;
+    for (final entry in _searchIndex) {
+      if (isModifiedOnly && !entry.key.isModified()) continue;
+      final titlesCleaned = entry.titlesCleaned;
+      for (int i = 0; i < titlesCleaned.length; i++) {
+        if (titlesCleaned[i].contains(valCleaned)) {
           res.addForce(
-            p,
+            entry.page,
             SettingSearchResultItem(
-              page: p,
-              key: e.key,
-              titles: e.value,
+              page: entry.page,
+              key: entry.key,
+              titles: entry.titles,
+              matchedTitleIndex: i,
+              parentTitles: entry.parentTitles,
+              availability: entry.availability,
             ),
           );
+          break;
         }
       }
-    });
+    }
     searchResults.value = res;
   }
 
   Future<void> onResultTap({
     required SettingSubpageEnum? settingPage,
-    required Enum key,
+    required SettingEntry key,
     required BuildContext context,
   }) async {
     onSearchTap(isOpen: false);
@@ -191,16 +265,23 @@ class SettingsSearchController {
       await NamidaNavigator.inst.popPage(waitForAnimation: true);
     }
     if (page != null) {
-      NamidaNavigator.inst.navigateTo(
-        SettingsSubPage(
-          title: details?.title ?? '',
-          child: page,
-        ),
-      );
+      SettingsSubPage(
+        title: () => details?.title() ?? '',
+        child: page(),
+      ).navigate();
     }
     WidgetsBinding.instance.addPostFrameCallback((timeStamp) {
-      final c = _map[settingPage]?[key.index]?.currentContext;
+      final c = _targetKeys[key]?.currentContext;
       if (c != null) Scrollable.ensureVisible(c, alignment: 0.3);
     });
   }
 }
+
+typedef _SettingSearchIndexItem = ({
+  SettingSubpageEnum page,
+  SettingEntry key,
+  List<String> titles,
+  List<String> titlesCleaned,
+  List<String> parentTitles,
+  NamidaFeaturesAvailablityBase? availability,
+});

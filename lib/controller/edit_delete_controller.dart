@@ -1,18 +1,24 @@
 import 'dart:io';
+import 'dart:isolate';
 
+import 'package:namida/class/file_parts.dart';
 import 'package:namida/class/track.dart';
-import 'package:namida/class/video.dart';
+import 'package:namida/controller/audio_cache_controller.dart';
+import 'package:namida/controller/directory_index.dart';
 import 'package:namida/controller/history_controller.dart';
 import 'package:namida/controller/indexer_controller.dart';
+import 'package:namida/controller/lyrics_search_utils/lrc_search_utils_selectable.dart';
+import 'package:namida/controller/music_web_server/music_web_server_base.dart';
+import 'package:namida/controller/platform/tags_extractor/tags_extractor.dart';
 import 'package:namida/controller/player_controller.dart';
 import 'package:namida/controller/playlist_controller.dart';
 import 'package:namida/controller/queue_controller.dart';
 import 'package:namida/controller/selected_tracks_controller.dart';
 import 'package:namida/controller/settings_controller.dart';
-import 'package:namida/controller/tagger_controller.dart';
 import 'package:namida/controller/video_controller.dart';
 import 'package:namida/core/constants.dart';
 import 'package:namida/core/extensions.dart';
+import 'package:namida/core/functions.dart';
 import 'package:namida/main.dart';
 
 class EditDeleteController {
@@ -20,152 +26,227 @@ class EditDeleteController {
   static final EditDeleteController _instance = EditDeleteController._internal();
   EditDeleteController._internal();
 
-  Future<void> deleteCachedVideos(List<Selectable> tracks) async {
-    final videosToDelete = <NamidaVideo>[];
-    tracks.loop((e, index) {
-      videosToDelete.addAll(VideoController.inst.getNVFromID(e.track.youtubeID));
-    });
-    await Indexer.inst.clearVideoCache(videosToDelete);
+  Future<void> deleteTracksFromStoragePermanently(List<Selectable> tracksToDelete) async {
+    if (!await requestManageStoragePermission()) return;
+    final files = tracksToDelete.map((e) => e.track).mapPhysicalOrError((tr) => tr.path);
+    if (files.isEmpty) return;
+    await Isolate.run(() => _deleteAllIsolate(files));
+    await Indexer.inst.removeTracksFromLibrary(tracksToDelete, isFromDelete: true);
+    final deleteLyricsIn = settings.lyricsDeleteWithTrackIn.value;
+    if (deleteLyricsIn.isNotEmpty) {
+      final libraryPaths = Indexer.inst.allTracksMappedByPath.keys.toFixedList();
+      await LrcSearchUtilsSelectable.deleteLyricsOfDeletedTracks(files, libraryPaths, deleteLyricsIn);
+    }
   }
 
-  Future<void> deleteLyrics(List<Selectable> tracks) async {
-    await tracks.loopFuture((track, index) async {
-      await File("${AppDirs.LYRICS}${track.track.filename}.txt").deleteIfExists();
-    });
+  Future<void> deleteCachedVideos(List<Selectable> tracks) async {
+    await tracks.loopConcurrent((e) => VideoController.inst.deleteAllVideosForVideoId(e.track.youtubeID));
+  }
+
+  Future<void> deleteCachedAudios(List<Selectable> tracks) async {
+    await tracks.loopConcurrent((e) => AudioCacheController.inst.deleteAudioCache(e.track.youtubeID));
+  }
+
+  Future<void> deleteTXTLyrics(List<Selectable> tracks) async {
+    await _deleteAll(AppDirs.LYRICS, 'txt', tracks, EditDeleteController._cacheKeyBuilder);
+  }
+
+  Future<void> deleteLRCLyrics(List<Selectable> tracks) async {
+    await _deleteAll(AppDirs.LYRICS, 'lrc', tracks, EditDeleteController._cacheKeyBuilder);
   }
 
   Future<void> deleteArtwork(List<Selectable> tracks) async {
-    await tracks.loopFuture((track, index) async {
-      final file = File(track.track.pathToImage);
-      await Indexer.inst.updateImageSizeInStorage(oldDeletedFile: file);
-      await file.deleteIfExists();
-    });
-
+    final files = tracks.map((e) => e.track.pathToImage).toFixedList();
+    final details = await Isolate.run(() => _deleteAllWithDetailsIsolate(files));
+    Indexer.inst.updateImageSizesInStorage(removedCount: details.deletedCount, removedSize: details.sizeOfDeleted);
     await deleteExtractedColor(tracks);
   }
 
   Future<void> deleteExtractedColor(List<Selectable> tracks) async {
-    await tracks.loopFuture((track, index) async {
-      await File("${AppDirs.PALETTES}${track.track.filename}.palette").deleteIfExists();
-    });
+    await _deleteAll(AppDirs.PALETTES, 'palette', tracks, EditDeleteController._cacheKeyForImageBuilder);
   }
 
-  /// returns save directory path if saved successfully
-  Future<String?> saveArtworkToStorage(Track track) async {
-    if (!await requestManageStoragePermission()) {
+  Future<void> _deleteAll(String dir, String extension, List<Selectable> tracks, String Function(String directory, Selectable e) cacheKeyBuilder) async {
+    final files = tracks.map((e) => FileParts.joinPath(dir, "${cacheKeyBuilder(dir, e)}.$extension")).toFixedList();
+    await Isolate.run(() => _deleteAllIsolate(files));
+  }
+
+  /// returns failed deletes.
+  static int _deleteAllIsolate(List<String> files) {
+    int failed = 0;
+    for (var e in files) {
+      try {
+        File(e).deleteSync();
+      } catch (_) {
+        failed++;
+      }
+    }
+    return failed;
+  }
+
+  /// returns size & count of deleted file.
+  static ({int deletedCount, int sizeOfDeleted}) _deleteAllWithDetailsIsolate(List<String> files) {
+    int deleted = 0;
+    int size = 0;
+    for (var e in files) {
+      final file = File(e);
+      int s = 0;
+      try {
+        s = file.lengthSync();
+      } catch (_) {}
+      try {
+        file.deleteSync();
+        deleted++;
+        size += s;
+      } catch (_) {}
+    }
+    return (deletedCount: deleted, sizeOfDeleted: size);
+  }
+
+  /// returns save file if saved successfully
+  Future<String?> saveTrackArtworkToStorage(Track track) async {
+    final saveDirPath = AppDirs.SAVED_ARTWORKS;
+    if (!await requestManageStoragePermission(directoryToCreate: saveDirPath)) {
       return null;
     }
-    final saveDir = await Directory(AppDirs.SAVED_ARTWORKS).create(recursive: true);
-    final saveDirPath = saveDir.path;
-    final info = await FAudioTaggerController.inst.extractMetadata(
-      trackPath: track.path,
-      cacheDirectoryPath: saveDirPath,
+    final info = await Indexer.inst.getArtwork(
+      compressed: false,
+      imagePath: track.pathToImage,
+      track: track,
     );
-    final imgFile = info.tags.artwork.file;
-    if (imgFile != null) return saveDirPath;
+    final fileToCopy = info.file;
+    final bytesToCopy = info.bytes;
+    if (fileToCopy != null || bytesToCopy != null) {
+      final trExt = track.toTrackExtOrNull();
+      final filename = TagsExtractor.buildImageFilenameFromTrack(
+        track: track,
+        trExt: trExt,
+        parentDirPath: saveDirPath,
+      );
+      final newImgFilePath = FileParts.joinPath(saveDirPath, filename);
+      if (fileToCopy != null) {
+        await fileToCopy.copy(newImgFilePath);
+        return newImgFilePath;
+      } else if (bytesToCopy != null) {
+        final f = File(newImgFilePath);
+        await f.create(recursive: true);
+        await f.writeAsBytes(bytesToCopy);
+        return newImgFilePath;
+      }
+    }
+
     return null;
   }
 
-  /// returns save directory path if saved successfully
+  /// returns save path if saved successfully
   Future<String?> saveImageToStorage(File imageFile) async {
-    if (!await requestManageStoragePermission()) {
+    final saveDirPath = AppDirs.SAVED_ARTWORKS;
+    if (!await requestManageStoragePermission(directoryToCreate: saveDirPath)) {
       return null;
     }
-    final saveDir = await Directory(AppDirs.SAVED_ARTWORKS).create(recursive: true);
-    final saveDirPath = saveDir.path;
-    final newPath = "$saveDirPath${Platform.pathSeparator}${imageFile.path.getFilenameWOExt}.png";
+    final newPath = FileParts.joinPath(saveDirPath, "${imageFile.path.getFilenameWOExt}.png");
     try {
       await imageFile.copy(newPath);
-      return saveDirPath;
+      return newPath;
     } catch (e) {
       printy(e, isError: true);
       return null;
     }
   }
 
-  Future<void> updateTrackPathInEveryPartOfNamidaBulk(Map<String, String> oldNewPath) async {
-    final newtrlist = await Indexer.inst.convertPathToTrack(oldNewPath.values);
-    if (newtrlist.isEmpty) return;
-    final oldNewMap = <Track, Track>{for (final on in oldNewPath.entries) Track(on.key): Track(on.value)};
-
-    // -- Player Queue
-    Player.inst.replaceAllTracksInQueueBulk(oldNewMap); // no need to await
-
-    // -- History
-    final daysToSave = <int>[];
-    final allHistory = HistoryController.inst.historyMap.value.entries.toList();
-
-    final oldNewTrack = oldNewMap;
-    for (final oldNewTrack in oldNewTrack.entries) {
-      allHistory.loop((entry, index) {
-        final day = entry.key;
-        final trs = entry.value;
-        trs.replaceWhere(
-          (e) => e.track == oldNewTrack.key.track,
-          (old) => TrackWithDate(
-            dateAdded: old.dateAdded,
-            track: oldNewTrack.value,
-            source: old.source,
-          ),
-          onMatch: () => daysToSave.add(day),
-        );
-      });
+  Future<void> updateTrackPathInEveryPartOfNamidaBulk<T extends Track>(Map<String, String> oldNewPathPre, {bool removeOldTracksFromLibrary = false}) async {
+    // -- paths should still be remapped even if new ones not found
+    await Indexer.inst.convertPathsToTracksAndAddToLists(oldNewPathPre.values);
+    final oldNewTrack = <T, T>{};
+    for (final on in oldNewPathPre.entries) {
+      final oldTr = Track.orVideo(on.key);
+      final newTr = Track.orVideo(on.value);
+      if (on.key == on.value) continue; // same path why update
+      oldNewTrack[oldTr as T] = newTr as T;
     }
+
     await Future.wait([
-      HistoryController.inst.saveHistoryToStorage(daysToSave).then((value) => HistoryController.inst.updateMostPlayedPlaylist()),
-      QueueController.inst.replaceTrackInAllQueues(oldNewTrack), // -- Queues
-      PlaylistController.inst.replaceTrackInAllPlaylistsBulk(oldNewTrack), // -- Playlists
+      HistoryController.inst.replaceTheseTracksInHistoryBulk(oldNewTrack),
+      PlaylistController.inst.replaceTrackInAllPlaylistsBulk(oldNewTrack),
+      Indexer.inst.moveStatsPath(oldNewTrack),
+      Player.audioConfigs.movePaths(oldNewTrack),
+      QueueController.inst.replaceTrackInAllQueues(oldNewTrack),
+      Player.inst.replaceAllTracksInQueueBulk(oldNewTrack),
     ]);
-    // -- Selected Tracks
-    if (SelectedTracksController.inst.selectedTracks.isNotEmpty) {
+
+    if (SelectedTracksController.inst.selectedTracks.value.isNotEmpty) {
       for (final oldNewTrack in oldNewTrack.entries) {
         SelectedTracksController.inst.replaceThisTrack(oldNewTrack.key, oldNewTrack.value);
       }
     }
+
+    if (removeOldTracksFromLibrary) {
+      await Indexer.inst.removeTracksFromLibrary(oldNewTrack.keys, isFromDelete: false);
+    }
   }
 
   Future<void> updateTrackPathInEveryPartOfNamida(Track oldTrack, String newPath) async {
-    final newtrlist = await Indexer.inst.convertPathToTrack([newPath]);
+    final newtrlist = await Indexer.inst.convertPathsToTracksAndAddToLists([newPath]);
     if (newtrlist.isEmpty) return;
     final newTrack = newtrlist.first;
+    final oldNewMap = {oldTrack: newTrack};
+
     await Future.wait([
-      QueueController.inst.replaceTrackInAllQueues({oldTrack: newTrack}), // Queues
-      Player.inst.replaceAllTracksInQueueBulk({oldTrack: newTrack}), // Player Queue
-      PlaylistController.inst.replaceTrackInAllPlaylists(oldTrack, newTrack), // Playlists & Favourites
-      HistoryController.inst.replaceAllTracksInsideHistory(oldTrack, newTrack), // History
+      HistoryController.inst.replaceAllTracksInsideHistory(oldTrack, newTrack),
+      PlaylistController.inst.replaceTrackInAllPlaylists(oldTrack, newTrack),
+      Indexer.inst.moveStatsPath(oldNewMap),
+      Player.audioConfigs.movePaths(oldNewMap),
+      QueueController.inst.replaceTrackInAllQueues(oldNewMap),
+      Player.inst.replaceAllTracksInQueueBulk(oldNewMap),
     ]);
-    // --- Selected Tracks ---
-    if (SelectedTracksController.inst.selectedTracks.isNotEmpty) {
+
+    if (SelectedTracksController.inst.selectedTracks.value.isNotEmpty) {
       SelectedTracksController.inst.replaceThisTrack(oldTrack, newTrack);
     }
   }
 
-  Future<void> updateDirectoryInEveryPartOfNamida(String oldDir, String newDir, {Iterable<String>? forThesePathsOnly, bool ensureNewFileExists = false}) async {
-    settings.save(directoriesToScan: [newDir]);
-    final pathSeparator = Platform.pathSeparator;
-    if (!oldDir.endsWith(pathSeparator)) oldDir += pathSeparator;
-    if (!newDir.endsWith(pathSeparator)) newDir += pathSeparator;
+  Future<void> updateDirectoryInEveryPartOfNamida(
+    String oldDirPre,
+    String newDirPre,
+    DirectoryIndexType? newDirType, {
+    Iterable<String>? forThesePathsOnly,
+    bool ensureNewFileExists = false,
+  }) async {
+    if (!settings.directoriesToScan.value.any((dir) => newDirPre.startsWith(dir.sourceRaw))) settings.directoriesToScan.update((list) => list.addNoDuplicates(DirectoryIndex.guess(newDirPre, newDirType)));
+
+    var normalizedOldDir = replaceFunctionNormalizePath(oldDirPre);
+    var normalizedNewDir = replaceFunctionNormalizePath(newDirPre);
+    if (!normalizedOldDir.endsWith('/')) normalizedOldDir += '/';
+    if (!normalizedNewDir.endsWith('/')) normalizedNewDir += '/';
+
     await Future.wait([
-      PlaylistController.inst.replaceTracksDirectory(oldDir, newDir, forThesePathsOnly: forThesePathsOnly, ensureNewFileExists: ensureNewFileExists),
-      QueueController.inst.replaceTracksDirectoryInQueues(oldDir, newDir, forThesePathsOnly: forThesePathsOnly, ensureNewFileExists: ensureNewFileExists),
-      Player.inst.replaceTracksDirectoryInQueue(oldDir, newDir, forThesePathsOnly: forThesePathsOnly, ensureNewFileExists: ensureNewFileExists),
-      HistoryController.inst.replaceTracksDirectoryInHistory(oldDir, newDir, forThesePathsOnly: forThesePathsOnly, ensureNewFileExists: ensureNewFileExists),
+      HistoryController.inst.replaceTracksDirectoryInHistory(normalizedOldDir, normalizedNewDir, forThesePathsOnly: forThesePathsOnly, ensureNewFileExists: ensureNewFileExists),
+      PlaylistController.inst.replaceTracksDirectory(normalizedOldDir, normalizedNewDir, forThesePathsOnly: forThesePathsOnly, ensureNewFileExists: ensureNewFileExists),
+      Indexer.inst.moveStatsDirectory(normalizedOldDir, normalizedNewDir, forThesePathsOnly: forThesePathsOnly, ensureNewFileExists: ensureNewFileExists),
+      Player.audioConfigs.moveDirectory(normalizedOldDir, normalizedNewDir, forThesePathsOnly: forThesePathsOnly, ensureNewFileExists: ensureNewFileExists),
+      QueueController.inst.replaceTracksDirectoryInQueues(normalizedOldDir, normalizedNewDir, forThesePathsOnly: forThesePathsOnly, ensureNewFileExists: ensureNewFileExists),
+      Player.inst.replaceTracksDirectoryInQueue(normalizedOldDir, normalizedNewDir, forThesePathsOnly: forThesePathsOnly, ensureNewFileExists: ensureNewFileExists),
     ]);
-    if (SelectedTracksController.inst.selectedTracks.isNotEmpty) {
-      SelectedTracksController.inst.replaceTrackDirectory(oldDir, newDir, forThesePathsOnly: forThesePathsOnly, ensureNewFileExists: ensureNewFileExists);
+
+    if (SelectedTracksController.inst.selectedTracks.value.isNotEmpty) {
+      SelectedTracksController.inst.replaceTrackDirectory(normalizedOldDir, normalizedNewDir, forThesePathsOnly: forThesePathsOnly, ensureNewFileExists: ensureNewFileExists);
     }
   }
+
+  static String _cacheKeyBuilder(String directory, Selectable e) => e.track.rawCacheKey(directory);
+  static String _cacheKeyForImageBuilder(String directory, Selectable e) => e.track.cacheKeyForImage(directory);
 }
 
 extension HasCachedFiles on List<Selectable> {
   // we use [pathToImage] to ensure when [settings.groupArtworksByAlbum] is enabled
-  bool get hasArtworkCached => _doesAnyPathExist(AppDirs.ARTWORKS, 'png', fullPath: (tr) => tr.track.pathToImage);
+  Future<bool> get hasArtworkCached => _doesAnyPathExist(AppDirs.ARTWORKS, 'png', EditDeleteController._cacheKeyForImageBuilder, fullPath: (tr) => tr.track.pathToImage);
+  Future<bool> get hasColorCached => _doesAnyPathExist(AppDirs.PALETTES, 'palette', EditDeleteController._cacheKeyForImageBuilder);
 
-  bool get hasLyricsCached => _doesAnyPathExist(AppDirs.LYRICS, 'txt');
-  bool get hasColorCached => _doesAnyPathExist(AppDirs.PALETTES, 'palette');
+  Future<bool> get hasTXTLyricsCached => _doesAnyPathExist(AppDirs.LYRICS, 'txt', EditDeleteController._cacheKeyBuilder);
+  Future<bool> get hasLRCLyricsCached => _doesAnyPathExist(AppDirs.LYRICS, 'lrc', EditDeleteController._cacheKeyBuilder);
+
   bool get hasVideoCached {
-    for (int i = 0; i < length; i++) {
-      final tr = this[i];
+    for (final tr in this) {
       if (VideoController.inst.doesVideoExistsInCache(tr.track.youtubeID)) {
         return true;
       }
@@ -173,12 +254,36 @@ extension HasCachedFiles on List<Selectable> {
     return false;
   }
 
-  bool get hasAnythingCached => hasArtworkCached || hasLyricsCached /* || hasColorCached */;
+  bool get hasAudioCached {
+    for (final tr in this) {
+      var vidId = tr.track.youtubeID;
+      if (vidId.isNotEmpty) {
+        final cachedAudios = AudioCacheController.inst.audioCacheMap[vidId];
+        if (cachedAudios != null) return true;
+      }
+    }
+    return false;
+  }
 
-  bool _doesAnyPathExist(String directory, String extension, {String Function(Selectable tr)? fullPath}) {
-    for (int i = 0; i < length; i++) {
-      final track = this[i];
-      if (File(fullPath != null ? fullPath(track) : "$directory${track.track.filename}.$extension").existsSync()) {
+  Future<bool> get hasServerCacheCached async {
+    for (final tr in this) {
+      final track = tr.track;
+      if (track.isNetwork && await ServerCacheController.cacheFileForPath(track.path).exists()) return true;
+    }
+    return false;
+  }
+
+  Future<bool> get hasAnythingCached async =>
+      await hasArtworkCached || await hasTXTLyricsCached || await hasLRCLyricsCached || await hasServerCacheCached /* || await hasColorCached */;
+
+  Future<bool> _doesAnyPathExist(
+    String directory,
+    String extension,
+    String Function(String directory, Selectable e) cacheKeyBuilder, {
+    String Function(Selectable tr)? fullPath,
+  }) async {
+    for (final track in this) {
+      if (await File(fullPath != null ? fullPath(track) : "$directory${cacheKeyBuilder(directory, track)}.$extension").exists()) {
         return true;
       }
     }

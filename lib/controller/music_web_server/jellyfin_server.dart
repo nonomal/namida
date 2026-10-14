@@ -1,0 +1,693 @@
+part of 'music_web_server_base.dart';
+
+class _JellyfinServer extends MusicWebServer {
+  Uri? _serverUri;
+  late _JellyfinClientWrapper _wrapper;
+
+  _JellyfinServer.init(super.authDetails) {
+    final uriFull = Uri.parse(authDetails.dir.sourceRaw);
+    final uriClean = DirectoryIndexServer.parseWithoutLibraryIdAndClean(authDetails.dir.sourceRaw);
+
+    _serverUri = Uri.parse(uriClean);
+    final jellyfinAuth = authDetails.auth.toJellyfinAuthModel();
+    final libraryId = uriFull.queryParameters['_libraryId'];
+    _wrapper = _JellyfinClientWrapper(
+      uriClean,
+      jellyfinAuth.username,
+      jellyfinAuth.password,
+      libraryId,
+    );
+  }
+
+  @override
+  void dispose() {
+    _wrapper.dispose();
+  }
+
+  @override
+  Future<MusicWebServerError?> ping() => _wrapper.ping();
+
+  @override
+  Future<Set<ServerShareWrapper>?> getAvailableShares() async => _wrapper.getLibraries();
+
+  @override
+  Future<Uint8List?> getImage(String id) => _wrapper.getImage(id);
+
+  @override
+  Future<int?> prepareTracksCount() => _wrapper.fetchAllMediaCount();
+
+  @override
+  Future<void> fetchAllMusicAndProcess(Map<String, int> serverTracksInLibrary, void Function(TrackExtended trExt) callback, {required bool forceReIndex}) async {
+    final wrapper = _wrapper;
+
+    final server = authDetails.dir.toDbKey();
+    final serverUriParsed = Uri.parse(server);
+
+    final splitConfig = SplitArtistGenreConfigsWrapper.settings();
+
+    final stream = wrapper.fetchAllMedia(
+      batchSize: 400,
+      checkResError: (res) => _checkResError(authDetails.dir, res),
+    );
+
+    await for (final item in stream) {
+      final trExt = _baseItemDtoToTrackExtended(
+        item,
+        splitConfig: splitConfig,
+        server: server,
+        serverUriParsed: serverUriParsed,
+      );
+      callback(trExt);
+    }
+  }
+
+  @override
+  Future<List<WebServerPlaylist>?> fetchPlaylists({required int? Function(String remoteId) knownChangedMS}) async {
+    final wrapper = _wrapper;
+
+    final server = authDetails.dir.toDbKey();
+    final serverUriParsed = Uri.parse(server);
+
+    final splitConfig = SplitArtistGenreConfigsWrapper.settings();
+
+    bool checkResError(Response<dynamic>? res) => _checkResError(authDetails.dir, res);
+
+    final playlistsItems = await wrapper.getPlaylists(checkResError: checkResError);
+    if (playlistsItems == null) return null;
+
+    final result = <WebServerPlaylist>[];
+    for (final playlistItem in playlistsItems) {
+      final id = playlistItem.id;
+      if (id == null || id.isEmpty) continue;
+
+      // -- jellyfin doesn't provide playlist changed date, we always fetch
+      final items = await wrapper.getPlaylistItems(id, checkResError: checkResError);
+      final tracks = items?.map(
+        (item) => _baseItemDtoToTrackExtended(
+          item,
+          splitConfig: splitConfig,
+          server: server,
+          serverUriParsed: serverUriParsed,
+        ),
+      );
+
+      result.add(
+        WebServerPlaylist(
+          id: id,
+          name: playlistItem.name ?? '',
+          comment: playlistItem.overview,
+          createdMS: playlistItem.dateCreated?.millisecondsSinceEpoch,
+          changedMS: null,
+          coverArtId: id,
+          tracks: tracks,
+        ),
+      );
+    }
+    return result;
+  }
+
+  @override
+  Future<WebStreamUriDetails?> getStreamUrl(String id, {void Function(File cachedFile)? onFetchedIfLocal}) async {
+    final baseUri = _serverUri;
+    if (baseUri == null) return null;
+
+    await _wrapper.ensureAuthenticated();
+
+    final uri = baseUri.buildEndpointUri(
+      '/Audio/$id/stream',
+      {
+        'UserId': ?_wrapper._userId,
+        'api_key': ?_wrapper._token,
+        'static': 'true',
+      },
+    );
+    return WebStreamUriDetails.fromUri(uri);
+  }
+
+  /// jellyfin stops sessions that stay silent for 5 minutes.
+  @override
+  Duration? get _playbackProgressInterval => const Duration(seconds: 60);
+
+  /// jellyfin counts plays from these reports itself.
+  @override
+  Future<void> _reportPlayback(String id, _PlaybackReport report, int positionMS) {
+    final endpoint = switch (report) {
+      _PlaybackReport.started => '/Sessions/Playing',
+      _PlaybackReport.resumed || _PlaybackReport.paused || _PlaybackReport.progress => '/Sessions/Playing/Progress',
+      _PlaybackReport.stopped => '/Sessions/Playing/Stopped',
+    };
+    final eventName = switch (report) {
+      _PlaybackReport.resumed => 'Unpause',
+      _PlaybackReport.paused => 'Pause',
+      _PlaybackReport.progress => 'TimeUpdate',
+      _PlaybackReport.started || _PlaybackReport.stopped => null,
+    };
+    final positionTicks = positionMS * 10000;
+    final info = <String, Object>{
+      'ItemId': id,
+      'PositionTicks': positionTicks,
+      'IsPaused': report == _PlaybackReport.paused,
+      'CanSeek': true,
+      'PlayMethod': 'DirectPlay',
+      'EventName': ?eventName,
+    };
+    return _wrapper.reportPlayback(endpoint, info);
+  }
+
+  bool _checkResError(DirectoryIndex dir, Response<dynamic>? res) {
+    final statusCode = res?.statusCode;
+    if (statusCode == 401 || statusCode == 403) {
+      if (dir is DirectoryIndexServer) {
+        MusicWebServerAuthDetails.manager.deleteFromDb(dir);
+      }
+      return true;
+    }
+    if (statusCode != null && statusCode >= 400) return true;
+    return false;
+  }
+
+  static TrackExtended _baseItemDtoToTrackExtended(
+    _JellyfinItem item, {
+    required SplitArtistGenreConfigsWrapper splitConfig,
+    required String server,
+    required Uri serverUriParsed,
+  }) {
+    final id = item.id ?? '';
+
+    final newUri = serverUriParsed.replace(
+      queryParameters: {
+        ...serverUriParsed.queryParameters,
+        'd': id,
+      },
+    );
+    final path = newUri.toString();
+
+    final title = item.name ?? '';
+    final album = item.album ?? '';
+    final albumArtists = item.albumArtists;
+    final albumArtistFallback = item.albumArtist ?? '';
+    final albumArtist = albumArtists.isEmpty ? albumArtistFallback : albumArtists.join(FTagsMultiValues.kJoiner);
+    final originalArtist = item.artists.join(FTagsMultiValues.kJoiner);
+    final originalGenre = item.genres.join(FTagsMultiValues.kJoiner);
+    final composer = item.composers.join(FTagsMultiValues.kJoiner);
+    final originalTags = item.tags.isEmpty ? null : item.tags.join(FTagsMultiValues.kJoiner);
+    final multiValues = FTagsMultiValues.orNull(
+      artists: FTagsMultiValues.valuesOrNull(item.artists),
+      albumArtists: FTagsMultiValues.valuesOrNull(albumArtists),
+      genres: FTagsMultiValues.valuesOrNull(item.genres),
+      composers: FTagsMultiValues.valuesOrNull(item.composers),
+      tags: FTagsMultiValues.valuesOrNull(item.tags),
+    );
+
+    final premiereDate = item.premiereDate;
+    final year = item.productionYear ?? premiereDate?.year ?? 0;
+    final yearFallbackText = year != 0 ? year.toString() : '';
+    final yearString = _premiereDateText(premiereDate, year) ?? yearFallbackText;
+
+    final durationMs = item.runTimeTicks != null ? (item.runTimeTicks! ~/ 10000) : 0;
+    final mediaSource = item.mediaSources.firstOrNull;
+    final audioStream = item.getAudioStream();
+    final bitrateBps = mediaSource?.bitrate ?? audioStream?.bitRate ?? 0;
+    final bitrate = bitrateBps ~/ 1000;
+    final size = mediaSource?.size ?? 0;
+    final format = item.container ?? mediaSource?.container ?? '';
+    final dateAddedMs = item.dateCreated?.millisecondsSinceEpoch ?? 0;
+    final dateModifiedMs = item.dateModified?.millisecondsSinceEpoch ?? 0;
+    final rating = (item.userData?.rating ?? 0) / 10.0;
+    final normalizationGainDB = item.normalizationGainDB;
+    final gainData = normalizationGainDB == null
+        ? null
+        : ReplayGainData.orNull(
+            trackGain: normalizationGainDB,
+            albumGain: null,
+            trackPeak: null,
+            albumPeak: null,
+          );
+    final providerIds = item.providerIds;
+    final mbAlbumId = providerIds[_JellyfinItem.kProviderMusicBrainzAlbum] as String?;
+    final mbAlbumArtistId = providerIds[_JellyfinItem.kProviderMusicBrainzAlbumArtist] as String?;
+
+    final isVideo = item.videoType != null;
+
+    final remotePath = item.path;
+    final serverFolder = remotePath == null ? null : _serverFolderOf(remotePath);
+
+    return TrackExtended.derive(
+      splitConfig: splitConfig,
+      mbAlbumId: mbAlbumId ?? '',
+      mbAlbumArtistId: mbAlbumArtistId ?? '',
+      title: title,
+      originalArtist: originalArtist,
+      originalAlbum: album,
+      albumArtist: albumArtist,
+      originalGenre: originalGenre,
+      originalStyle: '',
+      originalMood: '',
+      composer: composer,
+      trackNo: item.indexNumber ?? 0,
+      trackTo: 0,
+      durationMS: durationMs,
+      chapters: null,
+      year: year,
+      yearText: yearString,
+      size: size,
+      dateAdded: dateAddedMs,
+      dateModified: dateModifiedMs,
+      path: path,
+      comment: item.overview ?? '',
+      description: '',
+      synopsis: '',
+      bitrate: bitrate,
+      sampleRate: audioStream?.sampleRate ?? 0,
+      bits: audioStream?.bitDepth ?? 0,
+      isLossless: null,
+      format: format,
+      channels: _channelsText(audioStream?.channels),
+      discNo: item.parentIndexNumber ?? 0,
+      discTo: 0,
+      language: audioStream?.language ?? '',
+      lyrics: '',
+      label: item.studios.join(FTagsMultiValues.kJoiner),
+      releaseType: '',
+      bpm: null,
+      musicalKey: '',
+      rating: rating,
+      originalTags: originalTags,
+      gainData: gainData,
+      sortInfo: null,
+      multiValues: multiValues,
+      extraTags: null,
+      hashKey: id,
+      isVideo: isVideo,
+      server: server,
+      serverFolder: serverFolder,
+      hasNoEmbeddedArtwork: false,
+    );
+  }
+}
+
+/// `PremiereDate` as a tag-like `yyyy-mm-dd` text, only when it's the item's year.
+String? _premiereDateText(DateTime? premiereDate, int year) {
+  if (premiereDate == null || premiereDate.year != year) return null;
+  final buffer = StringBuffer()
+    ..write(year)
+    ..write('-')
+    ..write(premiereDate.month.toString().padLeft(2, '0'))
+    ..write('-')
+    ..write(premiereDate.day.toString().padLeft(2, '0'));
+  return buffer.toString();
+}
+
+@visibleForTesting
+TrackExtended debugJellyfinItemToTrack(Map<String, dynamic> itemJson, {required SplitArtistGenreConfigsWrapper splitConfig, required String server}) {
+  final item = _JellyfinItem.fromJson(itemJson);
+  final serverUriParsed = Uri.parse(server);
+  return _JellyfinServer._baseItemDtoToTrackExtended(item, splitConfig: splitConfig, server: server, serverUriParsed: serverUriParsed);
+}
+
+class JellyfinAuth {
+  final String username;
+  final String password;
+
+  const JellyfinAuth({
+    required this.username,
+    required this.password,
+  });
+}
+
+// class _JellyfinClientWrapper {
+//   final JellyfinDart _client;
+//   final String _username;
+//   final String _password;
+
+//   _JellyfinClientWrapper(
+//     this._client,
+//     this._username,
+//     this._password,
+//   );
+
+//   String? _userId;
+//   String? _token;
+//   Completer<bool>? _authCompleter;
+
+//   Future<bool> ensureAuthenticated() async {
+//     if (_token != null && _userId != null) return true;
+
+//     if (_authCompleter != null) return _authCompleter!.future;
+
+//     _authCompleter = Completer<bool>();
+//     try {
+//       final deviceId = await NamidaDeviceInfo.fetchDeviceId() ?? 'namida';
+//       final version = VersionWrapper.current?.name ?? '1.0.0';
+
+//       _client.setMediaBrowserAuth(
+//         deviceId: deviceId,
+//         version: version,
+//       );
+//       final authResponse = await _client.getUserApi().authenticateUserByName(
+//         authenticateUserByName: AuthenticateUserByName(
+//           username: _username,
+//           pw: _password,
+//         ),
+//       );
+//       final data = authResponse.data;
+//       if (data == null) {
+//         _authCompleter!.complete(false);
+//         _authCompleter = null;
+//         return false;
+//       }
+
+//       _token = data.accessToken;
+//       _userId = data.user?.id;
+//       if (_token != null) _client.setToken(_token!);
+
+//       final success = _token != null && _userId != null;
+//       _authCompleter!.complete(success);
+//       return success;
+//     } on DioException catch (_) {
+//       _authCompleter!.complete(false);
+//       return false;
+//     } finally {
+//       _authCompleter = null;
+//     }
+//   }
+
+//   Future<MusicWebServerError?> ping() async {
+//     if (!await ensureAuthenticated()) {
+//       return MusicWebServerError(
+//         code: 0,
+//         message: 'Jellyfin authentication failed',
+//       );
+//     }
+//     try {
+//       await _client.getSystemApi().getSystemInfo();
+//       return null;
+//     } on DioException catch (e) {
+//       return MusicWebServerError(
+//         code: e.response?.statusCode ?? -1,
+//         message: e.message ?? 'Unknown error',
+//       );
+//     }
+//   }
+
+//   Future<Uint8List?> getImage(String id) async {
+//     if (!await ensureAuthenticated()) return null;
+//     try {
+//       final res = await _client.getImageApi().getItemImage(
+//         itemId: id,
+//         imageType: ImageType.primary,
+//       );
+//       final data = res.data;
+//       if (data is Uint8List) return data;
+//       return null;
+//     } on DioException catch (_) {
+//       return null;
+//     }
+//   }
+
+//   Stream<BaseItemDto> fetchAllMedia({int batchSize = 400, required bool Function(Response<dynamic>? res) checkResError}) async* {
+//     final itemsApi = _client.getItemsApi();
+//     int offset = 0;
+
+//     while (true) {
+//       try {
+//         final res = await itemsApi.getItems(
+//           userId: _userId,
+//           includeItemTypes: [.audio, .video, .musicVideo],
+//           recursive: true,
+//           startIndex: offset,
+//           limit: batchSize,
+//           fields: [
+//             ItemFields.mediaStreams,
+//             ItemFields.mediaSources,
+//             ItemFields.genres,
+//             ItemFields.dateCreated,
+//             ItemFields.overview,
+//             ItemFields.path,
+//             ItemFields.tags,
+//           ],
+//         );
+
+//         if (checkResError(res)) {
+//           break;
+//         }
+
+//         final items = res.data?.items ?? [];
+//         for (final item in items) {
+//           yield item;
+//         }
+
+//         if (items.length < batchSize) break;
+//         offset += batchSize;
+//       } on DioException catch (e) {
+//         if (checkResError(e.response)) {
+//           break;
+//         }
+//       }
+//     }
+//   }
+
+//   void dispose() {
+//     _client.dio.close(force: true);
+//   }
+// }
+
+class _JellyfinClientWrapper {
+  final _JellyfinApi _api;
+  final String _username;
+  final String _password;
+  final String? _libraryId;
+
+  _JellyfinClientWrapper(
+    String baseUrl,
+    this._username,
+    this._password,
+    this._libraryId,
+  ) : _api = _JellyfinApi(baseUrl);
+
+  String? _userId;
+  String? _token;
+  String? _deviceId;
+  String? _version;
+  Completer<bool>? _authCompleter;
+
+  Future<bool> ensureAuthenticated() async {
+    if (_token != null && _userId != null) return true;
+    if (_authCompleter != null) return _authCompleter!.future;
+
+    _authCompleter = Completer<bool>();
+    try {
+      _deviceId = await NamidaDeviceInfo.fetchDeviceId() ?? 'namida';
+      _version = VersionWrapper.current?.name ?? '1.0.0';
+
+      _api.setAuthHeader(deviceId: _deviceId!, version: _version!);
+
+      final auth = await _api.authenticate(
+        username: _username,
+        password: _password,
+      );
+
+      _token = auth?.accessToken;
+      _userId = auth?.userId;
+
+      if (_token != null) {
+        _api.setAuthHeader(
+          deviceId: _deviceId!,
+          version: _version!,
+          token: _token,
+        );
+      }
+
+      final success = _token != null && _userId != null;
+      _authCompleter!.complete(success);
+      return success;
+    } on DioException catch (_) {
+      _authCompleter!.complete(false);
+      return false;
+    } finally {
+      _authCompleter = null;
+    }
+  }
+
+  Future<MusicWebServerError?> ping() async {
+    if (!await ensureAuthenticated()) {
+      return MusicWebServerError(code: 0, message: 'Jellyfin authentication failed');
+    }
+    try {
+      await _api.getSystemInfo();
+      return null;
+    } on DioException catch (e) {
+      return MusicWebServerError(
+        code: e.response?.statusCode ?? -1,
+        message: e.message ?? 'Unknown error',
+      );
+    }
+  }
+
+  Future<Uint8List?> getImage(String id) async {
+    if (!await ensureAuthenticated()) return null;
+    try {
+      return await _api.getItemImage(itemId: id, imageType: _JellyfinImageType.primary);
+    } on DioException catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> reportPlayback(String endpoint, Map<String, Object> info) async {
+    if (!await ensureAuthenticated()) return;
+    await _api.dio.post<void>(endpoint, data: info);
+  }
+
+  Future<Set<ServerShareWrapper>> getLibraries() async {
+    if (!await ensureAuthenticated()) return {};
+    final res = await _api.dio.get<Map<String, dynamic>>(
+      '/Users/$_userId/Views',
+    );
+    final items = (res.data?['Items'] as List<dynamic>?) ?? [];
+    return items.map((e) => ServerShareWrapper.fromJellyfinJson(e as Map<String, dynamic>)).toSet();
+  }
+
+  Future<List<_JellyfinItem>?> getPlaylists({
+    int batchSize = 200,
+    required bool Function(Response<dynamic>? res) checkResError,
+  }) {
+    return _getItemsPaged(
+      '/Items',
+      queryParameters: {
+        'IncludeItemTypes': 'Playlist',
+        'Recursive': true,
+        'Fields': 'DateCreated,Overview',
+      },
+      batchSize: batchSize,
+      checkResError: checkResError,
+    );
+  }
+
+  Future<List<_JellyfinItem>?> getPlaylistItems(
+    String playlistId, {
+    int batchSize = 400,
+    required bool Function(Response<dynamic>? res) checkResError,
+  }) async {
+    final items = await _getItemsPaged(
+      '/Playlists/$playlistId/Items',
+      queryParameters: {
+        'Fields': _JellyfinItemField.values.map((e) => e.value).join(','),
+      },
+      batchSize: batchSize,
+      checkResError: checkResError,
+    );
+    if (items == null) return null;
+    final allowedKinds = _JellyfinItemKind.values.map((e) => e.value).toSet();
+    items.retainWhere((item) => item.type == null || allowedKinds.contains(item.type));
+    return items;
+  }
+
+  Future<List<_JellyfinItem>?> _getItemsPaged(
+    String endpoint, {
+    required Map<String, dynamic> queryParameters,
+    required int batchSize,
+    required bool Function(Response<dynamic>? res) checkResError,
+  }) async {
+    if (!await ensureAuthenticated()) return null;
+    final items = <_JellyfinItem>[];
+    int offset = 0;
+    while (true) {
+      try {
+        final res = await _api.dio.get<Map<String, dynamic>>(
+          endpoint,
+          queryParameters: {
+            'UserId': _userId,
+            'StartIndex': offset,
+            'Limit': batchSize,
+            ...queryParameters,
+          },
+        );
+        final data = res.data?['Items'] as List<dynamic>?;
+        if (data == null) {
+          checkResError(res);
+          return null;
+        }
+        for (final e in data) {
+          items.add(_JellyfinItem.fromJson(e as Map<String, dynamic>));
+        }
+        if (data.length < batchSize) break;
+        offset += batchSize;
+      } on DioException catch (e) {
+        checkResError(e.response);
+        return null;
+      }
+    }
+    return items;
+  }
+
+  Future<int?> fetchAllMediaCount() async {
+    if (!await ensureAuthenticated()) return null;
+    final itemTypes = _JellyfinItemKind.values.map((e) => e.value).join(',');
+    try {
+      final res = await _api.dio.get<Map<String, dynamic>>(
+        '/Items',
+        queryParameters: {
+          'UserId': _userId,
+          if (_libraryId != null) 'ParentId': _libraryId,
+          'IncludeItemTypes': itemTypes,
+          'Recursive': true,
+          'Limit': 1,
+          'EnableTotalRecordCount': true,
+        },
+      );
+      return res.data?['TotalRecordCount'] as int?;
+    } on DioException catch (_) {
+      return null;
+    }
+  }
+
+  Stream<_JellyfinItem> fetchAllMedia({
+    int batchSize = 400,
+    required bool Function(Response<dynamic>? res) checkResError,
+  }) async* {
+    int offset = 0;
+    bool hasMore = true;
+    while (hasMore) {
+      try {
+        final res = await _api.dio.get<Map<String, dynamic>>(
+          '/Items',
+          queryParameters: {
+            'UserId': _userId,
+            if (_libraryId != null) 'ParentId': _libraryId,
+            'IncludeItemTypes': _JellyfinItemKind.values.map((e) => e.value).join(','),
+            'Recursive': true,
+            'StartIndex': offset,
+            'Limit': batchSize,
+            'EnableTotalRecordCount': false,
+            'Fields': _JellyfinItemField.values.map((e) => e.value).join(','),
+          },
+        );
+
+        if (checkResError(res)) break;
+
+        final items = (res.data?['Items'] as List<dynamic>?)?.map((e) => _JellyfinItem.fromJson(e as Map<String, dynamic>)).toList() ?? [];
+
+        if (items.isEmpty) {
+          hasMore = false;
+          break;
+        }
+
+        for (final item in items) {
+          yield item;
+        }
+
+        if (items.length < batchSize) break;
+        offset += batchSize;
+      } on DioException catch (e, st) {
+        if (checkResError(e.response)) break;
+        logger.error('Failed to fetch all media for jellyfin', e: e, st: st);
+        return;
+      } catch (e, st) {
+        logger.error('Failed to fetch all media for jellyfin', e: e, st: st);
+        break;
+      }
+    }
+  }
+
+  void dispose() => _api.dio.close(force: true);
+}

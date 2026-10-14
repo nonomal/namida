@@ -1,11 +1,11 @@
-// ignore_for_file: constant_identifier_names
-
 import 'package:flutter/material.dart';
-import 'package:get/get.dart';
 
 import 'package:namida/base/setting_subpage_provider.dart';
+import 'package:namida/class/eggs_data.dart';
 import 'package:namida/class/track.dart';
+import 'package:namida/controller/current_color.dart';
 import 'package:namida/controller/navigator_controller.dart';
+import 'package:namida/controller/platform/namida_channel/namida_channel.dart';
 import 'package:namida/controller/player_controller.dart';
 import 'package:namida/controller/settings_controller.dart';
 import 'package:namida/controller/waveform_controller.dart';
@@ -16,50 +16,14 @@ import 'package:namida/core/functions.dart';
 import 'package:namida/core/icon_fonts/broken_icons.dart';
 import 'package:namida/core/namida_converter_ext.dart';
 import 'package:namida/core/translations/language.dart';
+import 'package:namida/core/utils.dart';
 import 'package:namida/ui/dialogs/setting_dialog_with_text_field.dart';
 import 'package:namida/ui/widgets/artwork.dart';
 import 'package:namida/ui/widgets/custom_widgets.dart';
+import 'package:namida/ui/widgets/jellyfish.dart';
 import 'package:namida/ui/widgets/library/track_tile.dart';
+import 'package:namida/ui/widgets/settings/effects_tiles.dart';
 import 'package:namida/ui/widgets/settings_card.dart';
-
-enum _CustomizationSettingsKeys {
-  enableBlur,
-  enableGlow,
-  enableParallax,
-  displayRemainingDur,
-  brMultiplier,
-  fontScale,
-  hourFormat12,
-  dateTimeFormat,
-  // -----------
-  ALBUMTILECUSTOMIZATION,
-  trackNumberInAlbumPage,
-  albumCardTopRightDate,
-  forceSquaredAlbumThumb,
-  staggeredAlbumGridview,
-  sizeOfAlbumThumb,
-  heightOfAlbumTile,
-  // -----------
-  TRACKTILECUSTOMIZATION,
-  forceSquaredTrackThumb,
-  sizeOfTrackThumb,
-  heightOfTrackTile,
-  displayThirdRow,
-  displayThirdItemInRow,
-  displayFavButtonInTrackTile,
-  itemsSeparator,
-  // -----------
-  MINIPLAYERCUSTOMIZATION,
-  partyMode,
-  edgeColorsSwitching,
-  movingParticles,
-  thumbAnimationIntensity,
-  thumbInverseAnimation,
-  artworkGesture,
-  waveformBarsCount,
-  displayAudioInfo,
-  displayArtistBeforeTitle,
-}
 
 class CustomizationSettings extends SettingSubpageProvider {
   const CustomizationSettings({super.key, super.initialItem});
@@ -68,926 +32,1504 @@ class CustomizationSettings extends SettingSubpageProvider {
   SettingSubpageEnum get settingPage => SettingSubpageEnum.customization;
 
   @override
-  Map<Enum, List<String>> get lookupMap => {
-        _CustomizationSettingsKeys.enableBlur: [lang.ENABLE_BLUR_EFFECT],
-        _CustomizationSettingsKeys.enableGlow: [lang.ENABLE_GLOW_EFFECT],
-        _CustomizationSettingsKeys.enableParallax: [lang.ENABLE_PARALLAX_EFFECT],
-        _CustomizationSettingsKeys.displayRemainingDur: [lang.DISPLAY_REMAINING_DURATION_INSTEAD_OF_TOTAL],
-        _CustomizationSettingsKeys.brMultiplier: [lang.BORDER_RADIUS_MULTIPLIER],
-        _CustomizationSettingsKeys.fontScale: [lang.FONT_SCALE],
-        _CustomizationSettingsKeys.hourFormat12: [lang.HOUR_FORMAT_12],
-        _CustomizationSettingsKeys.dateTimeFormat: [lang.DATE_TIME_FORMAT],
-        // -----------
-        _CustomizationSettingsKeys.ALBUMTILECUSTOMIZATION: [lang.ALBUM_TILE_CUSTOMIZATION],
-        _CustomizationSettingsKeys.trackNumberInAlbumPage: [lang.DISPLAY_TRACK_NUMBER_IN_ALBUM_PAGE, lang.DISPLAY_TRACK_NUMBER_IN_ALBUM_PAGE_SUBTITLE],
-        _CustomizationSettingsKeys.albumCardTopRightDate: [lang.DISPLAY_ALBUM_CARD_TOP_RIGHT_DATE, lang.DISPLAY_ALBUM_CARD_TOP_RIGHT_DATE_SUBTITLE],
-        _CustomizationSettingsKeys.forceSquaredAlbumThumb: [lang.FORCE_SQUARED_ALBUM_THUMBNAIL],
-        _CustomizationSettingsKeys.staggeredAlbumGridview: [lang.STAGGERED_ALBUM_GRID_VIEW],
-        _CustomizationSettingsKeys.sizeOfAlbumThumb: [lang.ALBUM_THUMBNAIL_SIZE_IN_LIST],
-        _CustomizationSettingsKeys.heightOfAlbumTile: [lang.HEIGHT_OF_ALBUM_TILE],
-        // -----------
-        _CustomizationSettingsKeys.TRACKTILECUSTOMIZATION: [lang.TRACK_TILE_CUSTOMIZATION],
-        _CustomizationSettingsKeys.forceSquaredTrackThumb: [lang.FORCE_SQUARED_TRACK_THUMBNAIL],
-        _CustomizationSettingsKeys.sizeOfTrackThumb: [lang.TRACK_THUMBNAIL_SIZE_IN_LIST],
-        _CustomizationSettingsKeys.heightOfTrackTile: [lang.HEIGHT_OF_TRACK_TILE],
-        _CustomizationSettingsKeys.displayThirdRow: [lang.DISPLAY_THIRD_ROW_IN_TRACK_TILE],
-        _CustomizationSettingsKeys.displayThirdItemInRow: [lang.DISPLAY_THIRD_ITEM_IN_ROW_IN_TRACK_TILE],
-        _CustomizationSettingsKeys.displayFavButtonInTrackTile: [lang.DISPLAY_FAVOURITE_ICON_IN_TRACK_TILE],
-        _CustomizationSettingsKeys.itemsSeparator: [lang.TRACK_TILE_ITEMS_SEPARATOR],
-        // -----------
-        _CustomizationSettingsKeys.MINIPLAYERCUSTOMIZATION: [lang.MINIPLAYER_CUSTOMIZATION],
-        _CustomizationSettingsKeys.partyMode: [lang.ENABLE_PARTY_MODE, lang.ENABLE_PARTY_MODE_SUBTITLE],
-        _CustomizationSettingsKeys.edgeColorsSwitching: [lang.EDGE_COLORS_SWITCHING],
-        _CustomizationSettingsKeys.movingParticles: [lang.ENABLE_MINIPLAYER_PARTICLES],
-        _CustomizationSettingsKeys.thumbAnimationIntensity: [lang.ANIMATING_THUMBNAIL_INTENSITY],
-        _CustomizationSettingsKeys.thumbInverseAnimation: [lang.ANIMATING_THUMBNAIL_INVERSED, lang.ANIMATING_THUMBNAIL_INVERSED_SUBTITLE],
-        _CustomizationSettingsKeys.artworkGesture: [lang.ARTWORK_GESTURES],
-        _CustomizationSettingsKeys.waveformBarsCount: [lang.WAVEFORM_BARS_COUNT],
-        _CustomizationSettingsKeys.displayAudioInfo: [lang.DISPLAY_AUDIO_INFO_IN_MINIPLAYER],
-        _CustomizationSettingsKeys.displayArtistBeforeTitle: [lang.DISPLAY_ARTIST_BEFORE_TITLE],
-      };
+  List<List<SettingEntry>> get sections => _sections;
 
-  @override
-  Widget build(BuildContext context) {
-    return SettingsCard(
-      title: lang.CUSTOMIZATIONS,
-      subtitle: lang.CUSTOMIZATIONS_SUBTITLE,
-      icon: Broken.brush_1,
-      child: Column(
-        children: [
-          getItemWrapper(
-            key: _CustomizationSettingsKeys.enableBlur,
-            child: Obx(
-              () => CustomSwitchListTile(
-                bgColor: getBgColor(_CustomizationSettingsKeys.enableBlur),
-                icon: Broken.drop,
-                title: lang.ENABLE_BLUR_EFFECT,
-                subtitle: lang.PERFORMANCE_NOTE,
-                onChanged: (p0) {
-                  settings.save(
-                    enableBlurEffect: !p0,
-                    performanceMode: PerformanceMode.custom,
-                  );
-                },
-                value: settings.enableBlurEffect.value,
-              ),
-            ),
-          ),
-          getItemWrapper(
-            key: _CustomizationSettingsKeys.enableGlow,
-            child: Obx(
-              () => CustomSwitchListTile(
-                bgColor: getBgColor(_CustomizationSettingsKeys.enableGlow),
-                icon: Broken.sun_1,
-                title: lang.ENABLE_GLOW_EFFECT,
-                subtitle: lang.PERFORMANCE_NOTE,
-                onChanged: (p0) {
-                  settings.save(
-                    enableGlowEffect: !p0,
-                    performanceMode: PerformanceMode.custom,
-                  );
-                },
-                value: settings.enableGlowEffect.value,
-              ),
-            ),
-          ),
-          getItemWrapper(
-            key: _CustomizationSettingsKeys.enableParallax,
-            child: Obx(
-              () => CustomSwitchListTile(
-                bgColor: getBgColor(_CustomizationSettingsKeys.enableParallax),
-                icon: Broken.maximize,
-                title: lang.ENABLE_PARALLAX_EFFECT,
-                subtitle: lang.PERFORMANCE_NOTE,
-                onChanged: (isTrue) => settings.save(
-                  enableMiniplayerParallaxEffect: !isTrue,
-                  performanceMode: PerformanceMode.custom,
-                ),
-                value: settings.enableMiniplayerParallaxEffect.value,
-              ),
-            ),
-          ),
-          getItemWrapper(
-            key: _CustomizationSettingsKeys.displayRemainingDur,
-            child: Obx(
-              () => CustomSwitchListTile(
-                bgColor: getBgColor(_CustomizationSettingsKeys.displayRemainingDur),
-                icon: Broken.timer,
-                title: lang.DISPLAY_REMAINING_DURATION_INSTEAD_OF_TOTAL,
-                onChanged: (isTrue) => settings.player.save(displayRemainingDurInsteadOfTotal: !isTrue),
-                value: settings.player.displayRemainingDurInsteadOfTotal.value,
-              ),
-            ),
-          ),
-          getItemWrapper(
-            key: _CustomizationSettingsKeys.brMultiplier,
-            child: Obx(
-              () => CustomListTile(
-                bgColor: getBgColor(_CustomizationSettingsKeys.brMultiplier),
-                icon: Broken.rotate_left_1,
-                title: lang.BORDER_RADIUS_MULTIPLIER,
-                trailingText: "${settings.borderRadiusMultiplier.value}",
-                onTap: () {
-                  showSettingDialogWithTextField(
-                    title: lang.BORDER_RADIUS_MULTIPLIER,
-                    borderRadiusMultiplier: true,
-                    icon: Broken.rotate_left_1,
-                  );
-                },
-              ),
-            ),
-          ),
-          getItemWrapper(
-            key: _CustomizationSettingsKeys.fontScale,
-            child: Obx(
-              () => CustomListTile(
-                bgColor: getBgColor(_CustomizationSettingsKeys.fontScale),
-                icon: Broken.text,
-                title: lang.FONT_SCALE,
-                trailingText: "${(settings.fontScaleFactor.value * 100).toInt()}%",
-                onTap: () {
-                  showSettingDialogWithTextField(
-                    title: lang.FONT_SCALE,
-                    fontScaleFactor: true,
-                    icon: Broken.text,
-                  );
-                },
-              ),
-            ),
-          ),
-          getItemWrapper(
-            key: _CustomizationSettingsKeys.hourFormat12,
-            child: Obx(
-              () => CustomSwitchListTile(
-                bgColor: getBgColor(_CustomizationSettingsKeys.hourFormat12),
-                icon: Broken.clock,
-                title: lang.HOUR_FORMAT_12,
-                onChanged: (p0) {
-                  settings.save(hourFormat12: !p0);
-                },
-                value: settings.hourFormat12.value,
-              ),
-            ),
-          ),
-          getItemWrapper(
-            key: _CustomizationSettingsKeys.dateTimeFormat,
-            child: Obx(
-              () => CustomListTile(
-                bgColor: getBgColor(_CustomizationSettingsKeys.dateTimeFormat),
-                icon: Broken.calendar_edit,
-                title: lang.DATE_TIME_FORMAT,
-                trailingText: "${settings.dateTimeFormat}",
-                onTap: () async {
-                  final scrollController = ScrollController();
-
-                  await showSettingDialogWithTextField(
-                    title: lang.DATE_TIME_FORMAT,
-                    icon: Broken.calendar_edit,
-                    dateTimeFormat: true,
-                    topWidget: SizedBox(
-                      height: Get.height * 0.4,
-                      child: Padding(
-                        padding: const EdgeInsets.only(bottom: 58.0),
-                        child: Stack(
-                          children: [
-                            SingleChildScrollView(
-                              controller: scrollController,
-                              child: Column(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  ...kDefaultDateTimeStrings.entries.map(
-                                    (e) => SmallListTile(
-                                      title: e.value,
-                                      active: settings.dateTimeFormat.value == e.key,
-                                      onTap: () {
-                                        settings.save(dateTimeFormat: e.key);
-                                        NamidaNavigator.inst.closeDialog();
-                                      },
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                            Positioned(
-                              bottom: 20,
-                              right: 0,
-                              child: Container(
-                                padding: const EdgeInsets.all(8.0),
-                                decoration: BoxDecoration(color: Get.theme.cardTheme.color, shape: BoxShape.circle),
-                                child: NamidaIconButton(
-                                  icon: Broken.arrow_circle_down,
-                                  onPressed: () {
-                                    scrollController.animateTo(
-                                      scrollController.position.maxScrollExtent,
-                                      duration: const Duration(milliseconds: 300),
-                                      curve: Curves.easeInOut,
-                                    );
-                                  },
-                                ),
-                              ),
-                            )
-                          ],
-                        ),
-                      ),
-                    ),
-                  );
-                  scrollController.disposeAfterAnimation();
-                },
-              ),
-            ),
-          ),
-          _getAlbumCustomizationsTile(),
-          _getTrackTileCustomizationsTile(context),
-          _getMiniplayerCustomizationsTile(context),
-        ],
+  static final _sections = <List<SettingEntry>>[
+    [
+      SettingCustom(
+        title: () => lang.enableBlurEffect,
+        keys: [settings.enableBlurEffect],
+        tile: (args) => _PerformanceToggleTile(
+          bgColor: args.bgColor,
+          setting: settings.enableBlurEffect,
+          icon: Broken.drop,
+          title: lang.enableBlurEffect,
+        ),
       ),
-    );
-  }
-
-  Widget _getAlbumCustomizationsTile() {
-    return getItemWrapper(
-      key: _CustomizationSettingsKeys.ALBUMTILECUSTOMIZATION,
-      child: NamidaExpansionTile(
-        bgColor: getBgColor(_CustomizationSettingsKeys.ALBUMTILECUSTOMIZATION),
-        initiallyExpanded: settings.useSettingCollapsedTiles.value,
+      SettingCustom(
+        title: () => lang.enableGlowEffect,
+        keys: [settings.enableGlowEffect],
+        tile: (args) => _PerformanceToggleTile(
+          bgColor: args.bgColor,
+          setting: settings.enableGlowEffect,
+          icon: Broken.sun_1,
+          title: lang.enableGlowEffect,
+        ),
+      ),
+      SettingCustom(
+        title: () => lang.enableParallaxEffect,
+        keys: [settings.enableMiniplayerParallaxEffect],
+        tile: (args) => _PerformanceToggleTile(
+          bgColor: args.bgColor,
+          setting: settings.enableMiniplayerParallaxEffect,
+          icon: Broken.maximize,
+          title: lang.enableParallaxEffect,
+        ),
+      ),
+      SettingCustom(
+        title: () => lang.backgroundEffect,
+        aliases: () => [lang.seasonalEffectsSubtitle, ..._getEffectThemesTexts()],
+        keys: [settings.effectsBackground],
+        tile: (args) => EffectThemeTile.background(
+          bgColor: args.bgColor,
+        ),
+      ),
+      SettingCustom(
+        title: () => lang.overlayEffect,
+        aliases: () => [lang.overlayEffectSubtitle, ..._getEffectThemesTexts()],
+        keys: [settings.effectsOverlay],
+        tile: (args) => EffectThemeTile.overlay(
+          bgColor: args.bgColor,
+        ),
+      ),
+      SettingCustom(
+        visibleWhen: _isBackgroundImagesEnabled,
+        title: () => lang.wallpaper,
+        aliases: () => [lang.blur, lang.dimIntensity],
+        keys: [settings.appWallpaper, settings.appWallpaperBlur, settings.appWallpaperDim],
+        tile: (args) => AppWallpaperTile(
+          bgColor: args.bgColor,
+        ),
+      ),
+    ],
+    [
+      SettingCustom(
+        title: () => lang.borderRadiusMultiplier,
+        keys: [settings.borderRadiusMultiplier],
+        tile: (args) => _TextFieldDialogTile(
+          bgColor: args.bgColor,
+          setting: settings.borderRadiusMultiplier,
+          valueToText: (multiplier) => "$multiplier",
+          icon: Broken.rotate_left_1,
+          title: lang.borderRadiusMultiplier,
+          onTap: () => showSettingDialogWithTextField(
+            title: lang.borderRadiusMultiplier,
+            borderRadiusMultiplier: true,
+            icon: Broken.rotate_left_1,
+          ),
+        ),
+      ),
+      SettingCustom(
+        title: () => lang.fontScale,
+        keys: [settings.fontScaleFactor],
+        tile: (args) => _TextFieldDialogTile(
+          bgColor: args.bgColor,
+          setting: settings.fontScaleFactor,
+          valueToText: (scale) => "${(scale * 100).toInt()}%",
+          icon: Broken.text,
+          title: lang.fontScale,
+          onTap: () => showSettingDialogWithTextField(
+            title: lang.fontScale,
+            fontScaleFactor: true,
+            icon: Broken.text,
+          ),
+        ),
+      ),
+    ],
+    [
+      SettingToggle(
+        settings.hourFormat12,
+        icon: Broken.clock,
+        title: () => lang.hourFormat12,
+        onChanged: _onTrackTilePropChanged,
+      ),
+      SettingCustom(
+        title: () => lang.dateTimeFormat,
+        keys: [settings.dateTimeFormat],
+        tile: (args) => _TextFieldDialogTile(
+          bgColor: args.bgColor,
+          setting: settings.dateTimeFormat,
+          valueToText: (format) => format,
+          icon: Broken.calendar_edit,
+          title: lang.dateTimeFormat,
+          onTap: () => showSettingDialogWithTextField(
+            title: lang.dateTimeFormat,
+            icon: Broken.calendar_edit,
+            dateTimeFormat: true,
+            topWidget: const _DateTimeFormatPresets(),
+          ),
+        ),
+      ),
+      SettingToggle(
+        settings.player.displayRemainingDurInsteadOfTotal,
+        icon: Broken.timer,
+        title: () => lang.displayRemainingDurationInsteadOfTotal,
+      ),
+      SettingToggle(
+        settings.player.displayActualPositionWhenSeeking,
+        icon: Broken.settings,
+        title: () => lang.displayActualPositionInsteadOfDifferenceWhileSeeking,
+      ),
+    ],
+    [
+      SettingCustom(
+        availability: NamidaFeaturesAvailablity.android,
+        title: () => lang.homeScreenWidget,
+        tile: (args) => _HomeWidgetTile(
+          bgColor: args.bgColor,
+        ),
+      ),
+      SettingExpansion(
         leading: const StackedIcon(
           baseIcon: Broken.brush,
           secondaryIcon: Broken.music_dashboard,
         ),
-        titleText: lang.ALBUM_TILE_CUSTOMIZATION,
+        title: () => lang.albumTileCustomization,
+        initiallyExpandedWhen: _shouldExpandGroups,
         children: [
-          /// Track Number in a small Box
-          getItemWrapper(
-            key: _CustomizationSettingsKeys.trackNumberInAlbumPage,
-            child: Obx(
-              () => CustomSwitchListTile(
-                bgColor: getBgColor(_CustomizationSettingsKeys.trackNumberInAlbumPage),
-                icon: Broken.card_remove,
-                title: lang.DISPLAY_TRACK_NUMBER_IN_ALBUM_PAGE,
-                subtitle: lang.DISPLAY_TRACK_NUMBER_IN_ALBUM_PAGE_SUBTITLE,
-                value: settings.displayTrackNumberinAlbumPage.value,
-                onChanged: (p0) => settings.save(displayTrackNumberinAlbumPage: !p0),
-              ),
-            ),
+          SettingToggle(
+            settings.displayTrackNumberinAlbumPage,
+            icon: Broken.card_remove,
+            title: () => lang.displayTrackNumberInAlbumPage,
+            subtitle: () => lang.displayTrackNumberInAlbumPageSubtitle,
           ),
-
-          /// Album Card Top Right Date
-          getItemWrapper(
-            key: _CustomizationSettingsKeys.albumCardTopRightDate,
-            child: Obx(
-              () => CustomSwitchListTile(
-                bgColor: getBgColor(_CustomizationSettingsKeys.albumCardTopRightDate),
-                icon: Broken.notification_status,
-                title: lang.DISPLAY_ALBUM_CARD_TOP_RIGHT_DATE,
-                subtitle: lang.DISPLAY_ALBUM_CARD_TOP_RIGHT_DATE_SUBTITLE,
-                onChanged: (p0) => settings.save(albumCardTopRightDate: !p0),
-                value: settings.albumCardTopRightDate.value,
-              ),
-            ),
+          SettingToggle(
+            settings.albumCardTopRightDate,
+            icon: Broken.notification_status,
+            title: () => lang.displayAlbumCardTopRightDate,
+            subtitle: () => lang.displayAlbumCardTopRightDateSubtitle,
           ),
-
-          /// Force Squared Album Thumbnail
-          getItemWrapper(
-            key: _CustomizationSettingsKeys.forceSquaredAlbumThumb,
-            child: Obx(
-              () => CustomSwitchListTile(
-                bgColor: getBgColor(_CustomizationSettingsKeys.forceSquaredAlbumThumb),
-                icon: Broken.crop,
-                title: lang.FORCE_SQUARED_ALBUM_THUMBNAIL,
-                value: settings.forceSquaredAlbumThumbnail.value,
-                onChanged: (p0) {
-                  settings.save(forceSquaredAlbumThumbnail: !p0);
-                  if (!p0 && settings.albumThumbnailSizeinList.toInt() != settings.albumListTileHeight.toInt()) {
-                    NamidaNavigator.inst.navigateDialog(
-                      dialog: CustomBlurryDialog(
-                        normalTitleStyle: true,
-                        isWarning: true,
-                        bodyText: lang.FORCE_SQUARED_THUMBNAIL_NOTE,
-                        actions: [
-                          const CancelButton(),
-                          NamidaButton(
-                            text: lang.CONFIRM,
-                            onPressed: () {
-                              settings.save(albumThumbnailSizeinList: settings.albumListTileHeight.value);
-                              NamidaNavigator.inst.closeDialog();
-                            },
-                          ),
-                        ],
-                      ),
-                    );
-                  }
-                },
-              ),
-            ),
+          SettingToggle(
+            settings.forceSquaredAlbumThumbnail,
+            icon: Broken.crop,
+            title: () => lang.forceSquaredAlbumThumbnail,
+            onChanged: _onForceSquaredAlbumThumbChanged,
           ),
-
-          /// Staggered Album Gridview
-          getItemWrapper(
-            key: _CustomizationSettingsKeys.staggeredAlbumGridview,
-            child: Obx(
-              () => CustomSwitchListTile(
-                bgColor: getBgColor(_CustomizationSettingsKeys.staggeredAlbumGridview),
-                icon: Broken.element_4,
-                title: lang.STAGGERED_ALBUM_GRID_VIEW,
-                value: settings.useAlbumStaggeredGridView.value,
-                onChanged: (p0) => settings.save(useAlbumStaggeredGridView: !p0),
-              ),
-            ),
+          SettingToggle(
+            settings.useAlbumStaggeredGridView,
+            icon: Broken.element_4,
+            title: () => lang.staggeredAlbumGridView,
           ),
-
-          /// Album Thumbnail Size in List
-          getItemWrapper(
-            key: _CustomizationSettingsKeys.sizeOfAlbumThumb,
-            child: Obx(
-              () => CustomListTile(
-                bgColor: getBgColor(_CustomizationSettingsKeys.sizeOfAlbumThumb),
+          SettingCustom(
+            title: () => lang.albumThumbnailSizeInList,
+            keys: [settings.albumThumbnailSizeinList],
+            tile: (args) => _TextFieldDialogTile(
+              bgColor: args.bgColor,
+              setting: settings.albumThumbnailSizeinList,
+              valueToText: _toIntText,
+              icon: Broken.maximize_3,
+              title: lang.albumThumbnailSizeInList,
+              onTap: () => showSettingDialogWithTextField(
+                title: lang.albumThumbnailSizeInList,
+                albumThumbnailSizeinList: true,
                 icon: Broken.maximize_3,
-                title: lang.ALBUM_THUMBNAIL_SIZE_IN_LIST,
-                trailingText: "${settings.albumThumbnailSizeinList.toInt()}",
-                onTap: () {
-                  showSettingDialogWithTextField(
-                    title: lang.ALBUM_THUMBNAIL_SIZE_IN_LIST,
-                    albumThumbnailSizeinList: true,
-                    icon: Broken.maximize_3,
-                  );
-                },
               ),
             ),
           ),
-
-          /// Album Tile Height
-          getItemWrapper(
-            key: _CustomizationSettingsKeys.heightOfAlbumTile,
-            child: Obx(
-              () => CustomListTile(
-                bgColor: getBgColor(_CustomizationSettingsKeys.heightOfAlbumTile),
+          SettingCustom(
+            title: () => lang.heightOfAlbumTile,
+            keys: [settings.albumListTileHeight],
+            tile: (args) => _TextFieldDialogTile(
+              bgColor: args.bgColor,
+              setting: settings.albumListTileHeight,
+              valueToText: _toIntText,
+              icon: Broken.pharagraphspacing,
+              title: lang.heightOfAlbumTile,
+              onTap: () => showSettingDialogWithTextField(
+                title: lang.heightOfAlbumTile,
+                albumListTileHeight: true,
                 icon: Broken.pharagraphspacing,
-                title: lang.HEIGHT_OF_ALBUM_TILE,
-                trailingText: "${settings.albumListTileHeight.toInt()}",
-                onTap: () {
-                  showSettingDialogWithTextField(
-                    title: lang.HEIGHT_OF_ALBUM_TILE,
-                    albumListTileHeight: true,
-                    icon: Broken.pharagraphspacing,
-                  );
-                },
               ),
             ),
           ),
         ],
       ),
-    );
-  }
-
-  void _onSettingsChanged() => TrackTileManager.onTrackItemPropChange();
-
-  void _showTrackItemsDialog(TrackTilePosition p) {
-    NamidaNavigator.inst.navigateDialog(
-      dialog: CustomBlurryDialog(
-        title: lang.CHOOSE,
-        normalTitleStyle: true,
-        insetPadding: const EdgeInsets.all(64.0),
-        child: SizedBox(
-          height: Get.height * 0.5,
-          width: Get.width,
-          child: NamidaListView(
-            padding: EdgeInsets.zero,
-            itemBuilder: (context, i) {
-              final trItem = TrackTileItem.values[i];
-              return SmallListTile(
-                key: ValueKey(i),
-                title: trItem.toText(),
-                onTap: () {
-                  settings.updateTrackItemList(p, trItem);
-                  _onSettingsChanged();
-                  NamidaNavigator.inst.closeDialog();
-                },
-                active: settings.trackItem[p] == trItem,
-              );
-            },
-            itemCount: TrackTileItem.values.length,
-            itemExtents: null,
-          ),
+      SettingCustom(
+        title: () => lang.trackTileCustomization,
+        keys: [settings.trackItem],
+        tile: (args) => _TrackTileCustomizationTile(
+          args: args,
         ),
-      ),
-    );
-  }
-
-  Widget _getTrackTileCustomizationsTile(BuildContext context) {
-    return getItemWrapper(
-      key: _CustomizationSettingsKeys.TRACKTILECUSTOMIZATION,
-      child: NamidaExpansionTile(
-        bgColor: getBgColor(_CustomizationSettingsKeys.TRACKTILECUSTOMIZATION),
-        initiallyExpanded: settings.useSettingCollapsedTiles.value,
-        leading: const StackedIcon(
-          baseIcon: Broken.brush,
-          secondaryIcon: Broken.music_circle,
-        ),
-        titleText: lang.TRACK_TILE_CUSTOMIZATION,
         children: [
-          getItemWrapper(
-            key: _CustomizationSettingsKeys.forceSquaredTrackThumb,
-            child: Obx(
-              () => CustomSwitchListTile(
-                bgColor: getBgColor(_CustomizationSettingsKeys.forceSquaredTrackThumb),
-                icon: Broken.crop,
-                title: lang.FORCE_SQUARED_TRACK_THUMBNAIL,
-                value: settings.forceSquaredTrackThumbnail.value,
-                onChanged: (value) {
-                  settings.save(forceSquaredTrackThumbnail: !value);
-                  Player.inst.refreshRxVariables();
-                  _onSettingsChanged();
-                  if (!value && settings.trackThumbnailSizeinList.toInt() != settings.trackListTileHeight.toInt()) {
-                    NamidaNavigator.inst.navigateDialog(
-                      dialog: CustomBlurryDialog(
-                        normalTitleStyle: true,
-                        isWarning: true,
-                        bodyText: lang.FORCE_SQUARED_THUMBNAIL_NOTE,
-                        actions: [
-                          const CancelButton(),
-                          NamidaButton(
-                            text: lang.CONFIRM,
-                            onPressed: () {
-                              settings.save(trackThumbnailSizeinList: settings.trackListTileHeight.value);
-                              NamidaNavigator.inst.closeDialog();
-                            },
-                          ),
-                        ],
-                      ),
-                    );
-                  }
-                },
-              ),
-            ),
+          SettingToggle(
+            settings.forceSquaredTrackThumbnail,
+            icon: Broken.crop,
+            title: () => lang.forceSquaredTrackThumbnail,
+            onChanged: _onForceSquaredTrackThumbChanged,
           ),
-          getItemWrapper(
-            key: _CustomizationSettingsKeys.sizeOfTrackThumb,
-            child: Obx(
-              () => CustomListTile(
-                bgColor: getBgColor(_CustomizationSettingsKeys.sizeOfTrackThumb),
+          SettingCustom(
+            title: () => lang.trackThumbnailSizeInList,
+            keys: [settings.trackThumbnailSizeinList],
+            tile: (args) => _TextFieldDialogTile(
+              bgColor: args.bgColor,
+              setting: settings.trackThumbnailSizeinList,
+              valueToText: _toIntText,
+              icon: Broken.maximize_3,
+              title: lang.trackThumbnailSizeInList,
+              onTap: () => showSettingDialogWithTextField(
+                title: lang.trackThumbnailSizeInList,
+                trackThumbnailSizeinList: true,
                 icon: Broken.maximize_3,
-                title: lang.TRACK_THUMBNAIL_SIZE_IN_LIST,
-                trailingText: "${settings.trackThumbnailSizeinList.toInt()}",
-                onTap: () {
-                  showSettingDialogWithTextField(
-                    title: lang.TRACK_THUMBNAIL_SIZE_IN_LIST,
-                    trackThumbnailSizeinList: true,
-                    icon: Broken.maximize_3,
-                  );
-                },
               ),
             ),
           ),
-          getItemWrapper(
-            key: _CustomizationSettingsKeys.heightOfTrackTile,
-            child: Obx(
-              () => CustomListTile(
-                bgColor: getBgColor(_CustomizationSettingsKeys.heightOfTrackTile),
+          SettingCustom(
+            title: () => lang.heightOfTrackTile,
+            keys: [settings.trackListTileHeight],
+            tile: (args) => _TextFieldDialogTile(
+              bgColor: args.bgColor,
+              setting: settings.trackListTileHeight,
+              valueToText: _toIntText,
+              icon: Broken.pharagraphspacing,
+              title: lang.heightOfTrackTile,
+              onTap: () => showSettingDialogWithTextField(
+                title: lang.heightOfTrackTile,
+                trackListTileHeight: true,
                 icon: Broken.pharagraphspacing,
-                title: lang.HEIGHT_OF_TRACK_TILE,
-                trailingText: "${settings.trackListTileHeight.toInt()}",
-                onTap: () {
-                  showSettingDialogWithTextField(
-                    title: lang.HEIGHT_OF_TRACK_TILE,
-                    trackListTileHeight: true,
-                    icon: Broken.pharagraphspacing,
-                  );
-                },
               ),
             ),
           ),
-          getItemWrapper(
-            key: _CustomizationSettingsKeys.displayThirdRow,
-            child: Obx(
-              () => CustomSwitchListTile(
-                bgColor: getBgColor(_CustomizationSettingsKeys.displayThirdRow),
-                icon: Broken.chart_1,
-                rotateIcon: 1,
-                title: lang.DISPLAY_THIRD_ROW_IN_TRACK_TILE,
-                onChanged: (isTrue) {
-                  settings.save(displayThirdRow: !isTrue);
-                  _onSettingsChanged();
-                },
-                value: settings.displayThirdRow.value,
-              ),
-            ),
-          ),
-          getItemWrapper(
-            key: _CustomizationSettingsKeys.displayThirdItemInRow,
-            child: Obx(
-              () => CustomSwitchListTile(
-                bgColor: getBgColor(_CustomizationSettingsKeys.displayThirdItemInRow),
-                icon: Broken.coin,
-                rotateIcon: 3,
-                title: lang.DISPLAY_THIRD_ITEM_IN_ROW_IN_TRACK_TILE,
-                onChanged: (isTrue) {
-                  settings.save(displayThirdItemInEachRow: !isTrue);
-                  _onSettingsChanged();
-                },
-                value: settings.displayThirdItemInEachRow.value,
-              ),
-            ),
-          ),
-          getItemWrapper(
-            key: _CustomizationSettingsKeys.displayFavButtonInTrackTile,
-            child: Obx(
-              () => CustomSwitchListTile(
-                bgColor: getBgColor(_CustomizationSettingsKeys.displayFavButtonInTrackTile),
-                icon: Broken.heart,
-                title: lang.DISPLAY_FAVOURITE_ICON_IN_TRACK_TILE,
-                onChanged: (isTrue) {
-                  settings.save(displayFavouriteIconInListTile: !isTrue);
-                  _onSettingsChanged();
-                },
-                value: settings.displayFavouriteIconInListTile.value,
-              ),
-            ),
-          ),
-          getItemWrapper(
-            key: _CustomizationSettingsKeys.itemsSeparator,
-            child: Obx(
-              () => CustomListTile(
-                bgColor: getBgColor(_CustomizationSettingsKeys.itemsSeparator),
-                icon: Broken.minus_square,
-                title: lang.TRACK_TILE_ITEMS_SEPARATOR,
-                trailingText: settings.trackTileSeparator.value,
-                onTap: () => showSettingDialogWithTextField(
-                  title: lang.TRACK_TILE_ITEMS_SEPARATOR,
-                  trackTileSeparator: true,
-                  icon: Broken.minus_square,
+          SettingExpansion(
+            icon: Broken.arrow_swap_horizontal,
+            title: () => lang.swipeActions,
+            aliases: () => [lang.onSwiping],
+            initiallyExpandedWhen: _isAlwaysExpanded,
+            children: [
+              SettingCustom(
+                title: () => lang.leftAction,
+                aliases: () => [lang.swipeActions],
+                keys: [settings.onTrackSwipeLeft],
+                tile: (args) => _TrackActionTile(
+                  bgColor: args.bgColor,
+                  setting: settings.onTrackSwipeLeft,
+                  icon: Broken.arrow_left_1,
+                  title: lang.leftAction,
+                  isForPlayingItem: false,
                 ),
               ),
+              SettingCustom(
+                title: () => lang.rightAction,
+                aliases: () => [lang.swipeActions],
+                keys: [settings.onTrackSwipeRight],
+                tile: (args) => _TrackActionTile(
+                  bgColor: args.bgColor,
+                  setting: settings.onTrackSwipeRight,
+                  icon: Broken.arrow_right,
+                  title: lang.rightAction,
+                  isForPlayingItem: false,
+                ),
+              ),
+            ],
+          ),
+          SettingExpansion(
+            icon: Broken.gallery,
+            title: () => lang.artworkGestures,
+            initiallyExpandedWhen: _isAlwaysExpanded,
+            children: [
+              SettingCustom(
+                title: () => lang.tapAction,
+                aliases: () => [lang.artwork],
+                keys: [settings.thumbnailTapAction],
+                tile: (args) => _TrackActionTile(
+                  bgColor: args.bgColor,
+                  setting: settings.thumbnailTapAction,
+                  icon: Broken.cd,
+                  title: lang.tapAction,
+                  isForPlayingItem: false,
+                ),
+              ),
+              SettingCustom(
+                title: () => lang.longPressAction,
+                aliases: () => [lang.artwork],
+                keys: [settings.thumbnailLongPressAction],
+                tile: (args) => _TrackActionTile(
+                  bgColor: args.bgColor,
+                  setting: settings.thumbnailLongPressAction,
+                  icon: Broken.story,
+                  title: lang.longPressAction,
+                  isForPlayingItem: false,
+                ),
+              ),
+            ],
+          ),
+          SettingCustom(
+            title: () => lang.displayThirdRowInTrackTile,
+            keys: [settings.displayThirdRow],
+            tile: (args) => _TrackTileToggleTile(
+              bgColor: args.bgColor,
+              setting: settings.displayThirdRow,
+              icon: Broken.chart_1,
+              rotateIcon: 1,
+              title: lang.displayThirdRowInTrackTile,
             ),
           ),
-          Obx(
-            () => Container(
-              color: context.theme.cardTheme.color,
-              width: context.width,
-              height: settings.trackListTileHeight * 1.5,
-              alignment: Alignment.center,
-              padding: const EdgeInsets.symmetric(vertical: 7.0),
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.center,
-                mainAxisSize: MainAxisSize.max,
-                children: [
-                  const SizedBox(
-                    width: 12.0,
-                  ),
-                  Container(
-                    margin: const EdgeInsets.symmetric(
-                      horizontal: 0.0,
-                    ),
-                    width: settings.trackThumbnailSizeinList.value,
-                    height: settings.trackThumbnailSizeinList.value,
-                    child: ArtworkWidget(
-                      track: allTracksInLibrary.firstOrNull,
-                      key: Key(allTracksInLibrary.firstOrNull?.pathToImage ?? ''),
-                      thumbnailSize: settings.trackThumbnailSizeinList.value,
-                      path: allTracksInLibrary.firstOrNull?.pathToImage,
-                      forceSquared: settings.forceSquaredTrackThumbnail.value,
-                    ),
-                  ),
-                  const SizedBox(
-                    width: 12.0,
-                  ),
-
-                  /// Main Info
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        FittedBox(
-                          child: Row(
-                            children: [
-                              TrackTilePosition.row1Item1,
-                              TrackTilePosition.row1Item2,
-                              if (settings.displayThirdItemInEachRow.value) TrackTilePosition.row1Item3,
-                            ]
-                                .map(
-                                  (e) => TrackItemSmallBox(
-                                    text: settings.trackItem[e]?.label,
-                                    onTap: () => _showTrackItemsDialog(e),
-                                  ),
-                                )
-                                .addSeparators(separator: const SizedBox(width: 6.0))
-                                .toList(),
-                          ),
-                        ),
-                        const SizedBox(
-                          height: 4.0,
-                        ),
-                        FittedBox(
-                          child: Row(
-                            children: [
-                              TrackTilePosition.row2Item1,
-                              TrackTilePosition.row2Item2,
-                              if (settings.displayThirdItemInEachRow.value) TrackTilePosition.row2Item3,
-                            ]
-                                .map(
-                                  (e) => TrackItemSmallBox(
-                                    text: settings.trackItem[e]?.label,
-                                    onTap: () => _showTrackItemsDialog(e),
-                                  ),
-                                )
-                                .addSeparators(separator: const SizedBox(width: 6.0))
-                                .toList(),
-                          ),
-                        ),
-                        const SizedBox(
-                          height: 4.0,
-                        ),
-                        if (settings.displayThirdRow.value)
-                          FittedBox(
-                            child: Row(
-                              children: [
-                                TrackTilePosition.row3Item1,
-                                TrackTilePosition.row3Item2,
-                                if (settings.displayThirdItemInEachRow.value) TrackTilePosition.row3Item3,
-                              ]
-                                  .map(
-                                    (e) => TrackItemSmallBox(
-                                      text: settings.trackItem[e]?.label,
-                                      onTap: () => _showTrackItemsDialog(e),
-                                    ),
-                                  )
-                                  .addSeparators(separator: const SizedBox(width: 6.0))
-                                  .toList(),
-                            ),
-                          ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(width: 6.0),
-
-                  /// Right Items
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.center,
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      ...[
-                        TrackTilePosition.rightItem1,
-                        TrackTilePosition.rightItem2,
-                      ]
-                          .map(
-                            (e) => TrackItemSmallBox(
-                              text: settings.trackItem[e]?.label,
-                              onTap: () => _showTrackItemsDialog(e),
-                            ),
-                          )
-                          .addSeparators(separator: const SizedBox(height: 3.0))
-                          .toList(),
-                      if (settings.displayFavouriteIconInListTile.value) ...[
-                        const SizedBox(height: 3.0),
-                        const NamidaLikeButton(
-                          track: null,
-                          size: 20,
-                        ),
-                      ]
-                    ],
-                  ),
-                  const SizedBox(width: 6.0),
-                  const MoreIcon(
-                    iconSize: 20,
-                  ),
-                  const SizedBox(width: 6.0),
-                ],
+          SettingCustom(
+            title: () => lang.displayThirdItemInRowInTrackTile,
+            keys: [settings.displayThirdItemInEachRow],
+            tile: (args) => _TrackTileToggleTile(
+              bgColor: args.bgColor,
+              setting: settings.displayThirdItemInEachRow,
+              icon: Broken.coin,
+              rotateIcon: 3,
+              title: lang.displayThirdItemInRowInTrackTile,
+            ),
+          ),
+          SettingToggle(
+            settings.displayFavouriteIconInListTile,
+            icon: Broken.heart,
+            title: () => lang.displayFavouriteIconInTrackTile,
+            onChanged: _onTrackTilePropChanged,
+          ),
+          SettingCustom(
+            title: () => lang.trackTileItemsSeparator,
+            keys: [settings.trackTileSeparator],
+            tile: (args) => _TextFieldDialogTile(
+              bgColor: args.bgColor,
+              setting: settings.trackTileSeparator,
+              valueToText: (separator) => separator,
+              icon: Broken.minus_square,
+              title: lang.trackTileItemsSeparator,
+              onTap: () => showSettingDialogWithTextField(
+                title: lang.trackTileItemsSeparator,
+                trackTileSeparator: true,
+                icon: Broken.minus_square,
               ),
             ),
-          )
+          ),
+          SettingCustom(
+            title: () => lang.trackArtistsDisplaySeparator,
+            keys: [settings.trackArtistsDisplaySeparator],
+            tile: (args) => _TextFieldDialogTile(
+              bgColor: args.bgColor,
+              setting: settings.trackArtistsDisplaySeparator,
+              valueToText: (separator) => separator.isEmpty ? null : 'A${separator}B',
+              icon: Broken.profile_2user,
+              title: lang.trackArtistsDisplaySeparator,
+              onTap: () => showSettingDialogWithTextField(
+                title: lang.trackArtistsDisplaySeparator,
+                trackArtistsDisplaySeparator: true,
+                icon: Broken.profile_2user,
+              ),
+            ),
+          ),
         ],
       ),
-    );
-  }
-
-  Widget _getMiniplayerCustomizationsTile(BuildContext context) {
-    return getItemWrapper(
-      key: _CustomizationSettingsKeys.MINIPLAYERCUSTOMIZATION,
-      child: NamidaExpansionTile(
-        bgColor: getBgColor(_CustomizationSettingsKeys.MINIPLAYERCUSTOMIZATION),
-        initiallyExpanded: settings.useSettingCollapsedTiles.value,
+      SettingExpansion(
         leading: const StackedIcon(
           baseIcon: Broken.brush,
           secondaryIcon: Broken.external_drive,
         ),
-        titleText: lang.MINIPLAYER_CUSTOMIZATION,
+        title: () => lang.miniplayerCustomization,
+        initiallyExpandedWhen: _shouldExpandGroups,
         children: [
-          getItemWrapper(
-            key: _CustomizationSettingsKeys.partyMode,
-            child: Obx(
-              () => CustomSwitchListTile(
-                bgColor: getBgColor(_CustomizationSettingsKeys.partyMode),
-                icon: Broken.slider_horizontal_1,
-                title: lang.ENABLE_PARTY_MODE,
-                subtitle: lang.ENABLE_PARTY_MODE_SUBTITLE,
-                onChanged: (value) {
-                  if (value) return settings.save(enablePartyModeInMiniplayer: false);
-                  SussyBaka.monetize(onEnable: () => settings.save(enablePartyModeInMiniplayer: true));
-                },
-                value: settings.enablePartyModeInMiniplayer.value,
-              ),
+          SettingCustom(
+            title: () => lang.enablePartyMode,
+            aliases: () => [lang.enablePartyModeSubtitle],
+            keys: [settings.enablePartyModeInMiniplayer],
+            tile: (args) => _PartyModeTile(
+              args: args,
             ),
-          ),
-          getItemWrapper(
-            key: _CustomizationSettingsKeys.edgeColorsSwitching,
-            child: Obx(
-              () => CustomSwitchListTile(
-                bgColor: getBgColor(_CustomizationSettingsKeys.edgeColorsSwitching),
-                enabled: settings.enablePartyModeInMiniplayer.value,
+            children: [
+              SettingToggle(
+                settings.enablePartyModeColorSwap,
                 icon: Broken.colors_square,
-                title: lang.EDGE_COLORS_SWITCHING,
-                onChanged: (value) {
-                  settings.save(enablePartyModeColorSwap: !value);
-                },
-                value: settings.enablePartyModeColorSwap.value,
+                title: () => lang.edgeColorsSwitching,
+                enabledWhen: _isPartyModeEnabled,
+                onChanged: _onEdgeColorsSwitchingChanged,
               ),
+            ],
+          ),
+          SettingCustom(
+            title: () => lang.visualizer,
+            aliases: () => [lang.enableMiniplayerParticles, ...MiniplayerVisualizer.values.map((e) => e.toText())],
+            keys: [settings.miniplayerVisualizers, settings.enableMiniplayerParticles, settings.visualizerArtworkColors],
+            tile: (args) => VisualizerTile(
+              bgColor: args.bgColor,
             ),
           ),
-          getItemWrapper(
-            key: _CustomizationSettingsKeys.movingParticles,
-            child: Obx(
-              () => CustomSwitchListTile(
-                bgColor: getBgColor(_CustomizationSettingsKeys.movingParticles),
-                icon: Broken.buy_crypto,
-                title: lang.ENABLE_MINIPLAYER_PARTICLES,
-                onChanged: (value) => settings.save(enableMiniplayerParticles: !value),
-                value: settings.enableMiniplayerParticles.value,
-              ),
+          SettingCustom(
+            title: () => lang.playerBackground,
+            aliases: () => [lang.artwork, lang.blur, lang.dimIntensity, lang.colorWhenExpanded],
+            keys: [
+              settings.playerBackground, settings.playerBackgroundImage, settings.playerBackgroundBlur, settings.playerBackgroundDim, //
+              settings.playerBackgroundVignette, settings.playerBackgroundAnimated, settings.playerColorWhenExpanded, //
+            ],
+            tile: (args) => PlayerBackgroundTile(
+              bgColor: args.bgColor,
             ),
           ),
-          getItemWrapper(
-            key: _CustomizationSettingsKeys.thumbAnimationIntensity,
-            child: Obx(
-              () => CustomListTile(
-                bgColor: getBgColor(_CustomizationSettingsKeys.thumbAnimationIntensity),
-                icon: Broken.flash,
-                title: lang.ANIMATING_THUMBNAIL_INTENSITY,
-                trailing: NamidaWheelSlider(
-                  totalCount: 25,
-                  initValue: settings.animatingThumbnailIntensity.value,
-                  onValueChanged: (val) {
-                    settings.save(animatingThumbnailIntensity: val);
-                  },
-                  text: "${(settings.animatingThumbnailIntensity.value * 4).toStringAsFixed(0)}%",
+          SettingExpansion(
+            icon: Broken.flash,
+            title: () => lang.animatingThumbnailIntensity,
+            initiallyExpandedWhen: _isAlwaysExpanded,
+            children: [
+              SettingCustom(
+                title: () => lang.expandedMiniplayer,
+                aliases: () => [lang.animatingThumbnailIntensity],
+                keys: [settings.animatingThumbnailIntensity],
+                tile: (args) => _ThumbnailIntensityTile(
+                  bgColor: args.bgColor,
+                  setting: settings.animatingThumbnailIntensity,
+                  icon: Broken.flash,
+                  title: lang.expandedMiniplayer,
                 ),
               ),
-            ),
-          ),
-          getItemWrapper(
-            key: _CustomizationSettingsKeys.thumbInverseAnimation,
-            child: Obx(
-              () => CustomSwitchListTile(
-                bgColor: getBgColor(_CustomizationSettingsKeys.thumbInverseAnimation),
-                icon: Broken.arrange_circle_2,
-                title: lang.ANIMATING_THUMBNAIL_INVERSED,
-                subtitle: lang.ANIMATING_THUMBNAIL_INVERSED_SUBTITLE,
-                onChanged: (value) {
-                  settings.save(animatingThumbnailInversed: !value);
-                },
-                value: settings.animatingThumbnailInversed.value,
-              ),
-            ),
-          ),
-          getItemWrapper(
-            key: _CustomizationSettingsKeys.artworkGesture,
-            child: NamidaExpansionTile(
-              icon: Broken.gallery,
-              iconColor: context.defaultIconColor(),
-              initiallyExpanded: true,
-              titleText: lang.ARTWORK_GESTURES,
-              childrenPadding: const EdgeInsets.symmetric(horizontal: 8.0),
-              trailing: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  NamidaIconButton(
-                    tooltip: lang.RESTORE_DEFAULTS,
-                    icon: Broken.refresh,
-                    iconSize: 20.0,
-                    onPressed: () {
-                      settings.save(
-                        artworkGestureScale: false,
-                        artworkGestureDoubleTapLRC: true,
-                        animatingThumbnailScaleMultiplier: 1.0,
-                      );
-                    },
+              SettingCustom(
+                title: () => lang.lyrics,
+                aliases: () => [lang.animatingThumbnailIntensity],
+                keys: [settings.animatingThumbnailIntensityLyrics],
+                tile: (args) => _ThumbnailIntensityTile(
+                  bgColor: args.bgColor,
+                  setting: settings.animatingThumbnailIntensityLyrics,
+                  leading: const StackedIcon(
+                    baseIcon: Broken.flash,
+                    secondaryIcon: Broken.document,
+                    secondaryIconSize: 10.0,
                   ),
-                  const SizedBox(width: 4.0),
-                  const Icon(Broken.arrow_down_2, size: 20.0),
-                  const SizedBox(width: 12.0),
-                ],
-              ),
-              children: [
-                Obx(
-                  () => CustomSwitchListTile(
-                    visualDensity: VisualDensity.compact,
-                    icon: Broken.maximize,
-                    title: lang.SCALE_MULTIPLIER,
-                    subtitle: "${(settings.animatingThumbnailScaleMultiplier.value * 100).round()}%",
-                    value: settings.artworkGestureScale.value,
-                    onChanged: (value) {
-                      settings.save(artworkGestureScale: !value);
-                    },
-                  ),
-                ),
-                Obx(
-                  () => CustomSwitchListTile(
-                    visualDensity: VisualDensity.compact,
-                    leading: const StackedIcon(
-                      baseIcon: Broken.document,
-                      secondaryIcon: Broken.blend_2,
-                      secondaryIconSize: 12.0,
-                    ),
-                    title: lang.DOUBLE_TAP_TO_TOGGLE_LYRICS,
-                    value: settings.artworkGestureDoubleTapLRC.value,
-                    onChanged: (value) {
-                      settings.save(artworkGestureDoubleTapLRC: !value);
-                    },
-                  ),
-                ),
-                const SizedBox(height: 6.0),
-              ],
-            ),
-          ),
-          const SizedBox(height: 6.0),
-          getItemWrapper(
-            key: _CustomizationSettingsKeys.waveformBarsCount,
-            child: Obx(
-              () => CustomListTile(
-                bgColor: getBgColor(_CustomizationSettingsKeys.waveformBarsCount),
-                icon: Broken.sound,
-                title: lang.WAVEFORM_BARS_COUNT,
-                trailing: SizedBox(
-                  width: 80,
-                  child: Column(
-                    children: [
-                      NamidaWheelSlider(
-                        totalCount: 360,
-                        initValue: settings.waveformTotalBars.value - 40,
-                        onValueChanged: (val) {
-                          final v = (val + 40);
-                          settings.save(waveformTotalBars: v);
-                          WaveformController.inst.calculateUIWaveform();
-                        },
-                        text: settings.waveformTotalBars.value.toString(),
-                      ),
-                    ],
-                  ),
+                  title: lang.lyrics,
                 ),
               ),
+              SettingCustom(
+                title: () => lang.minimizedMiniplayer,
+                aliases: () => [lang.animatingThumbnailIntensity],
+                keys: [settings.animatingThumbnailIntensityMinimized],
+                tile: (args) => _ThumbnailIntensityTile(
+                  bgColor: args.bgColor,
+                  setting: settings.animatingThumbnailIntensityMinimized,
+                  leading: const StackedIcon(
+                    baseIcon: Broken.flash,
+                    secondaryIcon: Broken.arrow_square_down,
+                    secondaryIconSize: 11.0,
+                  ),
+                  title: lang.minimizedMiniplayer,
+                ),
+              ),
+            ],
+          ),
+          SettingToggle(
+            settings.animatingThumbnailInversed,
+            icon: Broken.arrange_circle_2,
+            title: () => lang.animatingThumbnailInversed,
+            subtitle: () => lang.animatingThumbnailInversedSubtitle,
+          ),
+          SettingCustom(
+            title: () => lang.artworkGestures,
+            keys: [settings.artworkGestureDoubleTapLRC, settings.animatingThumbnailScaleMultiplier, settings.artworkTapAction, settings.artworkLongPressAction],
+            tile: (args) => _ArtworkGesturesTile(
+              args: args,
+            ),
+            children: [
+              SettingCustom(
+                title: () => lang.scaleMultiplier,
+                keys: [settings.animatingThumbnailScaleMultiplier],
+                tile: (args) => _ScaleMultiplierTile(
+                  bgColor: args.bgColor,
+                ),
+              ),
+              SettingToggle(
+                settings.artworkGestureDoubleTapLRC,
+                leading: const StackedIcon(
+                  baseIcon: Broken.document,
+                  secondaryIcon: Broken.blend_2,
+                  secondaryIconSize: 12.0,
+                ),
+                title: () => lang.doubleTapToToggleLyrics,
+              ),
+              SettingCustom(
+                title: () => lang.tapAction,
+                aliases: () => [lang.artwork],
+                keys: [settings.artworkTapAction],
+                tile: (args) => _TrackActionTile(
+                  bgColor: args.bgColor,
+                  setting: settings.artworkTapAction,
+                  icon: Broken.cd,
+                  title: lang.tapAction,
+                  isForPlayingItem: true,
+                ),
+              ),
+              SettingCustom(
+                title: () => lang.longPressAction,
+                aliases: () => [lang.artwork],
+                keys: [settings.artworkLongPressAction],
+                tile: (args) => _TrackActionTile(
+                  bgColor: args.bgColor,
+                  setting: settings.artworkLongPressAction,
+                  icon: Broken.story,
+                  title: lang.longPressAction,
+                  isForPlayingItem: true,
+                ),
+              ),
+            ],
+          ),
+          SettingCustom(
+            title: () => lang.waveformBarsCount,
+            keys: [settings.waveformTotalBars],
+            tile: (args) => _WaveformBarsTile(
+              bgColor: args.bgColor,
             ),
           ),
-          getItemWrapper(
-            key: _CustomizationSettingsKeys.displayAudioInfo,
-            child: Obx(
-              () => CustomSwitchListTile(
-                bgColor: getBgColor(_CustomizationSettingsKeys.displayAudioInfo),
-                icon: Broken.text_block,
-                title: lang.DISPLAY_AUDIO_INFO_IN_MINIPLAYER,
-                onChanged: (value) => settings.save(displayAudioInfoMiniplayer: !value),
-                value: settings.displayAudioInfoMiniplayer.value,
-              ),
-            ),
+          SettingToggle(
+            settings.displayAudioInfoMiniplayer,
+            icon: Broken.text_block,
+            title: () => lang.displayAudioInfoInMiniplayer,
           ),
-          getItemWrapper(
-            key: _CustomizationSettingsKeys.displayArtistBeforeTitle,
-            child: Obx(
-              () => CustomSwitchListTile(
-                bgColor: getBgColor(_CustomizationSettingsKeys.displayArtistBeforeTitle),
-                icon: Broken.align_left,
-                title: lang.DISPLAY_ARTIST_BEFORE_TITLE,
-                onChanged: (value) {
-                  settings.save(displayArtistBeforeTitle: !value);
-                  Player.inst.refreshRxVariables();
-                },
-                value: settings.displayArtistBeforeTitle.value,
-              ),
-            ),
+          SettingToggle(
+            settings.displayArtistBeforeTitle,
+            icon: Broken.align_left,
+            title: () => lang.displayArtistBeforeTitle,
+            onChanged: _onDisplayArtistBeforeTitleChanged,
           ),
         ],
+      ),
+      SettingCustom(
+        availability: NamidaFeaturesAvailablity.android,
+        title: () => lang.appIcon,
+        tile: (args) => _AppIconsTile(
+          bgColor: args.bgColor,
+        ),
+      ),
+    ],
+  ];
+
+  static List<String> _getEffectThemesTexts() => [
+    for (final e in EffectTheme.values)
+      if (e != EffectTheme.auto && e != EffectTheme.none) e.toText(),
+  ];
+
+  static bool _shouldExpandGroups() => settings.useSettingCollapsedTiles.value;
+
+  static bool _isAlwaysExpanded() => true;
+
+  static bool _isPartyModeEnabled() => settings.enablePartyModeInMiniplayer.valueR;
+
+  static bool _isBackgroundImagesEnabled() => settings.backgroundImages.valueR == true;
+
+  static String _toIntText(double value) => "${value.toInt()}";
+
+  static void _onTrackTilePropChanged(bool _) => TrackTileManager.onTrackItemPropChange();
+
+  static void _onEdgeColorsSwitchingChanged(bool isEnabled) => CurrentColor.inst.switchColorPalettes(swapEnabled: isEnabled);
+
+  static void _onDisplayArtistBeforeTitleChanged(bool _) => Player.inst.refreshRxVariables();
+
+  static void _onForceSquaredAlbumThumbChanged(bool isEnabled) {
+    if (!isEnabled) return;
+    _promptSquaredThumbnailSize(
+      sizeSetting: settings.albumThumbnailSizeinList,
+      heightSetting: settings.albumListTileHeight,
+    );
+  }
+
+  static void _onForceSquaredTrackThumbChanged(bool isEnabled) {
+    Player.inst.refreshRxVariables();
+    TrackTileManager.onTrackItemPropChange();
+    if (!isEnabled) return;
+    _promptSquaredThumbnailSize(
+      sizeSetting: settings.trackThumbnailSizeinList,
+      heightSetting: settings.trackListTileHeight,
+    );
+  }
+
+  static void _promptSquaredThumbnailSize({required SettingsKey<double> sizeSetting, required SettingsKey<double> heightSetting}) {
+    final isAlreadySquared = sizeSetting.value.toInt() == heightSetting.value.toInt();
+    if (isAlreadySquared) return;
+    NamidaNavigator.inst.navigateDialog(
+      dialog: CustomBlurryDialog(
+        normalTitleStyle: true,
+        isWarning: true,
+        bodyText: lang.forceSquaredThumbnailNote,
+        actions: [
+          const CancelButton(),
+          NamidaButton(
+            text: lang.confirm,
+            onTap: () {
+              sizeSetting.save(heightSetting.value);
+              NamidaNavigator.inst.closeDialog();
+            },
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SettingsCard(
+      title: lang.customizations,
+      subtitle: lang.customizationsSubtitle,
+      icon: Broken.brush_1,
+      child: SettingSectionsColumn(
+        page: this,
       ),
     );
   }
 }
 
-class TrackItemSmallBox extends StatelessWidget {
-  final void Function()? onTap;
-  final Widget? child;
-  final String? text;
-  const TrackItemSmallBox({super.key, this.onTap, this.child, this.text});
+class _PerformanceToggleTile extends StatelessWidget {
+  final Color? bgColor;
+  final SettingsKey<bool> setting;
+  final IconData icon;
+  final String title;
+
+  const _PerformanceToggleTile({
+    required this.bgColor,
+    required this.setting,
+    required this.icon,
+    required this.title,
+  });
+
+  void _onChanged(bool wasEnabled) {
+    settings.transaction(() {
+      setting.save(!wasEnabled);
+      settings.performanceMode.save(PerformanceMode.custom);
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
-    return NamidaInkWell(
-      bgColor: context.theme.colorScheme.background.withAlpha(160),
-      onTap: onTap,
-      borderRadius: 8.0,
-      padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 4.0),
-      child: text != null
-          ? Text(
-              text!,
-              style: context.theme.textTheme.displaySmall,
+    return ObxO(
+      rx: setting,
+      builder: (context, isEnabled) => CustomSwitchListTile(
+        bgColor: bgColor,
+        icon: icon,
+        title: title,
+        subtitle: lang.performanceNote,
+        value: isEnabled,
+        onChanged: _onChanged,
+      ),
+    );
+  }
+}
+
+class _TextFieldDialogTile<T> extends StatelessWidget {
+  final Color? bgColor;
+  final SettingsKey<T> setting;
+  final String? Function(T value) valueToText;
+  final IconData icon;
+  final String title;
+  final void Function() onTap;
+
+  const _TextFieldDialogTile({
+    required this.bgColor,
+    required this.setting,
+    required this.valueToText,
+    required this.icon,
+    required this.title,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return ObxO(
+      rx: setting,
+      builder: (context, value) => CustomListTile(
+        bgColor: bgColor,
+        icon: icon,
+        title: title,
+        trailingText: valueToText(value),
+        onTap: onTap,
+      ),
+    );
+  }
+}
+
+class _DateTimeFormatPresets extends StatelessWidget {
+  const _DateTimeFormatPresets();
+
+  void _onPresetTap(String format) {
+    settings.dateTimeFormat.save(format);
+    TrackTileManager.onTrackItemPropChange();
+    NamidaNavigator.inst.closeDialog();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final currentFormat = settings.dateTimeFormat.value;
+    return SizedBox(
+      height: namida.height * 0.4,
+      child: Padding(
+        padding: const EdgeInsets.only(bottom: 58.0),
+        child: NamidaScrollbarWithController(
+          showOnStart: true,
+          child: (c) => SmoothSingleChildScrollView(
+            controller: c,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                ...kDefaultDateTimeStrings.entries.map(
+                  (e) => CustomListTile(
+                    extraDense: true,
+                    title: e.value,
+                    subtitle: e.key,
+                    icon: e.key == currentFormat ? Broken.arrow_circle_right : Broken.arrow_right_3,
+                    onTap: () => _onPresetTap(e.key),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _HomeWidgetTile extends StatelessWidget {
+  final Color? bgColor;
+
+  const _HomeWidgetTile({required this.bgColor});
+
+  @override
+  Widget build(BuildContext context) {
+    return CustomListTile(
+      bgColor: bgColor,
+      icon: Broken.element_4,
+      title: lang.homeScreenWidget,
+      trailingRaw: const Icon(
+        Broken.arrow_right_3,
+        size: 20.0,
+      ),
+      onTap: NamidaChannel.inst.openHomeWidgetSettings,
+    );
+  }
+}
+
+class _TrackTileCustomizationTile extends StatelessWidget {
+  final SettingTileArgs args;
+
+  const _TrackTileCustomizationTile({required this.args});
+
+  @override
+  Widget build(BuildContext context) {
+    final page = args.page;
+    final isTargetWithin = page?.isTargetWithin(args.entry) == true;
+    final initiallyExpanded = settings.useSettingCollapsedTiles.value || isTargetWithin;
+    final children = [
+      ...args.entry.children.map(
+        (e) => SettingEntryTile(
+          entry: e,
+          page: page,
+        ),
+      ),
+      const _TrackTilePreview(),
+    ];
+    return NamidaExpansionTile(
+      bgColor: args.bgColor,
+      initiallyExpanded: initiallyExpanded,
+      leading: const StackedIcon(
+        baseIcon: Broken.brush,
+        secondaryIcon: Broken.music_circle,
+      ),
+      titleText: lang.trackTileCustomization,
+      children: children,
+    );
+  }
+}
+
+class _TrackActionTile extends StatelessWidget {
+  final Color? bgColor;
+  final SettingsKey<TrackExecuteActions> setting;
+  final IconData icon;
+  final String title;
+  final bool isForPlayingItem;
+
+  const _TrackActionTile({
+    required this.bgColor,
+    required this.setting,
+    required this.icon,
+    required this.title,
+    required this.isForPlayingItem,
+  });
+
+  bool _isAvailable(TrackExecuteActions action) {
+    if (isForPlayingItem) return !action.isPlayerAction && action != TrackExecuteActions.delete;
+    return !action.isPlayingItemOnly && action != TrackExecuteActions.focus;
+  }
+
+  void _onSelected(TrackExecuteActions action) {
+    setting.save(action);
+    NamidaNavigator.inst.popMenu();
+  }
+
+  Iterable<NamidaPopupItem> _getItems() {
+    final current = setting.value;
+    return TrackExecuteActions.values
+        .where(_isAvailable)
+        .map(
+          (e) => NamidaPopupItem(
+            icon: e.toIcon(),
+            title: e.toText(),
+            selected: e == current,
+            onTap: () => _onSelected(e),
+          ),
+        );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final textTheme = context.textTheme;
+    return NamidaPopupWrapper(
+      childrenDefault: _getItems,
+      child: CustomListTile(
+        extraDense: true,
+        bgColor: bgColor,
+        icon: icon,
+        title: title,
+        trailing: NamidaPopupWrapper(
+          childrenDefault: _getItems,
+          child: ObxO(
+            rx: setting,
+            builder: (context, action) => Text(
+              action.toText(),
+              style: textTheme.displayMedium,
+              textAlign: TextAlign.end,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _TrackTileToggleTile extends StatelessWidget {
+  final Color? bgColor;
+  final SettingsKey<bool> setting;
+  final IconData icon;
+  final int rotateIcon;
+  final String title;
+
+  const _TrackTileToggleTile({
+    required this.bgColor,
+    required this.setting,
+    required this.icon,
+    required this.rotateIcon,
+    required this.title,
+  });
+
+  void _onChanged(bool wasEnabled) {
+    setting.save(!wasEnabled);
+    TrackTileManager.onTrackItemPropChange();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ObxO(
+      rx: setting,
+      builder: (context, isEnabled) => CustomSwitchListTile(
+        bgColor: bgColor,
+        icon: icon,
+        rotateIcon: rotateIcon,
+        title: title,
+        value: isEnabled,
+        onChanged: _onChanged,
+      ),
+    );
+  }
+}
+
+class _TrackTilePreview extends StatelessWidget {
+  const _TrackTilePreview();
+
+  @override
+  Widget build(BuildContext context) {
+    return Obx(
+      (context) {
+        final trackItems = settings.trackItem.valueR;
+        final thumbnailSize = settings.trackThumbnailSizeinList.valueR;
+        final tileHeight = settings.trackListTileHeight.valueR;
+        final isThirdItemShown = settings.displayThirdItemInEachRow.valueR;
+        final isThirdRowShown = settings.displayThirdRow.valueR;
+        final isFavouriteShown = settings.displayFavouriteIconInListTile.valueR;
+        final isForceSquared = settings.forceSquaredTrackThumbnail.valueR;
+        final cardColor = context.theme.cardTheme.color;
+        final track = allTracksInLibrary.firstOrNull;
+        final imagePath = track?.pathToImage;
+        final artworkKeyText = imagePath ?? '';
+        final rightItems = [TrackTilePosition.rightItem1, TrackTilePosition.rightItem2]
+            .map(
+              (e) => _TrackItemSmallBox(
+                position: e,
+                text: trackItems[e]?.label,
+              ),
             )
-          : child,
+            .addSeparators(
+              separator: const SizedBox(
+                height: 3.0,
+              ),
+            );
+        return Container(
+          color: cardColor,
+          width: context.width,
+          height: tileHeight * 1.5,
+          alignment: Alignment.center,
+          padding: const EdgeInsets.symmetric(vertical: 7.0),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            mainAxisSize: MainAxisSize.max,
+            children: [
+              const SizedBox(
+                width: 12.0,
+              ),
+              SizedBox(
+                width: thumbnailSize,
+                height: thumbnailSize,
+                child: ArtworkWidget(
+                  key: Key(artworkKeyText),
+                  track: track,
+                  thumbnailSize: thumbnailSize,
+                  path: imagePath,
+                  forceSquared: isForceSquared,
+                ),
+              ),
+              const SizedBox(
+                width: 12.0,
+              ),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    _TrackTilePreviewRow(
+                      trackItems: trackItems,
+                      positions: [
+                        TrackTilePosition.row1Item1,
+                        TrackTilePosition.row1Item2,
+                        if (isThirdItemShown) TrackTilePosition.row1Item3,
+                      ],
+                    ),
+                    const SizedBox(
+                      height: 4.0,
+                    ),
+                    _TrackTilePreviewRow(
+                      trackItems: trackItems,
+                      positions: [
+                        TrackTilePosition.row2Item1,
+                        TrackTilePosition.row2Item2,
+                        if (isThirdItemShown) TrackTilePosition.row2Item3,
+                      ],
+                    ),
+                    const SizedBox(
+                      height: 4.0,
+                    ),
+                    if (isThirdRowShown)
+                      _TrackTilePreviewRow(
+                        trackItems: trackItems,
+                        positions: [
+                          TrackTilePosition.row3Item1,
+                          TrackTilePosition.row3Item2,
+                          if (isThirdItemShown) TrackTilePosition.row3Item3,
+                        ],
+                      ),
+                  ],
+                ),
+              ),
+              const SizedBox(
+                width: 6.0,
+              ),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.center,
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  ...rightItems,
+                  if (isFavouriteShown) ...[
+                    const SizedBox(
+                      height: 3.0,
+                    ),
+                    const NamidaRawLikeButton(
+                      size: 20.0,
+                      isLiked: null,
+                      removeConfirmationAction: null,
+                      onTap: null,
+                    ),
+                  ],
+                ],
+              ),
+              const SizedBox(
+                width: 6.0,
+              ),
+              const MoreIcon(
+                iconSize: 20.0,
+              ),
+              const SizedBox(
+                width: 6.0,
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _TrackTilePreviewRow extends StatelessWidget {
+  final Map<TrackTilePosition, TrackTileItem> trackItems;
+  final List<TrackTilePosition> positions;
+
+  const _TrackTilePreviewRow({
+    required this.trackItems,
+    required this.positions,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final boxes = positions
+        .map(
+          (e) => _TrackItemSmallBox(
+            position: e,
+            text: trackItems[e]?.label,
+          ),
+        )
+        .addSeparators(
+          separator: const SizedBox(
+            width: 6.0,
+          ),
+        )
+        .toFixedList();
+    return FittedBox(
+      child: Row(
+        children: boxes,
+      ),
+    );
+  }
+}
+
+class _TrackItemSmallBox extends StatelessWidget {
+  final TrackTilePosition position;
+  final String? text;
+
+  const _TrackItemSmallBox({
+    required this.position,
+    required this.text,
+  });
+
+  Iterable<Widget> _getChildren() {
+    return TrackTileItem.values.map(
+      (e) => ObxO(
+        rx: settings.trackItem,
+        builder: (context, trackItemMap) => SmallListTile(
+          borderRadius: 12.0,
+          visualDensity: const VisualDensity(horizontal: -4.0, vertical: -4.0),
+          title: e.toText(),
+          trailingIcon: e.toIcon(),
+          active: trackItemMap[position] == e,
+          onTap: () {
+            settings.trackItem.update((items) => items[position] = e);
+            TrackTileManager.onTrackItemPropChange();
+            NamidaNavigator.inst.popMenu();
+          },
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = context.theme;
+    final text = this.text;
+    return NamidaPopupWrapper(
+      children: _getChildren,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: theme.colorScheme.surface.withAlpha(160),
+          borderRadius: BorderRadius.circular(8.0.multipliedRadius),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 4.0),
+          child: text == null
+              ? null
+              : Text(
+                  text,
+                  style: theme.textTheme.displaySmall,
+                ),
+        ),
+      ),
+    );
+  }
+}
+
+class _PartyModeTile extends StatelessWidget {
+  final SettingTileArgs args;
+
+  const _PartyModeTile({required this.args});
+
+  void _toggle() {
+    final setting = settings.enablePartyModeInMiniplayer;
+    if (setting.value) return setting.save(false);
+    SussyBaka.monetize(unlockable: EggUnlockable.partyMode, onEnable: () => setting.save(true));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final page = args.page;
+    final setting = settings.enablePartyModeInMiniplayer;
+    final isTargetWithin = page?.isTargetWithin(args.entry) == true;
+    final initiallyExpanded = setting.value || isTargetWithin;
+    final children = args.entry.children
+        .map(
+          (e) => SettingEntryTile(
+            entry: e,
+            page: page,
+          ),
+        )
+        .toFixedList();
+    return NamidaExpansionTile(
+      bgColor: args.bgColor,
+      initiallyExpanded: initiallyExpanded,
+      expandedRx: setting,
+      onTap: _toggle,
+      icon: Broken.slider_horizontal_1,
+      titleText: lang.enablePartyMode,
+      subtitleText: lang.enablePartyModeSubtitle,
+      trailingBuilder: (_) => ObxO(
+        rx: setting,
+        builder: (context, isEnabled) => CustomSwitch(
+          active: isEnabled,
+        ),
+      ),
+      children: children,
+    );
+  }
+}
+
+class _ThumbnailIntensityTile extends StatelessWidget {
+  final Color? bgColor;
+  final SettingsKey<int> setting;
+  final IconData? icon;
+  final Widget? leading;
+  final String title;
+
+  const _ThumbnailIntensityTile({
+    required this.bgColor,
+    required this.setting,
+    this.icon,
+    this.leading,
+    required this.title,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return ObxO(
+      rx: setting,
+      builder: (context, intensity) {
+        final percentageText = (intensity * 4).toStringAsFixed(0);
+        return CustomListTile(
+          extraDense: true,
+          bgColor: bgColor,
+          icon: icon,
+          leading: leading,
+          title: title,
+          trailing: NamidaWheelSlider(
+            max: 25,
+            initValue: intensity,
+            onValueChanged: setting.save,
+            text: "$percentageText%",
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _ArtworkGesturesTile extends StatelessWidget {
+  final SettingTileArgs args;
+
+  const _ArtworkGesturesTile({required this.args});
+
+  void _restoreDefaults() {
+    settings.transaction(() {
+      settings.artworkGestureDoubleTapLRC.reset();
+      settings.animatingThumbnailScaleMultiplier.reset();
+      settings.artworkTapAction.reset();
+      settings.artworkLongPressAction.reset();
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final page = args.page;
+    final children = [
+      ...args.entry.children.map(
+        (e) => SettingEntryTile(
+          entry: e,
+          page: page,
+        ),
+      ),
+      const SizedBox(
+        height: 6.0,
+      ),
+    ];
+    return NamidaExpansionTile(
+      bgColor: args.bgColor,
+      icon: Broken.gallery,
+      initiallyExpanded: true,
+      titleText: lang.artworkGestures,
+      trailingBuilder: (arrow) => Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          NamidaIconButton(
+            tooltip: () => lang.restoreDefaults,
+            icon: Broken.refresh,
+            iconSize: 20.0,
+            onPressed: _restoreDefaults,
+          ),
+          const SizedBox(
+            width: 4.0,
+          ),
+          arrow,
+          const SizedBox(
+            width: 12.0,
+          ),
+        ],
+      ),
+      children: children,
+    );
+  }
+}
+
+class _ScaleMultiplierTile extends StatelessWidget {
+  final Color? bgColor;
+
+  const _ScaleMultiplierTile({required this.bgColor});
+
+  void _onValueChanged(int valueHundred) => settings.animatingThumbnailScaleMultiplier.save(valueHundred / 100);
+
+  @override
+  Widget build(BuildContext context) {
+    return ObxO(
+      rx: settings.animatingThumbnailScaleMultiplier,
+      builder: (context, multiplier) {
+        final valueHundred = (multiplier * 100).round();
+        return CustomListTile(
+          extraDense: true,
+          bgColor: bgColor,
+          icon: Broken.maximize,
+          title: lang.scaleMultiplier,
+          trailing: NamidaWheelSlider(
+            min: 50,
+            max: 150,
+            initValue: valueHundred,
+            onValueChanged: _onValueChanged,
+            text: "$valueHundred%",
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _WaveformBarsTile extends StatelessWidget {
+  final Color? bgColor;
+
+  const _WaveformBarsTile({required this.bgColor});
+
+  void _onValueChanged(int bars) {
+    settings.waveformTotalBars.save(bars);
+    WaveformController.inst.calculateUIWaveform();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ObxO(
+      rx: settings.waveformTotalBars,
+      builder: (context, bars) => CustomListTile(
+        bgColor: bgColor,
+        icon: Broken.sound,
+        title: lang.waveformBarsCount,
+        trailing: NamidaWheelSlider(
+          width: 80,
+          min: 40,
+          max: 400,
+          initValue: bars,
+          onValueChanged: _onValueChanged,
+          text: bars.toString(),
+        ),
+      ),
+    );
+  }
+}
+
+class _AppIconsTile extends StatelessWidget {
+  final Color? bgColor;
+
+  const _AppIconsTile({required this.bgColor});
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        const NamidaContainerDivider(),
+        DecoratedBox(
+          decoration: BoxDecoration(
+            color: bgColor,
+            borderRadius: BorderRadius.circular(12.0.multipliedRadius),
+          ),
+          child: const _AppIconWidgetRow(),
+        ),
+      ],
+    );
+  }
+}
+
+class _AppIconWidgetRow extends StatefulWidget {
+  const _AppIconWidgetRow();
+
+  @override
+  State<_AppIconWidgetRow> createState() => _AppIconWidgetRowState();
+}
+
+class _AppIconWidgetRowState extends State<_AppIconWidgetRow> {
+  NamidaAppIcons? _enabledIcon;
+
+  @override
+  void initState() {
+    super.initState();
+    _refreshStatus();
+  }
+
+  Future<void> _refreshStatus() async {
+    final newEnabledIcon = await NamidaChannel.inst.getEnabledAppIcon();
+    if (mounted && _enabledIcon != newEnabledIcon) {
+      setState(() {
+        _enabledIcon = newEnabledIcon;
+      });
+    }
+  }
+
+  Future<void> _onAddTap() {
+    const submitUrl = 'https://discord.com/channels/1156253663803740271/1423484977693327430/1423671224520671362';
+    return NamidaLinkUtils.openLink(submitUrl);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = context.theme;
+    final textTheme = theme.textTheme;
+    final enabledIcon = _enabledIcon;
+    final enabledIconAuthorInfo = enabledIcon?.authorInfos.firstOrNull;
+    final bgColor = theme.colorScheme.secondaryContainer;
+    final iconsRow = Row(
+      mainAxisSize: MainAxisSize.min,
+      children:
+          <Widget>[
+                ...NamidaAppIcons.values.map(
+                  (e) {
+                    final isEnabled = e == enabledIcon;
+                    return NamidaInkWell(
+                      animationDurationMS: 300,
+                      borderRadius: 12.0,
+                      padding: EdgeInsets.symmetric(horizontal: 12.0, vertical: 6.0),
+                      enableSecondaryTap: false,
+                      decoration: isEnabled
+                          ? BoxDecoration(
+                              color: bgColor.withOpacityExt(0.75),
+                              border: Border.all(
+                                color: bgColor,
+                                width: 1.5,
+                              ),
+                            )
+                          : BoxDecoration(
+                              color: bgColor.withOpacityExt(0.25),
+                            ),
+                      onTap: () async {
+                        await NamidaChannel.inst.changeAppIcon(e);
+                        await _refreshStatus();
+                        if (e.isJelly) NamidaJellys.promptEnable('Let jellyfishes invade namida too?');
+                      },
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Image.asset(
+                            e.assetPath,
+                            width: 34.0,
+                            height: 35.0,
+                            alignment: Alignment.center,
+                          ),
+                          SizedBox(height: 1.0),
+                          Text(
+                            e.name,
+                            style: textTheme.displaySmall,
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                ),
+                NamidaInkWell(
+                  animationDurationMS: 300,
+                  borderRadius: 12.0,
+                  padding: EdgeInsets.symmetric(horizontal: 12.0, vertical: 6.0),
+                  enableSecondaryTap: false,
+                  decoration: BoxDecoration(
+                    color: bgColor.withOpacityExt(0.25),
+                  ),
+                  onTap: _onAddTap,
+                  child: Text(
+                    lang.add,
+                    style: textTheme.displayMedium,
+                  ),
+                ),
+              ]
+              .addSeparators(
+                separator: SizedBox(width: 4.0),
+              )
+              .toFixedList(),
+    );
+
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        SizedBox(height: 12.0),
+        SizedBox(
+          width: context.width,
+          child: Row(
+            children: [
+              SizedBox(width: 8.0),
+              Icon(
+                Broken.attach_square,
+                size: 22.0,
+                color: context.defaultIconColor(),
+              ),
+              SizedBox(width: 8.0),
+              Expanded(
+                child: Wrap(
+                  runSpacing: 2.0,
+                  alignment: WrapAlignment.start,
+                  runAlignment: WrapAlignment.start,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: [
+                    Text(
+                      "${lang.appIcon}:",
+                      style: theme.textTheme.displayMedium,
+                    ),
+                    if (enabledIcon != null) ...[
+                      SizedBox(width: 6.0),
+                      Text(
+                        enabledIcon.name,
+                        style: theme.textTheme.displayMedium,
+                      ),
+                      if (enabledIconAuthorInfo != null) ...[
+                        SizedBox(width: 2.0),
+                        Text(
+                          "(@${enabledIconAuthorInfo.name})",
+                          style: theme.textTheme.displaySmall,
+                        ),
+                        if (enabledIconAuthorInfo.aiModel != null)
+                          NamidaInkWell(
+                            bgColor: theme.cardColor,
+                            margin: EdgeInsets.symmetric(horizontal: 2.0),
+                            padding: EdgeInsets.symmetric(horizontal: 2.0, vertical: 2.0),
+                            borderRadius: 4.0,
+                            child: Text(
+                              "AI",
+                              style: theme.textTheme.displaySmall?.copyWith(fontSize: 10.0),
+                            ),
+                          ),
+                      ],
+                    ],
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+        SizedBox(height: 8.0),
+        SmoothSingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: iconsRow,
+        ),
+        SizedBox(height: 8.0),
+      ],
     );
   }
 }

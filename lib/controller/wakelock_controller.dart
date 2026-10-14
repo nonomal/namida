@@ -24,23 +24,31 @@ class WakelockController {
   }
 
   void updateFullscreenStatus(bool fullscreen) {
+    if (_isFullScreen == fullscreen) return;
     _isFullScreen = fullscreen;
     _reEvaluate();
   }
 
   /// Should be called whenever a video is loaded/unloaded.
   void updateVideoStatus(bool videoAvailable) {
+    if (_isVideoAvailable == videoAvailable) return;
     _isVideoAvailable = videoAvailable;
     _reEvaluate();
   }
 
   void updatePlayPauseStatus(bool playing) {
+    if (_isPlaying == playing) return;
     _isPlaying = playing;
     _reEvaluate();
   }
 
   void updateLRCStatus(bool hasLRC) {
+    if (_isLRCAvailable == hasLRC) return;
     _isLRCAvailable = hasLRC;
+    _reEvaluate();
+  }
+
+  void onSettingChanged() {
     _reEvaluate();
   }
 
@@ -64,11 +72,19 @@ class WakelockController {
     }
   }
 
-  void _enable() {
-    WakelockPlus.enable();
+  void _enable() async {
+    try {
+      await WakelockPlus.enable();
+    } catch (_) {
+      // -- no foreground activity yet
+    }
   }
 
-  void _disable() {
-    WakelockPlus.disable();
+  void _disable() async {
+    try {
+      await WakelockPlus.disable();
+    } catch (_) {
+      // -- no foreground activity yet
+    }
   }
 }

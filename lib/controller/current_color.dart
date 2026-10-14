@@ -1,29 +1,65 @@
+// ignore_for_file: avoid_rx_value_getter_outside_obx
 import 'dart:async';
 import 'dart:io';
+import 'dart:isolate';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
-import 'package:dynamic_color/dynamic_color.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
-import 'package:get/get.dart';
+
+import 'package:dynamic_color/dynamic_color.dart';
 import 'package:palette_generator/palette_generator.dart';
 import 'package:queue/queue.dart' as qs;
 
 import 'package:namida/class/color_m.dart';
+import 'package:namida/class/file_parts.dart';
 import 'package:namida/class/func_execute_limiter.dart';
 import 'package:namida/class/track.dart';
 import 'package:namida/controller/indexer_controller.dart';
+import 'package:namida/controller/navigator_controller.dart';
 import 'package:namida/controller/player_controller.dart';
 import 'package:namida/controller/settings_controller.dart';
 import 'package:namida/controller/thumbnail_manager.dart';
 import 'package:namida/core/constants.dart';
+import 'package:namida/core/dimensions.dart';
+import 'package:namida/core/enums.dart';
 import 'package:namida/core/extensions.dart';
+import 'package:namida/core/namida_converter_ext.dart';
+import 'package:namida/core/utils.dart';
+import 'package:namida/ui/widgets/jellyfish.dart';
+import 'package:namida/ui/widgets/network_artwork.dart';
 import 'package:namida/youtube/class/youtube_id.dart';
+import 'package:namida/youtube/widgets/yt_thumbnail.dart';
+import 'package:namida_waveform/namida_palette.dart';
 
-Color get playerStaticColor => Get.isDarkMode ? playerStaticColorDark : playerStaticColorLight;
-Color get playerStaticColorLight => Color(settings.staticColor.value);
-Color get playerStaticColorDark => Color(settings.staticColorDark.value);
+Color get playerStaticColor => namida.isDarkMode ? playerStaticColorDark : playerStaticColorLight;
+
+Color get playerStaticColorLight {
+  final cInt = settings.staticColor.value;
+  if (cInt != null) return Color(cInt);
+  return NamidaJellys.enableColorPaletteHijack ? NamidaJellys.paletteLight : kMainColorLight;
+}
+
+Color get playerStaticColorDark {
+  final cInt = settings.staticColorDark.value;
+  if (cInt != null) return Color(cInt);
+  return NamidaJellys.enableColorPaletteHijack ? NamidaJellys.paletteDark : kMainColorDark;
+}
+
+Color get playerStaticColorR => namida.isDarkMode ? playerStaticColorDark : playerStaticColorLight;
+
+Color get playerStaticColorLightR {
+  final cInt = settings.staticColor.valueR;
+  if (cInt != null) return Color(cInt);
+  return NamidaJellys.enableColorPaletteHijack ? NamidaJellys.paletteLight : kMainColorLight;
+}
+
+Color get playerStaticColorDarkR {
+  final cInt = settings.staticColorDark.valueR;
+  if (cInt != null) return Color(cInt);
+  return NamidaJellys.enableColorPaletteHijack ? NamidaJellys.paletteDark : kMainColorDark;
+}
 
 class CurrentColor {
   static CurrentColor get inst => _instance;
@@ -31,136 +67,160 @@ class CurrentColor {
   CurrentColor._internal();
 
   bool get _canAutoUpdateColor => settings.autoColor.value || settings.forceMiniplayerTrackColor.value;
-  Color get miniplayerColor => settings.forceMiniplayerTrackColor.value ? _namidaColorMiniplayer.value ?? color : color;
-  Color get color => _namidaColor.value.color;
-  List<Color> get palette => _namidaColor.value.palette;
-  Color get currentColorScheme => _colorSchemeOfSubPages.value ?? color;
-  int get colorAlpha => Get.isDarkMode ? 200 : 120;
-  bool get shouldUpdateFromDeviceWallpaper => settings.pickColorsFromDeviceWallpaper.value;
+  bool get _shouldUpdateFromDeviceWallpaper => settings.pickColorsFromDeviceWallpaper.value;
 
-  final _namidaColorMiniplayer = Rxn<Color>();
+  Color get miniplayerColor => settings.forceMiniplayerTrackColor.valueR ? _namidaColorMiniplayer.valueR?.color ?? color : color;
+  NamidaColor get miniplayerColorM =>
+      settings.forceMiniplayerTrackColor.valueR ? _namidaColorMiniplayer.valueR ?? _namidaColor.valueR ?? _defaultNamidaColor : _namidaColor.valueR ?? _defaultNamidaColor;
+  Color get color => _namidaColor.valueR?.color ?? _defaultNamidaColor.color;
+  List<Color> get palette => _namidaColor.valueR?.palette ?? _defaultNamidaColor.palette;
+  Color get currentColorScheme => _colorSchemeOfSubPages.valueR ?? color;
+  int get colorAlpha => namida.isDarkMode ? 200 : 120;
 
-  late final Rx<NamidaColor> _namidaColor = NamidaColor(
-    used: playerStaticColor,
-    mix: playerStaticColor,
-    palette: [playerStaticColor],
-  ).obs;
+  final _namidaColorMiniplayer = Rxn<NamidaColor>();
+
+  final _namidaColor = Rxn<NamidaColor>();
+
+  NamidaColor get _defaultNamidaColor => NamidaColor.single(playerStaticColorR);
 
   final _colorSchemeOfSubPages = Rxn<Color>();
 
-  final paletteFirstHalf = <Color>[].obs;
-  final paletteSecondHalf = <Color>[].obs;
+  final partyPalette = <Color>[].obs;
+  final partyPaletteRotation = 0.obs;
+  static int partyPaletteSplitIndexOf(int paletteLength) => paletteLength <= 0 ? 0 : (paletteLength - 1) ~/ 3 + 1;
 
   /// Same fields exists in [Player] class, they can be used but these ones ensure updating the color only after extracting.
   final currentPlayingTrack = Rxn<Selectable>();
   final currentPlayingIndex = 0.obs;
 
-  ColorScheme? deviceWallpaperColorScheme;
+  YoutubeID? _currentPlayingVideo;
 
-  final isGeneratingAllColorPalettes = false.obs;
+  Color? _deviceWallpaperColorAccent;
+
+  final allColorPalettesGeneratingProgress = 0.obs;
+  final allColorPalettesGeneratingTotal = 0.obs;
+
+  late final _defaultPaletteDirectory = Directory(AppDirs.PALETTES);
+
+  void _refreshColorsRx() {
+    _namidaColor.refresh();
+    _namidaColorMiniplayer.refresh();
+    _colorSchemeOfSubPages.refresh();
+  }
 
   final _colorsMap = <String, NamidaColor>{};
   final _colorsMapYTID = <String, NamidaColor>{};
 
   Timer? _colorsSwitchTimer;
-  void switchColorPalettes(bool isPlaying) {
+  int _partyContainersCount = 0;
+
+  void onPartyContainerMount() {
+    _partyContainersCount++;
+    if (_partyContainersCount == 1) switchColorPalettes();
+  }
+
+  void onPartyContainerUnmount() {
+    _partyContainersCount--;
+    if (_partyContainersCount <= 0) _colorsSwitchTimer?.cancel();
+  }
+
+  void switchColorPalettes({bool? playWhenReady, Playable? item, bool? swapEnabled}) {
     _colorsSwitchTimer?.cancel();
-    _colorsSwitchTimer = null;
-    if (Player.inst.currentQueue.isEmpty && Player.inst.currentQueueYoutube.isEmpty) return;
+
+    if (_partyContainersCount <= 0 || // -- no widget is displaying the palettes
+        (item ?? Player.inst.currentItem.value) == null || //
+        (swapEnabled ?? settings.enablePartyModeColorSwap.value) == false) {
+      return;
+    }
+
+    final isPlaying = playWhenReady ?? Player.inst.playWhenReady.value;
     final durms = isPlaying ? 150 : 2200;
     _colorsSwitchTimer = Timer.periodic(Duration(milliseconds: durms), (timer) {
       if (settings.enablePartyModeColorSwap.value) {
-        if (paletteFirstHalf.isEmpty) return;
-
-        final lastItem1 = paletteFirstHalf.last;
-        paletteFirstHalf.remove(lastItem1);
-        paletteFirstHalf.insertSafe(0, lastItem1);
-
-        if (paletteSecondHalf.isEmpty) return;
-        final lastItem2 = paletteSecondHalf.last;
-        paletteSecondHalf.remove(lastItem2);
-        paletteSecondHalf.insertSafe(0, lastItem2);
+        partyPaletteRotation.value++;
       }
     });
   }
 
   void initialize() {
-    if (_canAutoUpdateColor) return;
+    // if (_canAutoUpdateColor) return;
     final mode = settings.themeMode.value;
     final isDarkMode = mode == ThemeMode.dark || (mode == ThemeMode.system && SchedulerBinding.instance.platformDispatcher.platformBrightness == Brightness.dark);
-    updatePlayerColorFromColor(isDarkMode ? playerStaticColorDark : playerStaticColorLight);
+    if (_namidaColor.value == null) updatePlayerColorFromColor(isDarkMode ? playerStaticColorDark : playerStaticColorLight);
   }
 
   void updateColorAfterThemeModeChange() {
     if (settings.autoColor.value) {
-      final nc = _namidaColor.value;
-      _namidaColor.value = NamidaColor(
-        used: nc.color.withAlpha(colorAlpha),
-        mix: nc.mix,
-        palette: nc.palette,
+      final nc = _namidaColor.value ?? _defaultNamidaColor;
+      _namidaColor.set(
+        NamidaColor(
+          used: nc.used?.withAlpha(colorAlpha),
+          // mix: nc.mix,
+          mix2: nc.mix2,
+          palette: nc.palette,
+        ),
       );
     } else {
       final nc = playerStaticColor.lighter;
-      _namidaColor.value = NamidaColor(
-        used: nc,
-        mix: nc,
-        palette: [nc],
-      );
+      _namidaColor.set(NamidaColor.single(nc));
     }
+    _refreshColorsRx();
   }
 
   void updatePlayerColorFromColor(Color color, [bool customAlpha = true]) async {
     final colorWithAlpha = customAlpha ? color.withAlpha(colorAlpha) : color;
-    _namidaColor.value = NamidaColor(
-      used: colorWithAlpha,
-      mix: colorWithAlpha,
-      palette: [colorWithAlpha],
-    );
+    _namidaColor.set(NamidaColor.single(colorWithAlpha));
+    _refreshColorsRx();
   }
 
   Future<void> refreshColorsAfterResumeApp() async {
-    final namidaColor = await getPlayerColorFromDeviceWallpaper(forceCheck: true);
-    if (namidaColor != null && settings.autoColor.value && shouldUpdateFromDeviceWallpaper) {
-      _namidaColor.value = namidaColor;
-      _updateCurrentPaletteHalfs(namidaColor);
+    if (settings.autoColor.value && _shouldUpdateFromDeviceWallpaper) {
+      final namidaColor = await getPlayerColorFromDeviceWallpaper(forceCheck: true);
+      if (namidaColor != null) {
+        _namidaColor.set(namidaColor);
+        _refreshColorsRx();
+        _updateCurrentPartyPalette(namidaColor);
+      }
     }
   }
 
-  Future<ColorScheme?> _getDeviceWallpaperColorScheme({bool forceCheck = false}) async {
-    if (deviceWallpaperColorScheme == null || forceCheck) {
-      final accentColors = await DynamicColorPlugin.getCorePalette();
-      final cs = accentColors?.toColorScheme();
-      deviceWallpaperColorScheme = cs;
-      return cs;
+  Future<Color?> _getDeviceWallpaperColorAccent({bool forceCheck = false}) async {
+    if (_deviceWallpaperColorAccent == null || forceCheck) {
+      Color? accentColor = await DynamicColorPlugin.getAccentColor();
+      if (accentColor == null) {
+        final palette = await DynamicColorPlugin.getCorePalette();
+        if (palette != null) accentColor = Color(palette.primary.get(60));
+      }
+      _deviceWallpaperColorAccent = accentColor;
+      return accentColor;
     } else {
-      return deviceWallpaperColorScheme;
+      return _deviceWallpaperColorAccent;
     }
   }
 
   Future<NamidaColor?> getPlayerColorFromDeviceWallpaper({bool forceCheck = false, bool customAlpha = true}) async {
-    final accentColorsScheme = await _getDeviceWallpaperColorScheme(forceCheck: forceCheck);
-    final accentColor = accentColorsScheme?.secondary;
+    final accentColor = await _getDeviceWallpaperColorAccent(forceCheck: forceCheck);
     if (accentColor != null) {
       final colorWithAlpha = customAlpha ? accentColor.withAlpha(colorAlpha) : accentColor;
-      return NamidaColor(
-        used: colorWithAlpha,
-        mix: colorWithAlpha,
-        palette: [colorWithAlpha],
-      );
+      return NamidaColor.single(colorWithAlpha);
     }
     return null;
   }
 
   void updatePlayerColorFromTrack(Selectable? track, int? index, {bool updateIndexOnly = false}) async {
+    if (Dimensions.inst.isMixedPlayerQueue) _currentPlayingVideo = null;
     if (!updateIndexOnly && track != null) {
       _updatePlayerColorFromItem(
-        getColorPalette: () async => await getTrackColors(track.track),
-        stillPlaying: () => track.track == Player.inst.nowPlayingTrack,
+        getColorPalette: () async => await getTrackColors(track.track, networkArtworkInfo: null),
+        stillPlaying: () => track.track == Player.inst.currentTrack?.track,
+        itemKey: track.track.path,
       );
     }
     if (track != null) {
-      currentPlayingTrack.value = null; // nullifying to re-assign safely if subtype has changed
-      currentPlayingTrack.value = track;
+      currentPlayingTrack
+        ..set(null) // nullifying to re-assign safely if subtype has changed
+        ..set(track)
+        ..refresh();
     }
     if (index != null) {
       currentPlayingIndex.value = index;
@@ -171,16 +231,20 @@ class CurrentColor {
     final id = ytIdItem.id;
     if (id == '') return;
 
+    if (Dimensions.inst.isMixedPlayerQueue) currentPlayingTrack.value = null;
+    if (_currentPlayingVideo == ytIdItem) return;
+    _currentPlayingVideo = ytIdItem;
+
     // -- only extract if same item is still playing, i.e. user didn't skip.
-    bool stillPlaying() => ytIdItem.id == Player.inst.nowPlayingVideoID?.id;
+    bool stillPlaying() => ytIdItem == Player.inst.currentItem.value;
 
     _updatePlayerColorFromItem(
       getColorPalette: () async {
         if (_colorsMapYTID[id] != null) return _colorsMapYTID[id]!;
 
-        final image = await ThumbnailManager.inst.getYoutubeThumbnailAndCache(id: id);
+        final image = await ThumbnailManager.inst.getYoutubeThumbnailAndCache(id: id, type: ThumbnailType.video);
         if (image != null && stillPlaying()) {
-          final color = await CurrentColor.inst.extractPaletteFromImage(image.path, paletteSaveDirectory: Directory(AppDirs.YT_PALETTES), useIsolate: true);
+          final color = await CurrentColor.inst.extractPaletteFromImage(image.path, paletteSaveDirectory: Directory(AppDirs.YT_PALETTES));
           if (color != null && stillPlaying()) {
             _colorsMapYTID[id] = color; // saving in memory
             return color;
@@ -189,99 +253,205 @@ class CurrentColor {
         return null;
       },
       stillPlaying: stillPlaying,
+      itemKey: id,
     );
+  }
+
+  /// Re-extracts the colors of whatever is playing, for when the source of the colors changed
+  /// rather than the item, ex. leaving the jellys palette.
+  void refreshColorsOfCurrentItem() {
+    if (!_canAutoUpdateColor) {
+      updatePlayerColorFromColor(playerStaticColor);
+      return;
+    }
+    final currentItem = Player.inst.currentItem.value;
+    if (currentItem is YoutubeID) {
+      _currentPlayingVideo = null; // -- otherwise the item already playing is skipped
+      updatePlayerColorFromYoutubeID(currentItem);
+    } else if (currentItem is Selectable) {
+      updatePlayerColorFromTrack(currentItem, null);
+    } else {
+      updatePlayerColorFromColor(playerStaticColor);
+    }
   }
 
   final _fnLimiter = FunctionExecuteLimiter();
   void _updatePlayerColorFromItem({
     required Future<NamidaColor?> Function() getColorPalette,
     required bool Function() stillPlaying,
+    required String itemKey,
   }) async {
-    if (_canAutoUpdateColor) {
-      _fnLimiter.execute(() async {
-        NamidaColor? namidaColor;
+    if (!_canAutoUpdateColor) return;
 
-        final trColors = await getColorPalette();
-        if (trColors == null || !stillPlaying()) return; // -- check current item
-        _namidaColorMiniplayer.value = trColors.color;
-
-        if (settings.autoColor.value) {
-          if (shouldUpdateFromDeviceWallpaper) {
-            namidaColor = await getPlayerColorFromDeviceWallpaper();
-          } else {
-            namidaColor = trColors;
-          }
-          if (namidaColor != null) {
-            _namidaColor.value = namidaColor;
-            _updateCurrentPaletteHalfs(
-              settings.forceMiniplayerTrackColor.value ? trColors : namidaColor,
-            );
-          }
-        }
-      });
+    if (NamidaJellys.enableColorPaletteHijack) {
+      final jellyColor = _jellyColorFor(itemKey);
+      if (jellyColor != _namidaColorMiniplayer.value) _namidaColorMiniplayer.value = jellyColor;
+      if (settings.autoColor.value && jellyColor != _namidaColor.value) {
+        _namidaColor.value = jellyColor;
+        _updateCurrentPartyPalette(jellyColor);
+      }
+      return;
     }
+
+    _fnLimiter.execute(() async {
+      NamidaColor? namidaColor;
+
+      final trColors = await getColorPalette();
+      if (trColors == null || !stillPlaying()) return; // -- check current item
+      if (trColors != _namidaColorMiniplayer.value) _namidaColorMiniplayer.value = trColors;
+
+      if (settings.autoColor.value) {
+        if (_shouldUpdateFromDeviceWallpaper) {
+          namidaColor = await getPlayerColorFromDeviceWallpaper();
+        } else {
+          namidaColor = trColors;
+        }
+        if (namidaColor != null && namidaColor != _namidaColor.value) {
+          _namidaColor.value = namidaColor;
+          _updateCurrentPartyPalette(
+            settings.forceMiniplayerTrackColor.value ? trColors : namidaColor,
+          );
+        }
+      }
+    });
   }
 
   void resetCurrentPlayingTrack() {
     currentPlayingTrack.value = null;
     _namidaColorMiniplayer.value = null;
+    _currentPlayingVideo = null;
+    _namidaColor.value = null;
+  }
+
+  bool _checkDummyColor(NamidaColor value) => value.palette.isEmpty || (value.palette.length == 1 && value.color == value.palette.first && value.color == value.palette.last);
+
+  NamidaColor _maybeDelightned(NamidaColor? nc, {required bool delightnedAndAlpha, required bool fallbackToPlayerStaticColor}) {
+    if (nc == null || _checkDummyColor(nc)) {
+      // the value is null or dummy color, fetching with current [playerStaticColor].
+      final c = fallbackToPlayerStaticColor ? playerStaticColor : currentColorScheme;
+      return NamidaColor.single(c.lighter);
+    } else {
+      // the value is a normal color
+      return NamidaColor(
+        used: delightnedAndAlpha ? nc.used?.withAlpha(colorAlpha).delightned : nc.used,
+        // mix: delightnedAndAlpha ? nc.mix.withAlpha(colorAlpha).delightned : nc.mix,
+        mix2: delightnedAndAlpha ? nc.mix2.withAlpha(colorAlpha).delightned : nc.mix2,
+        palette: nc.palette,
+      );
+    }
+  }
+
+  NamidaColor? getTrackColorsSync(
+    Track track, {
+    required NetworkArtworkInfo? networkArtworkInfo,
+    bool fallbackToPlayerStaticColor = true,
+    bool delightnedAndAlpha = true,
+  }) {
+    if (NamidaJellys.enableColorPaletteHijack) return _jellyColorFor(track.path, delightnedAndAlpha: delightnedAndAlpha);
+
+    final filename = networkArtworkInfo?.toArtworkIfExistsAndValidAndEnabled()?.path ?? track.cacheKeyForImage(_defaultPaletteDirectory.path);
+
+    final valInMap = _colorsMap[filename];
+
+    if (valInMap != null) {
+      return _maybeDelightned(
+        valInMap,
+        delightnedAndAlpha: delightnedAndAlpha,
+        fallbackToPlayerStaticColor: fallbackToPlayerStaticColor,
+      );
+    }
+    return null;
+  }
+
+  Future<int> getRemainingColorsToExtractCount(List<Track> tracks) async {
+    final paletteDirPath = this._defaultPaletteDirectory.path;
+    int remainingCount = 0;
+    final filenamesToCheck = <String>[];
+    for (final tr in tracks) {
+      final key = tr.cacheKeyForImage(paletteDirPath);
+      if (_colorsMap[key] == null) {
+        remainingCount++;
+        continue;
+      }
+      filenamesToCheck.add(key);
+    }
+    if (filenamesToCheck.isNotEmpty) {
+      remainingCount += await Isolate.run(() {
+        int missing = 0;
+        for (final filename in filenamesToCheck) {
+          if (!_buildPaletteFile(filename, paletteSaveDirectoryPath: paletteDirPath).existsSync()) missing++;
+        }
+        return missing;
+      });
+    }
+    return remainingCount;
+  }
+
+  NamidaColor _jellyColorFor(String? key, {bool delightnedAndAlpha = true}) {
+    return _maybeDelightned(
+      NamidaJellys.namidaColorFor(key),
+      delightnedAndAlpha: delightnedAndAlpha,
+      fallbackToPlayerStaticColor: true,
+    );
   }
 
   Future<NamidaColor> getTrackColors(
     Track track, {
+    required NetworkArtworkInfo? networkArtworkInfo,
     bool fallbackToPlayerStaticColor = true,
     bool delightnedAndAlpha = true,
-    bool useIsolate = _defaultUseIsolate,
     bool forceReCheck = false,
   }) async {
-    bool checkDummyColor(NamidaColor value) => value.palette.isEmpty || (value.palette.length == 1 && value.color == value.palette.first && value.color == value.palette.last);
+    if (NamidaJellys.enableColorPaletteHijack) return _jellyColorFor(track.path, delightnedAndAlpha: delightnedAndAlpha);
 
-    NamidaColor maybeDelightned(NamidaColor? nc) {
-      if (nc == null || checkDummyColor(nc)) {
-        // the value is null or dummy color, fetching with current [playerStaticColor].
-        final c = fallbackToPlayerStaticColor ? playerStaticColor : currentColorScheme;
-        return NamidaColor(
-          used: c.lighter,
-          mix: c.lighter,
-          palette: [c.lighter],
-        );
-      } else {
-        // the value is a normal color
-        return NamidaColor(
-          used: delightnedAndAlpha ? nc.used?.withAlpha(colorAlpha).delightned : nc.used,
-          mix: delightnedAndAlpha ? nc.mix.withAlpha(colorAlpha).delightned : nc.mix,
-          palette: nc.palette,
-        );
-      }
+    if (!forceReCheck) {
+      final cached = getTrackColorsSync(track, networkArtworkInfo: networkArtworkInfo);
+
+      if (cached != null) return cached;
     }
 
-    final filename = settings.groupArtworksByAlbum.value ? track.albumIdentifier : track.filename;
-
-    final valInMap = _colorsMap[filename];
-    if (!forceReCheck && valInMap != null) {
-      return maybeDelightned(valInMap);
-    }
+    final networkArtwork = networkArtworkInfo?.toArtworkIfExistsAndValidAndEnabled()?.path;
 
     NamidaColor? nc = await extractPaletteFromImage(
-      track.pathToImage,
-      track: track,
-      useIsolate: useIsolate,
+      networkArtwork ?? track.pathToImage,
+      track: networkArtwork == null ? track : null,
+      paletteKey: networkArtwork == null ? null : networkArtworkInfo?.toPaletteKey(),
     );
 
-    final finalnc = maybeDelightned(nc);
-    _updateInColorMap(filename, finalnc);
+    final filename = networkArtwork ?? track.cacheKeyForImage(_defaultPaletteDirectory.path);
+
+    final finalnc = _maybeDelightned(
+      nc,
+      delightnedAndAlpha: delightnedAndAlpha,
+      fallbackToPlayerStaticColor: fallbackToPlayerStaticColor,
+    );
+    if (networkArtwork == null || nc != null) _updateInColorMap(filename, finalnc);
     return finalnc;
   }
 
   /// Equivalent to calling [getTrackColors] with [delightnedAndAlpha == true]
-  Future<Color> getTrackDelightnedColor(Track track, {bool fallbackToPlayerStaticColor = false, bool useIsolate = _defaultUseIsolate}) async {
+  Future<Color> getTrackDelightnedColor(
+    Track track,
+    NetworkArtworkInfo? networkArtworkInfo, {
+    bool fallbackToPlayerStaticColor = false,
+  }) async {
     final nc = await getTrackColors(
       track,
+      networkArtworkInfo: networkArtworkInfo,
       fallbackToPlayerStaticColor: fallbackToPlayerStaticColor,
       delightnedAndAlpha: true,
-      useIsolate: useIsolate,
     );
     return nc.color;
+  }
+
+  Color? getTrackDelightnedColorSync(Track track, NetworkArtworkInfo? networkArtworkInfo, {bool fallbackToPlayerStaticColor = false}) {
+    final nc = getTrackColorsSync(
+      track,
+      networkArtworkInfo: networkArtworkInfo,
+      fallbackToPlayerStaticColor: fallbackToPlayerStaticColor,
+      delightnedAndAlpha: true,
+    );
+    return nc?.color;
   }
 
   void updateCurrentColorSchemeOfSubPages([Color? color, bool customAlpha = true]) async {
@@ -289,43 +459,28 @@ class CurrentColor {
     _colorSchemeOfSubPages.value = colorWithAlpha;
   }
 
-  Color mixIntColors(Iterable<Color> colors) {
-    if (colors.isEmpty) return Colors.transparent;
-    int red = 0;
-    int green = 0;
-    int blue = 0;
+  File _getPaletteFile(String filename, {required Directory? paletteSaveDirectory}) {
+    paletteSaveDirectory ??= this._defaultPaletteDirectory;
+    return _buildPaletteFile(filename, paletteSaveDirectoryPath: paletteSaveDirectory.path);
+  }
 
-    for (final color in colors) {
-      red += (color.value >> 16) & 0xFF;
-      green += (color.value >> 8) & 0xFF;
-      blue += color.value & 0xFF;
-    }
-
-    red ~/= colors.length;
-    green ~/= colors.length;
-    blue ~/= colors.length;
-
-    return Color.fromARGB(255, red, green, blue);
+  static File _buildPaletteFile(String filename, {required String paletteSaveDirectoryPath}) {
+    return FileParts.join(paletteSaveDirectoryPath, "$filename.palette");
   }
 
   Future<NamidaColor?> extractPaletteFromImage(
     String imagePath, {
     Track? track,
+    String? paletteKey,
     bool forceReExtract = false,
-    bool useIsolate = _defaultUseIsolate,
     Directory? paletteSaveDirectory,
   }) async {
+    paletteSaveDirectory ??= this._defaultPaletteDirectory;
+
     // if (!forceReExtract && !await File(imagePath).exists()) return null; // _extractPaletteGenerator tries to get artwork from audio
 
-    paletteSaveDirectory ??= Directory(AppDirs.PALETTES);
-
-    final filename = track != null
-        ? settings.groupArtworksByAlbum.value
-            ? track.albumIdentifier
-            : track.filename
-        : imagePath.getFilenameWOExt;
-
-    final paletteFile = File("${paletteSaveDirectory.path}$filename.palette");
+    final filename = paletteKey ?? (track != null ? track.cacheKeyForImage(paletteSaveDirectory.path) : imagePath.getFilenameWOExt);
+    final paletteFile = _getPaletteFile(filename, paletteSaveDirectory: paletteSaveDirectory);
 
     // -- try reading the cached file
     if (!forceReExtract) {
@@ -334,66 +489,146 @@ class CurrentColor {
         final nc = NamidaColor.fromJson(response);
         _printie("Color Read From File");
         return nc;
-      } else {
-        await paletteFile.deleteIfExists();
+      } else if (await paletteFile.exists()) {
+        await paletteFile.delete().catchError((_) => File(''));
       }
     }
 
     // -- file doesnt exist or couldn't be read or [forceReExtract==true]
     final pcolors = <Color>[];
     try {
-      pcolors.addAll(await _colorGenerationTasks.add(() async => await _extractPaletteGenerator(imagePath, useIsolate: useIsolate)));
+      pcolors.addAll(await _colorGenerationTasks.add(() async => await _extractPaletteGenerator(imagePath, track: track)));
     } catch (_) {}
-    final nc = NamidaColor(used: null, mix: mixIntColors(pcolors), palette: pcolors.toList());
+    final nc = NamidaColor.create(palette: pcolors);
     await paletteFile.writeAsJson(nc.toJson()); // writing the file bothways, to prevent reduntant re-extraction.
-    Indexer.inst.updateColorPalettesSizeInStorage(newPalettePath: paletteFile.path);
+    // Indexer.inst.updateColorPalettesSizeInStorage(newPalettePath: paletteFile.path);
     _printie("Color Extracted From Image (${pcolors.length})");
     return pcolors.isEmpty ? null : nc;
   }
 
+  Future<void> deletePaletteForImage(
+    String imagePath, {
+    String? paletteKey,
+    Directory? paletteSaveDirectory,
+  }) async {
+    _colorsMap.remove(imagePath);
+    final filename = paletteKey ?? imagePath.getFilenameWOExt;
+    final paletteFile = _getPaletteFile(filename, paletteSaveDirectory: paletteSaveDirectory);
+    await paletteFile.tryDeleting();
+  }
+
   final _colorGenerationTasks = qs.Queue(parallel: 1);
 
-  Future<void> reExtractTrackColorPalette({required Track track, required NamidaColor? newNC, required String? imagePath, bool useIsolate = true}) async {
+  Future<void> reExtractTrackColorPalette({required Track track, required NamidaColor? newNC, required String? imagePath}) async {
     assert(newNC != null || imagePath != null, 'a color or imagePath must be provided');
 
-    final filename = settings.groupArtworksByAlbum.value ? track.albumIdentifier : track.filename;
-    final paletteFile = File("${AppDirs.PALETTES}$filename.palette");
+    final key = track.cacheKeyForImage(_defaultPaletteDirectory.path);
+    final paletteFile = FileParts.join(AppDirs.PALETTES, "$key.palette");
     if (newNC != null) {
       await paletteFile.writeAsJson(newNC.toJson());
-      _updateInColorMap(filename, newNC);
+      _updateInColorMap(key, newNC);
     } else if (imagePath != null) {
-      final nc = await extractPaletteFromImage(imagePath, track: track, forceReExtract: true, useIsolate: useIsolate);
-      _updateInColorMap(filename, nc);
+      final nc = await extractPaletteFromImage(imagePath, track: track, forceReExtract: true);
+      _updateInColorMap(key, nc);
     }
-    if (Player.inst.nowPlayingTWD == track) {
-      updatePlayerColorFromTrack(Player.inst.nowPlayingTWD, null);
+    if (Player.inst.currentTrack?.track == track) {
+      updatePlayerColorFromTrack(Player.inst.currentTrack, null);
     }
   }
 
-  Future<Iterable<Color>> _extractPaletteGenerator(String imagePath, {bool useIsolate = _defaultUseIsolate}) async {
+  Future<void> reExtractNetworkArtworkColorPalette({required NetworkArtworkInfo networkArtworkInfo, required NamidaColor? newNC}) async {
+    final imagePath = networkArtworkInfo.toArtworkIfExistsAndValidAndEnabled()?.path;
+    if (imagePath == null) return;
+
+    final filenameKeyInMaps = imagePath;
+    final paletteKey = networkArtworkInfo.toPaletteKey();
+    final paletteFile = _getPaletteFile(paletteKey, paletteSaveDirectory: null);
+    if (newNC != null) {
+      await paletteFile.writeAsJson(newNC.toJson());
+      _updateInColorMap(filenameKeyInMaps, newNC);
+    } else {
+      if (!await File(imagePath).exists()) {
+        snackyy(message: 'Network Image doesn\'t exist at $imagePath', isError: true);
+      } else {
+        final nc = await extractPaletteFromImage(imagePath, paletteKey: paletteKey, forceReExtract: true);
+        _updateInColorMap(filenameKeyInMaps, nc);
+      }
+    }
+
+    final currentRoute = NamidaNavigator.inst.currentRoute;
+    final currentRouteType = currentRoute?.route;
+    switch (currentRouteType) {
+      case RouteType.SUBPAGE_albumArtistTracks ||
+          RouteType.SUBPAGE_albumTracks ||
+          RouteType.SUBPAGE_artistTracks ||
+          RouteType.SUBPAGE_albumArtistTracks ||
+          RouteType.SUBPAGE_composerTracks ||
+          RouteType.SUBPAGE_genreTracks ||
+          RouteType.SUBPAGE_styleTracks ||
+          RouteType.SUBPAGE_languageTracks:
+        currentRoute?.updateColorScheme();
+      default:
+        null;
+    }
+  }
+
+  Future<Iterable<Color>> _extractPaletteGenerator(String imagePath, {required Track? track}) async {
     Uint8List? bytes;
     File? imageFile;
 
     if (await File(imagePath).exists()) {
       imageFile = File(imagePath);
     } else {
-      bytes = await Indexer.inst
-          .getArtwork(
-            imagePath: imagePath,
-            compressed: true,
-            size: 200,
-          )
-          .then((value) => value.$2);
+      final res = await Indexer.inst.getArtwork(
+        imagePath: imagePath,
+        track: track,
+        compressed: true,
+        size: 200,
+      );
+      imageFile = res.file;
+      bytes = res.bytes;
+      if (bytes?.isEmpty == true) bytes = null;
+    }
+
+    if (imageFile == null && bytes == null) {
+      if (track != null) {
+        final id = track.youtubeID;
+        final ytImg = await ThumbnailManager.inst.getYoutubeThumbnailFromCache(type: ThumbnailType.video, id: id, isTemp: false);
+        if (ytImg != null) imageFile = File(ytImg.path);
+
+        if (imageFile == null) {
+          final cover = Indexer.inst.getFallbackFolderArtworkPath(folder: track.folder);
+          if (cover != null) imageFile = File(cover);
+        }
+      }
     }
 
     if (imageFile == null && bytes == null) return [];
 
+    if (_useLegacyPaletteGenerator) return _extractPaletteGeneratorLegacy(imageFile: imageFile, bytes: bytes, useIsolate: true);
+
+    final palette = await NamidaPalette.extractAsync(
+      path: imageFile?.path,
+      bytes: bytes,
+      maxColors: 28,
+      maxHeight: 240,
+    );
+    return palette.colors.map(Color.new);
+  }
+
+  /// we now use [NamidaPalette], which decodes & quantizes natively on its own thread.
+  static const bool _useLegacyPaletteGenerator = false;
+
+  Future<Iterable<Color>> _extractPaletteGeneratorLegacy({required File? imageFile, required Uint8List? bytes, required bool useIsolate}) async {
     const defaultTimeout = Duration(seconds: 5);
-    final imageProvider = (bytes == null ? FileImage(imageFile!) : MemoryImage(bytes)) as ImageProvider;
+    final imageProvider = ResizeImage(
+      (bytes == null ? FileImage(imageFile!) : MemoryImage(bytes)) as ImageProvider,
+      height: 240,
+    );
     if (!useIsolate) {
       final result = await PaletteGenerator.fromImageProvider(
         imageProvider,
-        filters: [],
+        filters: const [],
         maximumColorCount: 28,
         timeout: defaultTimeout,
       );
@@ -425,50 +660,49 @@ class CurrentColor {
 
       final encimg = EncodedImage(imageData, width: image.width, height: image.height);
       final colorValues = await _extractPaletteGeneratorCompute.thready(encimg);
-
-      return colorValues.map((e) => Color(e));
+      return colorValues;
     }
   }
 
-  static Future<List<int>> _extractPaletteGeneratorCompute(EncodedImage encimg) async {
-    final result = await PaletteGenerator.fromByteData(encimg, filters: [avoidRedBlackWhitePaletteFilter], maximumColorCount: 28);
-    return result.colors.map((e) => e.value).toList();
+  static Future<List<Color>> _extractPaletteGeneratorCompute(EncodedImage encimg) async {
+    final result = await PaletteGenerator.fromByteData(encimg, filters: const [], maximumColorCount: 28);
+    return result.colors.toFixedList();
   }
 
   void _updateInColorMap(String filenameWoExt, NamidaColor? nc) {
     if (nc != null) _colorsMap[filenameWoExt] = nc;
   }
 
-  void _updateCurrentPaletteHalfs(NamidaColor nc) {
-    final halfIndex = (nc.palette.length - 1) / 3;
-    paletteFirstHalf.clear();
-    paletteSecondHalf.clear();
-
-    nc.palette.loop((c, i) {
-      if (i <= halfIndex) {
-        paletteFirstHalf.add(c);
-      } else {
-        paletteSecondHalf.add(c);
-      }
-    });
+  void _updateCurrentPartyPalette(NamidaColor nc) {
+    partyPaletteRotation.set(0);
+    partyPalette.value = nc.palette;
   }
 
   Future<void> generateAllColorPalettes() async {
-    await Directory(AppDirs.PALETTES).create();
+    await _defaultPaletteDirectory.create();
 
-    isGeneratingAllColorPalettes.value = true;
     final alltracks = allTracksInLibrary;
-    for (int i = 0; i < alltracks.length; i++) {
-      if (!isGeneratingAllColorPalettes.value) break; // stops extracting
-      await getTrackColors(alltracks[i], useIsolate: true, forceReCheck: true);
+
+    allColorPalettesGeneratingProgress.value = 0;
+    allColorPalettesGeneratingTotal.value = alltracks.length;
+
+    try {
+      for (int i = 0; i < alltracks.length; i++) {
+        if (allColorPalettesGeneratingTotal.value == -1) {
+          break; // stops extracting
+        }
+        allColorPalettesGeneratingProgress.value++;
+        await getTrackColors(alltracks[i], networkArtworkInfo: null, forceReCheck: true);
+      }
+    } catch (_) {
+      // concurrent modifiation maybe
     }
 
-    isGeneratingAllColorPalettes.value = false;
+    allColorPalettesGeneratingProgress.value = 0;
+    allColorPalettesGeneratingTotal.value = 0;
   }
 
-  void stopGeneratingColorPalettes() => isGeneratingAllColorPalettes.value = false;
-
-  static const _defaultUseIsolate = false;
+  void stopGeneratingColorPalettes() => allColorPalettesGeneratingTotal.value = -1;
 
   void _printie(
     dynamic message, {
@@ -482,15 +716,33 @@ class CurrentColor {
 }
 
 extension ColorUtils on Color {
+  bool _isNearWhiteOrBlack() {
+    final luminance = computeLuminance();
+    return luminance <= 0.1 || luminance >= 0.9;
+  }
+
   Color get delightned {
+    if (_isNearWhiteOrBlack()) return this;
+
     final hslColor = HSLColor.fromColor(this);
     final modifiedColor = hslColor.withLightness(0.4).toColor();
     return modifiedColor;
   }
 
   Color get lighter {
+    if (_isNearWhiteOrBlack()) return this;
     final hslColor = HSLColor.fromColor(this);
     final modifiedColor = hslColor.withLightness(0.64).toColor();
     return modifiedColor;
+  }
+
+  Color invert() {
+    final c = this;
+    return Color.from(
+      alpha: c.a,
+      red: 1.0 - c.r,
+      green: 1.0 - c.g,
+      blue: 1.0 - c.b,
+    );
   }
 }

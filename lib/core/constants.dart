@@ -1,44 +1,132 @@
 // ignore_for_file: non_constant_identifier_names, constant_identifier_names
 
 import 'dart:async';
-import 'dart:collection';
+import 'dart:convert';
+import 'dart:io';
 
-import 'package:device_info_plus/device_info_plus.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:package_info_plus/package_info_plus.dart';
-import 'package:url_launcher/url_launcher_string.dart';
 
-import 'package:namida/class/lang.dart';
+import 'package:basic_audio_handler/basic_audio_handler.dart';
+import 'package:device_info_plus/device_info_plus.dart';
+import 'package:flutter_udid/flutter_udid.dart';
+import 'package:intl/intl.dart';
+import 'package:namico_db_wrapper/namico_db_wrapper.dart';
+import 'package:namico_subscription_manager/class/supabase_sub.dart';
+import 'package:package_info_plus/package_info_plus.dart';
+import 'package:path_provider/path_provider.dart' as pp;
+import 'package:permission_handler/permission_handler.dart';
+import 'package:share_plus/share_plus.dart';
+import 'package:url_launcher/url_launcher_string.dart';
+import 'package:youtipie/class/youtipie_feed/user_channel_info.dart';
+import 'package:youtipie/youtipie.dart' show YoutiPie;
+
+import 'package:namida/base/settings_file_writer.dart';
+import 'package:namida/class/file_parts.dart';
+import 'package:namida/class/route.dart';
 import 'package:namida/class/track.dart';
+import 'package:namida/class/version_wrapper.dart';
+import 'package:namida/controller/clipboard_controller.dart';
+import 'package:namida/controller/connectivity.dart';
+import 'package:namida/controller/current_color.dart';
 import 'package:namida/controller/indexer_controller.dart';
+import 'package:namida/controller/navigator_controller.dart';
+import 'package:namida/controller/platform/base.dart';
+import 'package:namida/controller/platform/namida_channel/namida_channel.dart';
+import 'package:namida/controller/platform/zip_manager/zip_manager.dart';
 import 'package:namida/controller/settings_controller.dart';
+import 'package:namida/core/enums.dart';
+import 'package:namida/core/extensions.dart';
+import 'package:namida/core/namida_converter_ext.dart';
+import 'package:namida/core/translations/language.dart';
+import 'package:namida/ui/pages/offline_docs_page.dart';
+import 'package:namida/youtube/controller/youtube_account_controller.dart';
+import 'package:namida/youtube/controller/youtube_info_controller.dart';
+import 'package:namida/youtube/pages/yt_playlist_subpage.dart';
+
+final isDesktop = Platform.isWindows || Platform.isLinux || Platform.isMacOS;
 
 class NamidaDeviceInfo {
-  static int sdkVersion = 21;
+  static bool get useOldStoragePermission => sdkVersion < 33;
+  static int sdkVersion = -1;
 
-  static final androidInfoCompleter = Completer<AndroidDeviceInfo>();
-  static final packageInfoCompleter = Completer<PackageInfo>();
+  static String? _deviceId;
 
-  static AndroidDeviceInfo? androidInfo;
+  static final deviceInfoCompleter = Completer<BaseDeviceInfo?>();
+  static final packageInfoCompleter = Completer<PackageInfo?>();
+
+  static BaseDeviceInfo? deviceInfo;
   static PackageInfo? packageInfo;
 
-  static String? version;
-  static DateTime? buildDate;
+  static VersionWrapper? version;
   static String? buildType;
 
-  static bool _fetchedAndroidInfo = false;
+  static bool _fetchedDeviceInfo = false;
   static bool _fetchedPackageInfo = false;
 
-  static Future<void> fetchAndroidInfo() async {
-    if (_fetchedAndroidInfo) return;
-    _fetchedAndroidInfo = true;
+  static Future<void> fetchDeviceInfo() async {
+    if (_fetchedDeviceInfo) return;
+    _fetchedDeviceInfo = true;
     try {
-      final res = await DeviceInfoPlugin().androidInfo;
-      androidInfo = res;
-      androidInfoCompleter.complete(res);
+      final res = await DeviceInfoPlugin().deviceInfo;
+      deviceInfo = res;
     } catch (_) {
-      _fetchedAndroidInfo = false;
+      _fetchedDeviceInfo = false;
+    } finally {
+      deviceInfoCompleter.complete(deviceInfo);
     }
+  }
+
+  static Future<String?> fetchDeviceId() async {
+    if (_deviceId != null) return _deviceId!;
+    try {
+      if (Platform.isWindows) {
+        _deviceId = await _getWindowsUDID() ?? await _getWindowsUDIDOld();
+      }
+    } catch (_) {}
+    try {
+      _deviceId ??= await FlutterUdid.udid;
+    } catch (_) {}
+    return _deviceId;
+  }
+
+  /// Windows 11 removed `wmic` so [_getWindowsUDIDOld] is not functional on new devices
+  static Future<String?> _getWindowsUDID() async {
+    final process = await Process.run(
+      'powershell',
+      [
+        '-command',
+        '(gcim Win32_ComputerSystemProduct).UUID',
+      ],
+      runInShell: true,
+    );
+    String? udid = await process.stdout as String;
+    if (udid.isEmpty) {
+      udid = null;
+    } else {
+      udid = udid.trim();
+    }
+    return udid;
+  }
+
+  // native call could cause debug connection to get lost, this works fine
+  // source: https://github.com/BestBurning/platform_device_id/issues/21#issuecomment-1133934641
+  static Future<String> _getWindowsUDIDOld() async {
+    String biosID = '';
+    final process = await Process.start(
+      'wmic',
+      ['csproduct', 'get', 'uuid'],
+      mode: ProcessStartMode.detachedWithStdio,
+    );
+    final result = await process.stdout.transform(utf8.decoder).toList();
+    for (var element in result) {
+      final item = element.replaceAll(RegExp('\r|\n|\\s|UUID|uuid'), '');
+      if (item.isNotEmpty) {
+        biosID = item;
+      }
+    }
+    return biosID;
   }
 
   static Future<void> fetchPackageInfo() async {
@@ -47,38 +135,30 @@ class NamidaDeviceInfo {
     try {
       final res = await PackageInfo.fromPlatform();
       packageInfo = res;
-      version = res.version;
-      _parseBuildNumber(res.buildNumber);
-      packageInfoCompleter.complete(res);
+      version = VersionWrapper(res.version, res.buildNumber);
     } catch (_) {
       _fetchedPackageInfo = false;
+    } finally {
+      packageInfoCompleter.complete(packageInfo);
     }
-  }
-
-  static void _parseBuildNumber(String buildNumber) {
-    try {
-      int hours = 0;
-      int minutes = 0;
-      final yyMMddHHP = buildNumber;
-      final year = 2000 + int.parse("${yyMMddHHP[0]}${yyMMddHHP[1]}");
-      final month = int.parse("${yyMMddHHP[2]}${yyMMddHHP[3]}");
-      final day = int.parse("${yyMMddHHP[4]}${yyMMddHHP[5]}");
-      try {
-        hours = int.parse("${yyMMddHHP[6]}${yyMMddHHP[7]}");
-        minutes = (60 * double.parse("0.${yyMMddHHP[8]}")).round(); // 0.5, 0.8, 1.0, etc.
-      } catch (_) {}
-      buildDate = DateTime.utc(year, month, day, hours, minutes);
-    } catch (_) {}
   }
 }
 
-final Set<String> kStoragePaths = {};
-final Set<String> kInitialDirectoriesToScan = {};
+final kStoragePaths = <String>[];
 
-/// Main Color
-const Color kMainColor = Color.fromARGB(160, 117, 128, 224);
-const Color kMainColorLight = Color.fromARGB(255, 116, 126, 219);
-const Color kMainColorDark = Color.fromARGB(255, 139, 149, 241);
+/// Main Colors
+const Color kMainColorLight = Color(0xFFB89D7D);
+const Color kMainColorDark = Color(0xFF43362B);
+
+final kMainColorLightOldValue = const Color(0xFF9c99c1).intValue;
+final kMainColorDarkOldValue = const Color(0xFF4e4c72).intValue;
+
+const isKuru = bool.fromEnvironment('IS_KURU_BUILD');
+const isWindowsPortable = bool.fromEnvironment('WINDOWS_PORTABLE');
+
+const kEnableFancyAnimations = false;
+
+const kAllowJellysInvasion = true;
 
 abstract class NamidaLinkRegex {
   static const url = r'https?://([\w-]+\.)+[\w-]+(/[\w-./?%&@\$=~#+]*)?';
@@ -88,12 +168,17 @@ abstract class NamidaLinkRegex {
   static const all = '($url|$duration|$phoneNumber|$email)';
 
   static final youtubeLinkRegex = RegExp(
-    r'\b(?:https?://)?(?:www\.)?(?:youtube\.com/watch\?v=|youtu\.be/)([\w\-]+)(?:\S+)?',
+    r'\b(?:https?://)?(?:www\.)?(?:youtube\.com/(?:watch\?v=|embed/|v/|shorts/)|youtu\.be/)([\w\-]{11})(?:\S+)?',
     caseSensitive: false,
   );
 
   static final youtubeIdRegex = RegExp(
-    r'((?:https?:)?\/\/)?((?:www|m)\.)?((?:youtube\.com|youtu.be))(\/(?:[\w\-]+\?v=|embed\/|v\/)?)([\w\-]+)(\S+)?',
+    r'(?:youtube\.com/(?:watch\?v=|embed/|v/|shorts/)|youtu\.be/)([\w\-]{11})',
+    caseSensitive: false,
+  );
+
+  static final youtubeIdInFilenameRegex = RegExp(
+    r'(?:v|id)=([\w-]{11})',
     caseSensitive: false,
   );
 
@@ -101,6 +186,62 @@ abstract class NamidaLinkRegex {
     r'\b(?:https?://)?(?:www\.)?(?:youtube\.com/playlist\?list=)([\w\-]+)(?:\S+)?',
     caseSensitive: false,
   );
+}
+
+class NamidaUtils {
+  NamidaUtils._();
+
+  static Future<void> shareFiles(Iterable<String> paths) async {
+    if (Platform.isLinux) {
+      // -- sharing files is not supported on linux yet.
+      return await NamidaChannel.inst.openFileInExplorer(paths.first);
+    }
+    if (Platform.isAndroid) {
+      final shared = await NamidaChannel.inst.shareFiles(paths.toList());
+      if (shared) return;
+    }
+    await Share.shareXFiles(paths.map((e) => XFile(e)).toList());
+  }
+
+  static Future<void> shareUri(String url) async {
+    if (Platform.isWindows || Platform.isLinux) {
+      await shareText(url);
+    } else {
+      await Share.shareUri(Uri.parse(url));
+    }
+  }
+
+  static Future<void> shareText(String text) async {
+    if (Platform.isLinux) {
+      // -- linux has no share target, share_plus only opens a mailto link.
+      copyToClipboard(content: text, maxLinesMessage: 2);
+      return;
+    }
+    await Share.share(text);
+  }
+
+  static void copyToClipboard({
+    String? title,
+    required String content,
+    String? message,
+    Color? leftBarIndicatorColor,
+    int? maxLinesMessage,
+    bool altDesign = false,
+  }) {
+    if (content == '' || content == '?') return;
+
+    Clipboard.setData(ClipboardData(text: content));
+    ClipboardController.inst.onCopiedInternally(content);
+
+    snackyy(
+      title: title == null || title.isEmpty ? lang.copiedToClipboard : '${lang.copiedToClipboard}: $title',
+      message: message ?? content,
+      leftBarIndicatorColor: leftBarIndicatorColor ?? CurrentColor.inst.color,
+      maxLinesMessage: maxLinesMessage,
+      altDesign: altDesign,
+      top: false,
+    );
+  }
 }
 
 class NamidaLinkUtils {
@@ -113,7 +254,7 @@ class NamidaLinkUtils {
       try {
         if (match.groupCount == 3) {
           dur = Duration(
-            hours: int.parse(match[1]!.split(':').first),
+            hours: int.parse(match[1]!.splitFirst(':')),
             minutes: int.parse(match[2]!),
             seconds: int.parse(match[3]!),
           );
@@ -129,10 +270,10 @@ class NamidaLinkUtils {
     return null;
   }
 
-  static Future<bool> openLink(String url) async {
+  static Future<bool> openLink(String url, {LaunchMode preferredMode = LaunchMode.externalNonBrowserApplication}) async {
     bool didLaunch = false;
     try {
-      didLaunch = await launchUrlString(url, mode: LaunchMode.externalNonBrowserApplication);
+      didLaunch = await launchUrlString(url, mode: preferredMode);
     } catch (_) {}
     if (!didLaunch) {
       try {
@@ -141,25 +282,577 @@ class NamidaLinkUtils {
     }
     return didLaunch;
   }
+
+  static Future<bool> openLinkPreferNamida(String url, {ThemeData? theme}) {
+    final didOpen = tryOpeningPlaylistOrVideo(url, theme: theme);
+    if (didOpen) return Future.value(true);
+    return openLink(url);
+  }
+
+  static bool tryOpeningPlaylistOrVideo(String url, {ThemeData? theme}) {
+    final possiblePlaylistId = NamidaLinkUtils.extractPlaylistId(url);
+    if (possiblePlaylistId != null && possiblePlaylistId.isNotEmpty) {
+      YTHostedPlaylistSubpage.fromId(
+        playlistId: possiblePlaylistId,
+        userPlaylist: null,
+      ).navigate();
+      return true;
+    }
+
+    final possibleVideoId = NamidaLinkUtils.extractYoutubeId(url);
+    if (possibleVideoId != null && possibleVideoId.isNotEmpty) {
+      OnYoutubeLinkOpenAction.alwaysAsk.execute([possibleVideoId], theme: theme);
+      return true;
+    }
+    return false;
+  }
+
+  static String? extractYoutubeLink(String text) {
+    try {
+      return NamidaLinkRegex.youtubeLinkRegex.firstMatch(text)?[0];
+    } catch (_) {}
+    return null;
+  }
+
+  static String? extractYoutubeId(String text) {
+    final link = extractYoutubeLink(text);
+    if (link == null || link.isEmpty) return null;
+
+    try {
+      final possibleId = NamidaLinkRegex.youtubeIdRegex.firstMatch(link)?.group(1);
+      if (possibleId == null || possibleId.length != 11) return null;
+      return possibleId;
+    } catch (_) {}
+
+    return null;
+  }
+
+  /// the 11th char of a youtube id holds only 4 bits.
+  static final _youtubeIdInBracketsRegex = RegExp(r'\[([\w-]{10}[AEIMQUYcgkosw048])\]');
+  static const _kYoutubeIdInBracketsLength = 13;
+
+  /// `Title [id].ext`, the yt-dlp default.
+  static String? extractYoutubeIdInTrailingBrackets(String filename) {
+    final extensionIndex = filename.lastIndexOf('.');
+    final nameEnd = extensionIndex > 0 ? extensionIndex : filename.length;
+    final bracketsStart = nameEnd - _kYoutubeIdInBracketsLength;
+    if (bracketsStart < 0) return null;
+    final hasBrackets = filename.codeUnitAt(bracketsStart) == 0x5B && filename.codeUnitAt(nameEnd - 1) == 0x5D;
+    if (!hasBrackets) return null;
+    final candidate = _youtubeIdInBracketsRegex.matchAsPrefix(filename, bracketsStart)?.group(1);
+    if (candidate == null || _isWordsOrCounter(candidate)) return null;
+    return candidate;
+  }
+
+  /// words (`Bonus_Track`) or counters (`Track_01_04`, `VID20240104`) that fit the id pattern by chance.
+  static bool _isWordsOrCounter(String candidate) {
+    const dash = 0x2D;
+    const underscore = 0x5F;
+    const zero = 0x30;
+    const nine = 0x39;
+    const upperZ = 0x5A;
+    bool hasLetters = false;
+    bool isInTrailingCounter = false;
+    bool isWordAllCaps = false;
+    bool hasUpperAfterWordStart = false;
+    bool isPreviousSeparator = true;
+    bool isPreviousDigit = false;
+    for (int i = 0; i < candidate.length; i++) {
+      final c = candidate.codeUnitAt(i);
+      final isDigit = c >= zero && c <= nine;
+      final isSeparator = c == dash || c == underscore;
+      if (isDigit) {
+        if (hasLetters) isInTrailingCounter = true;
+      } else if (isSeparator) {
+        if (isPreviousSeparator) return false;
+      } else {
+        if (isInTrailingCounter || isPreviousDigit) return false;
+        final isUpper = c <= upperZ;
+        if (isPreviousSeparator) {
+          isWordAllCaps = isUpper;
+          hasUpperAfterWordStart = false;
+        } else if (isUpper) {
+          if (!isWordAllCaps) return false;
+          hasUpperAfterWordStart = true;
+        } else {
+          if (hasUpperAfterWordStart) return false;
+          isWordAllCaps = false;
+        }
+        hasLetters = true;
+      }
+      isPreviousSeparator = isSeparator;
+      isPreviousDigit = isDigit;
+    }
+    return !isPreviousSeparator;
+  }
+
+  static String? extractPlaylistId(String playlistUrl) {
+    try {
+      return NamidaLinkRegex.youtubePlaylistsLinkRegex.firstMatch(playlistUrl)?.group(1);
+    } catch (_) {}
+    return null;
+  }
+}
+
+enum AppPathsBackupEnum {
+  // ================= User Data =================
+  SETTINGS,
+  SETTINGS_EQUALIZER,
+  SETTINGS_PLAYER,
+  SETTINGS_YOUTUBE,
+  SETTINGS_EXTRA,
+  SETTINGS_SYNC,
+  SETTINGS_PARTY,
+  SETTINGS_TUTORIAL,
+  SETTINGS_SHORTCUTS,
+  TRACKS_DB_INFO,
+  TRACKS_STATS_DB_INFO,
+  LATEST_PLAYED_FOR_SOURCE,
+  AUDIO_CONFIGS,
+  SMART_PLAYLISTS,
+  VIDEOS_LOCAL_DB_INFO,
+  VIDEOS_CACHE_DB_INFO,
+  LATEST_QUEUE,
+
+  // -- obsolete
+  TRACKS_OLD,
+  TRACKS_STATS_OLD,
+  VIDEOS_LOCAL_OLD,
+  VIDEOS_CACHE_OLD,
+  // ---------
+
+  TOTAL_LISTEN_TIME,
+  LISTEN_TIME_DAILY_DB_INFO,
+  FAVOURITES_PLAYLIST,
+
+  // ================= Youtube =================
+  YT_LIKES_PLAYLIST,
+  YT_SUBSCRIPTIONS,
+  YT_SUBSCRIPTIONS_GROUPS_ALL,
+  VIDEO_ID_STATS_DB_INFO,
+  CACHE_VIDEOS_PRIORITY,
+
+  // ------======== Directories ========------
+  // ================= User Data =================
+  HISTORY_PLAYLIST(true),
+  PLAYLISTS(true),
+  PLAYLISTS_ARTWORKS(true),
+  SMART_PLAYLISTS_ARTWORKS(true),
+  PLAYLISTS_METADATA(true),
+  QUEUES(true),
+  ARTWORKS(true),
+  ARTWORKS_ARTISTS(true),
+  ARTWORKS_ALBUMS(true),
+  PALETTES(true),
+  VIDEOS_CACHE(true),
+  AUDIOS_CACHE(true),
+  THUMBNAILS(true),
+  LYRICS(true),
+  M3UBackup(true),
+  RECENTLY_DELETED(true),
+
+  // ================= Youtube =================
+
+  YOUTIPIE_CACHE(true),
+
+  YT_PLAYLISTS(true),
+  YT_PLAYLISTS_ARTWORKS(true),
+  YT_PLAYLISTS_METADATA(true),
+  YT_HISTORY_PLAYLIST(true),
+  YT_THUMBNAILS(true),
+  YT_THUMBNAILS_CHANNELS(true),
+
+  YT_STATS(true),
+  YT_PALETTES(true),
+  YT_DOWNLOAD_TASKS(true),
+  ;
+
+  final bool isDir;
+  const AppPathsBackupEnum([this.isDir = false]);
+
+  /// whether this item supports being synced across devices.
+  /// true: supported
+  /// null: support coming soon
+  /// false: won't be supported
+  bool? supportsSync() {
+    return switch (this) {
+      // -- supported
+      AppPathsBackupEnum.SETTINGS ||
+      AppPathsBackupEnum.SETTINGS_PLAYER ||
+      AppPathsBackupEnum.SETTINGS_YOUTUBE ||
+      AppPathsBackupEnum.TRACKS_DB_INFO ||
+      AppPathsBackupEnum.TRACKS_STATS_DB_INFO ||
+      AppPathsBackupEnum.LATEST_PLAYED_FOR_SOURCE ||
+      AppPathsBackupEnum.AUDIO_CONFIGS ||
+      AppPathsBackupEnum.SMART_PLAYLISTS ||
+      AppPathsBackupEnum.LATEST_QUEUE ||
+      AppPathsBackupEnum.FAVOURITES_PLAYLIST ||
+      AppPathsBackupEnum.YT_LIKES_PLAYLIST ||
+      AppPathsBackupEnum.YT_SUBSCRIPTIONS ||
+      AppPathsBackupEnum.YT_SUBSCRIPTIONS_GROUPS_ALL ||
+      AppPathsBackupEnum.VIDEO_ID_STATS_DB_INFO ||
+      AppPathsBackupEnum.LISTEN_TIME_DAILY_DB_INFO ||
+      AppPathsBackupEnum.CACHE_VIDEOS_PRIORITY ||
+      AppPathsBackupEnum.HISTORY_PLAYLIST ||
+      AppPathsBackupEnum.PLAYLISTS ||
+      AppPathsBackupEnum.PLAYLISTS_ARTWORKS ||
+      AppPathsBackupEnum.SMART_PLAYLISTS_ARTWORKS ||
+      AppPathsBackupEnum.QUEUES ||
+      AppPathsBackupEnum.LYRICS ||
+      AppPathsBackupEnum.VIDEOS_CACHE ||
+      AppPathsBackupEnum.AUDIOS_CACHE ||
+      AppPathsBackupEnum.ARTWORKS_ARTISTS ||
+      AppPathsBackupEnum.ARTWORKS_ALBUMS ||
+      AppPathsBackupEnum.YT_PLAYLISTS ||
+      AppPathsBackupEnum.YT_PLAYLISTS_ARTWORKS ||
+      AppPathsBackupEnum.YT_HISTORY_PLAYLIST ||
+      AppPathsBackupEnum.YT_THUMBNAILS ||
+      AppPathsBackupEnum.YT_THUMBNAILS_CHANNELS ||
+      AppPathsBackupEnum.VIDEOS_CACHE_DB_INFO => true,
+
+      // -- coming soon
+      AppPathsBackupEnum.SETTINGS_EQUALIZER ||
+      AppPathsBackupEnum.SETTINGS_EXTRA ||
+      AppPathsBackupEnum.SETTINGS_TUTORIAL ||
+      AppPathsBackupEnum.SETTINGS_SHORTCUTS ||
+      AppPathsBackupEnum.TOTAL_LISTEN_TIME ||
+      AppPathsBackupEnum.PLAYLISTS_METADATA ||
+      AppPathsBackupEnum.YT_PLAYLISTS_METADATA ||
+      AppPathsBackupEnum.YT_STATS ||
+      AppPathsBackupEnum.YT_DOWNLOAD_TASKS => null,
+
+      // -- device specific, obsolete, cache, etc...
+      AppPathsBackupEnum.SETTINGS_SYNC ||
+      AppPathsBackupEnum.SETTINGS_PARTY ||
+      AppPathsBackupEnum.VIDEOS_LOCAL_DB_INFO ||
+      AppPathsBackupEnum.TRACKS_OLD ||
+      AppPathsBackupEnum.TRACKS_STATS_OLD ||
+      AppPathsBackupEnum.VIDEOS_LOCAL_OLD ||
+      AppPathsBackupEnum.VIDEOS_CACHE_OLD ||
+      AppPathsBackupEnum.ARTWORKS ||
+      AppPathsBackupEnum.PALETTES ||
+      AppPathsBackupEnum.THUMBNAILS ||
+      AppPathsBackupEnum.M3UBackup ||
+      AppPathsBackupEnum.RECENTLY_DELETED ||
+      AppPathsBackupEnum.YOUTIPIE_CACHE ||
+      AppPathsBackupEnum.YT_PALETTES => false,
+    };
+  }
+
+  String resolve() {
+    return switch (this) {
+      AppPathsBackupEnum.SETTINGS => AppPaths.SETTINGS,
+      AppPathsBackupEnum.SETTINGS_EQUALIZER => AppPaths.SETTINGS_EQUALIZER,
+      AppPathsBackupEnum.SETTINGS_PLAYER => AppPaths.SETTINGS_PLAYER,
+      AppPathsBackupEnum.SETTINGS_YOUTUBE => AppPaths.SETTINGS_YOUTUBE,
+      AppPathsBackupEnum.SETTINGS_EXTRA => AppPaths.SETTINGS_EXTRA,
+      AppPathsBackupEnum.SETTINGS_SYNC => AppPaths.SETTINGS_SYNC,
+      AppPathsBackupEnum.SETTINGS_PARTY => AppPaths.SETTINGS_PARTY,
+      AppPathsBackupEnum.SETTINGS_TUTORIAL => AppPaths.SETTINGS_TUTORIAL,
+      AppPathsBackupEnum.SETTINGS_SHORTCUTS => AppPaths.SETTINGS_SHORTCUTS,
+      AppPathsBackupEnum.TRACKS_DB_INFO => AppPaths.TRACKS_DB_INFO.file.path,
+      AppPathsBackupEnum.TRACKS_STATS_DB_INFO => AppPaths.TRACKS_STATS_DB_INFO.file.path,
+      AppPathsBackupEnum.LATEST_PLAYED_FOR_SOURCE => AppPaths.LATEST_PLAYED_FOR_SOURCE.file.path,
+      AppPathsBackupEnum.AUDIO_CONFIGS => AppPaths.AUDIO_CONFIGS.file.path,
+      AppPathsBackupEnum.SMART_PLAYLISTS => AppPaths.SMART_PLAYLISTS.file.path,
+      AppPathsBackupEnum.VIDEOS_LOCAL_DB_INFO => AppPaths.VIDEOS_LOCAL_DB_INFO.file.path,
+      AppPathsBackupEnum.VIDEOS_CACHE_DB_INFO => AppPaths.VIDEOS_CACHE_DB_INFO.file.path,
+      AppPathsBackupEnum.LATEST_QUEUE => AppPaths.LATEST_QUEUE,
+      AppPathsBackupEnum.TRACKS_OLD => AppPaths.TRACKS_OLD,
+      AppPathsBackupEnum.TRACKS_STATS_OLD => AppPaths.TRACKS_STATS_OLD,
+      AppPathsBackupEnum.VIDEOS_LOCAL_OLD => AppPaths.VIDEOS_LOCAL_OLD,
+      AppPathsBackupEnum.VIDEOS_CACHE_OLD => AppPaths.VIDEOS_CACHE_OLD,
+      AppPathsBackupEnum.TOTAL_LISTEN_TIME => AppPaths.TOTAL_LISTEN_TIME,
+      AppPathsBackupEnum.LISTEN_TIME_DAILY_DB_INFO => AppPaths.LISTEN_TIME_DAILY_DB_INFO.file.path,
+      AppPathsBackupEnum.FAVOURITES_PLAYLIST => AppPaths.FAVOURITES_PLAYLIST,
+      AppPathsBackupEnum.YT_LIKES_PLAYLIST => AppPaths.YT_LIKES_PLAYLIST,
+      AppPathsBackupEnum.YT_SUBSCRIPTIONS => AppPaths.YT_SUBSCRIPTIONS,
+      AppPathsBackupEnum.YT_SUBSCRIPTIONS_GROUPS_ALL => AppPaths.YT_SUBSCRIPTIONS_GROUPS_ALL,
+      AppPathsBackupEnum.VIDEO_ID_STATS_DB_INFO => AppPaths.VIDEO_ID_STATS_DB_INFO.file.path,
+      AppPathsBackupEnum.CACHE_VIDEOS_PRIORITY => AppPaths.CACHE_VIDEOS_PRIORITY.file.path,
+      AppPathsBackupEnum.HISTORY_PLAYLIST => AppDirs.HISTORY_PLAYLIST,
+      AppPathsBackupEnum.PLAYLISTS => AppDirs.PLAYLISTS,
+      AppPathsBackupEnum.PLAYLISTS_ARTWORKS => AppDirs.PLAYLISTS_ARTWORKS,
+      AppPathsBackupEnum.SMART_PLAYLISTS_ARTWORKS => AppDirs.SMART_PLAYLISTS_ARTWORKS,
+      AppPathsBackupEnum.PLAYLISTS_METADATA => AppDirs.PLAYLISTS_METADATA,
+      AppPathsBackupEnum.QUEUES => AppDirs.QUEUES,
+      AppPathsBackupEnum.ARTWORKS => AppDirs.ARTWORKS,
+      AppPathsBackupEnum.ARTWORKS_ARTISTS => AppDirs.ARTWORKS_ARTISTS,
+      AppPathsBackupEnum.ARTWORKS_ALBUMS => AppDirs.ARTWORKS_ALBUMS,
+      AppPathsBackupEnum.PALETTES => AppDirs.PALETTES,
+      AppPathsBackupEnum.VIDEOS_CACHE => AppDirs.VIDEOS_CACHE,
+      AppPathsBackupEnum.AUDIOS_CACHE => AppDirs.AUDIOS_CACHE,
+      AppPathsBackupEnum.THUMBNAILS => AppDirs.THUMBNAILS,
+      AppPathsBackupEnum.LYRICS => AppDirs.LYRICS,
+      AppPathsBackupEnum.M3UBackup => AppDirs.M3UBackup,
+      AppPathsBackupEnum.RECENTLY_DELETED => AppDirs.RECENTLY_DELETED,
+      AppPathsBackupEnum.YOUTIPIE_CACHE => AppDirs.YOUTIPIE_CACHE,
+      AppPathsBackupEnum.YT_PLAYLISTS => AppDirs.YT_PLAYLISTS,
+      AppPathsBackupEnum.YT_PLAYLISTS_ARTWORKS => AppDirs.YT_PLAYLISTS_ARTWORKS,
+      AppPathsBackupEnum.YT_PLAYLISTS_METADATA => AppDirs.YT_PLAYLISTS_METADATA,
+      AppPathsBackupEnum.YT_HISTORY_PLAYLIST => AppDirs.YT_HISTORY_PLAYLIST,
+      AppPathsBackupEnum.YT_THUMBNAILS => AppDirs.YT_THUMBNAILS,
+      AppPathsBackupEnum.YT_THUMBNAILS_CHANNELS => AppDirs.YT_THUMBNAILS_CHANNELS,
+      AppPathsBackupEnum.YT_STATS => AppDirs.YT_STATS,
+      AppPathsBackupEnum.YT_PALETTES => AppDirs.YT_PALETTES,
+      AppPathsBackupEnum.YT_DOWNLOAD_TASKS => AppDirs.YT_DOWNLOAD_TASKS,
+    };
+  }
+}
+
+class AppPathsBackupEnumCategories {
+  const AppPathsBackupEnumCategories._();
+
+  static final everything = [
+    ...AppPathsBackupEnumCategories.database,
+    ...AppPathsBackupEnumCategories.database_yt,
+    ...AppPathsBackupEnumCategories.settings,
+    ...AppPathsBackupEnumCategories.history,
+    ...AppPathsBackupEnumCategories.history_yt,
+    ...AppPathsBackupEnumCategories.playlists,
+    ...AppPathsBackupEnumCategories.playlists_yt,
+    ...AppPathsBackupEnumCategories.queues,
+    ...AppPathsBackupEnumCategories.lyrics,
+    ...AppPathsBackupEnumCategories.palette,
+    ...AppPathsBackupEnumCategories.palette_yt,
+  ];
+
+  static List<AppPathsBackupEnum> database = [
+    AppPathsBackupEnum.TRACKS_OLD,
+    AppPathsBackupEnum.TRACKS_DB_INFO,
+    AppPathsBackupEnum.TRACKS_STATS_OLD,
+    AppPathsBackupEnum.TRACKS_STATS_DB_INFO,
+    AppPathsBackupEnum.LATEST_PLAYED_FOR_SOURCE,
+    AppPathsBackupEnum.AUDIO_CONFIGS,
+    AppPathsBackupEnum.TOTAL_LISTEN_TIME,
+    AppPathsBackupEnum.LISTEN_TIME_DAILY_DB_INFO,
+    AppPathsBackupEnum.VIDEOS_CACHE_OLD,
+    AppPathsBackupEnum.VIDEOS_CACHE_DB_INFO,
+    AppPathsBackupEnum.VIDEOS_LOCAL_OLD,
+    AppPathsBackupEnum.VIDEOS_LOCAL_DB_INFO,
+    AppPathsBackupEnum.YT_DOWNLOAD_TASKS,
+    AppPathsBackupEnum.VIDEO_ID_STATS_DB_INFO,
+    AppPathsBackupEnum.CACHE_VIDEOS_PRIORITY,
+    AppPathsBackupEnum.RECENTLY_DELETED,
+  ];
+  static List<AppPathsBackupEnum> database_yt = [
+    AppPathsBackupEnum.YT_STATS,
+    AppPathsBackupEnum.YT_SUBSCRIPTIONS,
+    AppPathsBackupEnum.YT_SUBSCRIPTIONS_GROUPS_ALL,
+  ];
+
+  static List<AppPathsBackupEnum> playlists = [
+    AppPathsBackupEnum.PLAYLISTS,
+    AppPathsBackupEnum.SMART_PLAYLISTS,
+    AppPathsBackupEnum.SMART_PLAYLISTS_ARTWORKS,
+    AppPathsBackupEnum.PLAYLISTS_ARTWORKS,
+    AppPathsBackupEnum.PLAYLISTS_METADATA,
+    AppPathsBackupEnum.FAVOURITES_PLAYLIST,
+    AppPathsBackupEnum.M3UBackup,
+  ];
+  static List<AppPathsBackupEnum> playlists_yt = [
+    AppPathsBackupEnum.YT_PLAYLISTS,
+    AppPathsBackupEnum.YT_PLAYLISTS_ARTWORKS,
+    AppPathsBackupEnum.YT_PLAYLISTS_METADATA,
+    AppPathsBackupEnum.YT_LIKES_PLAYLIST,
+  ];
+
+  static List<AppPathsBackupEnum> history = [
+    AppPathsBackupEnum.HISTORY_PLAYLIST,
+  ];
+  static List<AppPathsBackupEnum> history_yt = [
+    AppPathsBackupEnum.YT_HISTORY_PLAYLIST,
+  ];
+
+  static List<AppPathsBackupEnum> settings = [
+    AppPathsBackupEnum.SETTINGS,
+    AppPathsBackupEnum.SETTINGS_EQUALIZER,
+    AppPathsBackupEnum.SETTINGS_EXTRA,
+    AppPathsBackupEnum.SETTINGS_PLAYER,
+    AppPathsBackupEnum.SETTINGS_SYNC,
+    AppPathsBackupEnum.SETTINGS_PARTY,
+    AppPathsBackupEnum.SETTINGS_TUTORIAL,
+    AppPathsBackupEnum.SETTINGS_SHORTCUTS,
+    AppPathsBackupEnum.SETTINGS_YOUTUBE,
+  ];
+
+  static List<AppPathsBackupEnum> lyrics = [
+    AppPathsBackupEnum.LYRICS,
+  ];
+
+  static List<AppPathsBackupEnum> queues = [
+    AppPathsBackupEnum.QUEUES,
+    AppPathsBackupEnum.LATEST_QUEUE,
+  ];
+
+  static List<AppPathsBackupEnum> palette = [
+    AppPathsBackupEnum.PALETTES,
+  ];
+
+  static List<AppPathsBackupEnum> palette_yt = [
+    AppPathsBackupEnum.YT_PALETTES,
+  ];
+
+  static List<AppPathsBackupEnum> videos_cache = [
+    AppPathsBackupEnum.VIDEOS_CACHE,
+  ];
+
+  static List<AppPathsBackupEnum> audios_cache = [
+    AppPathsBackupEnum.AUDIOS_CACHE,
+  ];
+
+  static List<AppPathsBackupEnum> artworks = [
+    AppPathsBackupEnum.ARTWORKS,
+    AppPathsBackupEnum.ARTWORKS_ARTISTS,
+    AppPathsBackupEnum.ARTWORKS_ALBUMS,
+  ];
+
+  static List<AppPathsBackupEnum> thumbnails = [
+    AppPathsBackupEnum.THUMBNAILS,
+  ];
+  static List<AppPathsBackupEnum> thumbnails_yt = [
+    AppPathsBackupEnum.YT_THUMBNAILS,
+    AppPathsBackupEnum.YT_THUMBNAILS_CHANNELS,
+  ];
+
+  static List<AppPathsBackupEnum> youtipie_cache = [
+    AppPathsBackupEnum.YOUTIPIE_CACHE,
+  ];
 }
 
 /// Files used by Namida
 class AppPaths {
   static String get _USER_DATA => AppDirs.USER_DATA;
 
-  // ================= User Data =================
-  static final SETTINGS = '$_USER_DATA/namida_settings.json';
-  static final SETTINGS_EQUALIZER = '$_USER_DATA/namida_settings_eq.json';
-  static final SETTINGS_PLAYER = '$_USER_DATA/namida_settings_player.json';
-  static final TRACKS = '$_USER_DATA/tracks.json';
-  static final VIDEOS_LOCAL = '$_USER_DATA/local_videos.json';
-  static final VIDEOS_CACHE = '$_USER_DATA/cache_videos.json';
-  static final TRACKS_STATS = '$_USER_DATA/tracks_stats.json';
-  static final LATEST_QUEUE = '$_USER_DATA/latest_queue.json';
+  static String _join(String part1, String part2, [String? part3]) {
+    return FileParts.joinPath(part1, part2, part3);
+  }
 
+  // ================= User Data =================
+  static final SETTINGS = _join(_USER_DATA, 'namida_settings.json');
+  static final SETTINGS_EQUALIZER = _join(_USER_DATA, 'namida_settings_eq.json');
+  static final SETTINGS_PLAYER = _join(_USER_DATA, 'namida_settings_player.json');
+  static final SETTINGS_YOUTUBE = _join(_USER_DATA, 'namida_settings_youtube.json');
+  static final SETTINGS_EXTRA = _join(_USER_DATA, 'namida_settings_extra.json');
+  static final SETTINGS_SYNC = _join(_USER_DATA, 'namida_settings_sync.json');
+  static final SETTINGS_PARTY = _join(_USER_DATA, 'namida_settings_party.json');
+  static final SETTINGS_TUTORIAL = _join(_USER_DATA, 'namida_settings_tutorial.json');
+  static final SETTINGS_SHORTCUTS = _join(_USER_DATA, 'namida_settings_shortcuts.json');
+  static final TRACKS_DB_INFO = DbWrapperFileInfo(directory: _USER_DATA, dbName: 'tracks');
+  static final TRACKS_STATS_DB_INFO = DbWrapperFileInfo(directory: _USER_DATA, dbName: 'tracks_stats');
+  static final TRACKS_RHYTHM_DB_INFO = DbWrapperFileInfo(directory: _USER_DATA, dbName: 'tracks_rhythm');
+  static final TRACKS_EXTERNAL_DB_INFO = DbWrapperFileInfo(directory: _USER_DATA, dbName: 'tracks_external');
+  static final LATEST_PLAYED_FOR_SOURCE = DbWrapperFileInfo(directory: _USER_DATA, dbName: 'latest_played');
+  static final AUDIO_CONFIGS = DbWrapperFileInfo(directory: _USER_DATA, dbName: 'audio_configs');
+  static final SMART_PLAYLISTS = DbWrapperFileInfo(directory: _USER_DATA, dbName: 'smart_playlists');
+  static final VIDEOS_LOCAL_DB_INFO = DbWrapperFileInfo(directory: _USER_DATA, dbName: 'local_videos');
+  static final VIDEOS_CACHE_DB_INFO = DbWrapperFileInfo(directory: _USER_DATA, dbName: 'cache_videos');
+  static final LATEST_QUEUE = _join(_USER_DATA, 'latest_queue.json');
+
+  // -- obsolete
+  static final TRACKS_OLD = _join(_USER_DATA, 'tracks.json');
+  static final TRACKS_STATS_OLD = _join(_USER_DATA, 'tracks_stats.json');
+  static final VIDEOS_LOCAL_OLD = _join(_USER_DATA, 'local_videos.json');
+  static final VIDEOS_CACHE_OLD = _join(_USER_DATA, 'cache_videos.json');
+  // ---------
+
+  static Future<List<String>> getAllExistingLogsAndSettingsAsZip({String? outputDirectory}) async {
+    final format = DateFormat('yyyy-MM-dd HH.mm.ss');
+    final dateText = format.format(DateTime.now());
+    final tmpDirParentPath = FileParts.joinPath((await pp.getTemporaryDirectory()).path, 'namida_logs_$dateText');
+    final tmpDirContentsPath = FileParts.joinPath(tmpDirParentPath, 'contents');
+    final tmpDirContents = await Directory(tmpDirContentsPath).create(recursive: true);
+    await _copyAllExistingLogAndSettingsTo(tmpDirPath: tmpDirContentsPath);
+    final zipper = ZipManager.platform();
+    final zipDirectoryPath = outputDirectory ?? tmpDirParentPath;
+    final zipFile = FileParts.join(zipDirectoryPath, 'namida_logs_$dateText.zip');
+    await zipper.createZipFromDirectory(
+      sourceDir: tmpDirContents,
+      zipFile: zipFile,
+    );
+    final leftoverDirectory = outputDirectory == null ? tmpDirContents : Directory(tmpDirParentPath);
+    leftoverDirectory.delete(recursive: true);
+    return [zipFile.path];
+  }
+
+  static Future<List<File>> _copyAllExistingLogAndSettingsTo({required String tmpDirPath, bool includeSettings = true}) async {
+    final existingPaths = <File>[];
+    final deviceInfoFile = FileParts.join(tmpDirPath, 'device_info.txt');
+    try {
+      final deviceInfo = await _getDeviceInfo();
+      await deviceInfoFile.create(recursive: true);
+      await deviceInfoFile.writeAsString(deviceInfo);
+      existingPaths.add(deviceInfoFile);
+    } catch (_) {}
+    if (Platform.isLinux) {
+      // -- permissions not supported on linux
+    } else {
+      final permissionsInfoFile = FileParts.join(tmpDirPath, 'permissions.txt');
+      try {
+        final permissionsInfo = await _getPermissionsInfo();
+        await permissionsInfoFile.create(recursive: true);
+        await permissionsInfoFile.writeAsString(permissionsInfo);
+        existingPaths.add(permissionsInfoFile);
+      } catch (_) {}
+    }
+    final membershipInfoFile = FileParts.join(tmpDirPath, 'membership.txt');
+    try {
+      await membershipInfoFile.writeAsString(_getMembershipInfo());
+      existingPaths.add(membershipInfoFile);
+    } catch (_) {}
+    final youtubeInfoFile = FileParts.join(tmpDirPath, 'youtube.txt');
+    try {
+      await youtubeInfoFile.writeAsString(_getYoutubeInfo());
+      existingPaths.add(youtubeInfoFile);
+    } catch (_) {}
+    final redactor = _LogsRedactor();
+    for (final p in [
+      AppPaths.LOGS,
+      AppPaths.LOGS_FALLBACK,
+      AppPaths.LOGS_TAGGER,
+    ]) {
+      final file = File(p);
+      if (await file.exists()) {
+        final destination = FileParts.join(tmpDirPath, p.getFilename);
+        final copy = await redactor.copyRedacted(file, destination);
+        final size = await copy.fileSize();
+        if (size != null && size > 0) {
+          existingPaths.add(copy);
+        }
+      }
+    }
+    if (includeSettings) {
+      final settingsFile = await _writeAllSettingsRedacted(redactor, tmpDirPath: tmpDirPath);
+      if (settingsFile != null) existingPaths.add(settingsFile);
+    }
+    return existingPaths;
+  }
+
+  static Future<File?> _writeAllSettingsRedacted(_LogsRedactor redactor, {required String tmpDirPath}) async {
+    final settingsWriters = <SettingsFileWriter>[
+      settings,
+      settings.equalizer,
+      settings.player,
+      settings.youtube,
+      settings.extra,
+      settings.sync,
+      settings.party,
+      settings.tutorial,
+      settings.shortcuts,
+    ];
+    final allSettings = <String, dynamic>{};
+    for (final writer in settingsWriters) {
+      final settingsName = writer.filePath.getFilenameWOExt;
+      allSettings[settingsName] = writer.redactedJson();
+    }
+
+    final destination = FileParts.join(tmpDirPath, 'settings.json');
+    return redactor.writeRedactedJson(allSettings, destination);
+  }
+
+  static String get LOGS_FALLBACK => _getFallbackLogsFilePath();
   static String get LOGS => _getLogsFile('');
   static String get LOGS_TAGGER => _getLogsFile('_tagger');
-  static String get LOGS_CLEAN => _getLogsFile('_clean');
 
   static String _getLogsFile(String identifier) {
     final suffix = getLogsSuffix() ?? '_unknown';
@@ -172,83 +865,348 @@ class AppPaths {
     return '_${info.version}_${info.buildNumber}';
   }
 
-  static final TOTAL_LISTEN_TIME = '$_USER_DATA/total_listen.txt';
-  static final FAVOURITES_PLAYLIST = '$_USER_DATA/favs.json';
+  static String _getFallbackLogsFilePath() {
+    return NamidaPlatformBuilder.init(
+      android: () => '/storage/emulated/0/Documents/namida_logs.txt',
+      windows: () {
+        final home = NamidaPlatformBuilder.windowsNamidaHome;
+        if (home != null && home.isNotEmpty) return FileParts.joinPath(home, 'Logs', 'namida_logs.txt');
+        return FileParts.joinPath(Directory.systemTemp.path, 'namida_logs.txt');
+      },
+      linux: () {
+        final home = NamidaPlatformBuilder.linuxNamidaHome;
+        if (home != null && home.isNotEmpty) return FileParts.joinPath(home, 'Logs', 'namida_logs.txt');
+        return FileParts.joinPath(Directory.systemTemp.path, 'namida_logs.txt');
+      },
+    );
+  }
+
+  static Future<String> _getPermissionsInfo() async {
+    const encoder = JsonEncoder.withIndent("  ");
+    Future<String> permissionToStatus(Permission p) async {
+      try {
+        return (await p.status).name;
+      } catch (e) {
+        return 'Unknown: $e';
+      }
+    }
+
+    final infoMap = {
+      'sdk_version': NamidaDeviceInfo.sdkVersion,
+      'uses_old_storage_permission': NamidaDeviceInfo.useOldStoragePermission,
+      'storage': await permissionToStatus(Permission.storage),
+      'audio': await permissionToStatus(Permission.audio),
+      'videos': await permissionToStatus(Permission.videos),
+      'photos': await permissionToStatus(Permission.photos),
+      'all_file_access': await permissionToStatus(Permission.manageExternalStorage),
+      'notification': await permissionToStatus(Permission.notification),
+      'ignore_battery_optimizations': await permissionToStatus(Permission.ignoreBatteryOptimizations),
+    };
+    return encoder.convert(infoMap);
+  }
+
+  static String _getMembershipInfo() {
+    const encoder = JsonEncoder.withIndent("  ");
+
+    final membership = YoutubeAccountController.membership;
+    final patreon = membership.userPatreonTier.value;
+    final coupon = membership.userSupabaseSub.value;
+
+    Map<String, dynamic> couponInfo(SupabaseSub sub) {
+      final availableTill = sub.availableTill;
+      final isPermanent = availableTill != null && availableTill.isAfter(DateTime(9000));
+      final availableTillText = isPermanent ? null : _formatLogsDate(availableTill);
+      final claimedAt = availableTill == null || isPermanent ? null : availableTill.subtract(Duration(days: sub.days));
+      final remaining = availableTill?.difference(DateTime.now());
+      final remainingText = switch (remaining) {
+        null => null,
+        Duration() when isPermanent => 'permanent',
+        Duration(isNegative: true) => 'expired',
+        Duration(:final inDays, :final inHours) => '${inDays}d ${inHours % Duration.hoursPerDay}h',
+      };
+      return {
+        'type': sub.toMembershipType().name,
+        'claimed': sub.claimed,
+        'claimed_at': _formatLogsDate(claimedAt),
+        'days': sub.days,
+        'available_till': availableTillText,
+        'remaining': remainingText,
+        'last_checked': _formatLogsDate(sub.lastChecked),
+      };
+    }
+
+    final infoMap = {
+      'membership': membership.userMembershipTypeGlobal.value?.name,
+      if (patreon != null)
+        'patreon': {
+          'type': patreon.toMembershipType().name,
+          'since': _formatLogsDate(patreon.createdAt),
+          'declined_since': _formatLogsDate(patreon.declinedSince),
+          'last_checked': _formatLogsDate(patreon.lastChecked),
+        },
+      if (coupon != null) 'coupon': couponInfo(coupon),
+    };
+    return encoder.convert(infoMap);
+  }
+
+  static String _getYoutubeInfo() {
+    const encoder = JsonEncoder.withIndent("  ");
+    final cipher = YoutiPie.cipher;
+    final potoken = YoutiPie.potoken;
+    final cookies = YoutiPie.cookies;
+    final accounts = YoutiPie.signedInAccounts.value;
+    final activeAccount = YoutiPie.activeAccountDetails.value;
+    final expiredAccountsCount = accounts.where(cookies.isSessionExpired).length;
+    final sessionFailureReport = YoutiPie.lastSessionFailureReport;
+    final sessionFailureDetails = sessionFailureReport?.toText().split('\n');
+
+    Map<String, dynamic> accountInfo(UserChannelInfo account) {
+      final identity = account.identity;
+      return {
+        'is_brand': !identity.isOwner,
+        'auth_user': identity.authUser,
+        'needs_migration': identity.needsMigration,
+        'session_expired': cookies.isSessionExpired(account),
+      };
+    }
+
+    final infoMap = {
+      'did_init': YoutubeInfoController.didInit,
+      'has_connection': ConnectivityController.inst.hasConnection,
+      'language': YoutiPie.languageCode,
+      'country': YoutiPie.countryCode,
+      'last_session_reset': _formatLogsDate(YoutiPie.lastSessionReset),
+      if (sessionFailureReport != null)
+        'last_session_failure': {
+          'date': _formatLogsDate(sessionFailureReport.date),
+          'details': sessionFailureDetails,
+        },
+      'js_player': {
+        'version': cipher.jsPlayerVersion,
+        'signature_timestamp': cipher.signatureTimestamp,
+        'is_prepared': cipher.isPrepared,
+        'failed_extraction': cipher.didFailedToExtractJsCode,
+      },
+      'po_token': {
+        'has_token': potoken.hasPoToken,
+        'last_refreshed': _formatLogsDate(potoken.lastRefreshed),
+      },
+      'accounts': {
+        'signed_in': accounts.length,
+        'expired': expiredAccountsCount,
+        'can_authorize_requests': cookies.canAuthorizeRequests,
+        if (activeAccount != null) 'active': accountInfo(activeAccount),
+      },
+    };
+    return encoder.convert(infoMap);
+  }
+
+  static final _logsDateFormat = DateFormat('yyyy-MM-dd HH:mm');
+
+  static String? _formatLogsDate(DateTime? date) => date == null ? null : _logsDateFormat.format(date);
+
+  static Future<String> _getDeviceInfo() async {
+    final device = await NamidaDeviceInfo.deviceInfoCompleter.future;
+    final package = await NamidaDeviceInfo.packageInfoCompleter.future;
+    final deviceMap = device?.data;
+    final packageMap = package?.data;
+
+    if (deviceMap != null) _LogsRedactor.removeExcludedDeviceInfo(deviceMap);
+
+    final encoder = JsonEncoder.withIndent(
+      "  ",
+      (object) {
+        if (object is DateTime) {
+          return object.toString();
+        }
+        try {
+          return object.toJson();
+        } catch (_) {
+          return object.toString();
+        }
+      },
+    );
+    final infoMap = {
+      'device': deviceMap,
+      'package': packageMap,
+    };
+    return encoder.convert(infoMap);
+  }
+
+  static final TOTAL_LISTEN_TIME = _join(_USER_DATA, 'total_listen.txt');
+  static final SERVERS_PENDING_LISTENS = _join(_USER_DATA, 'servers_pending_listens.json');
+  static final LISTEN_TIME_DAILY_DB_INFO = DbWrapperFileInfo(directory: _USER_DATA, dbName: 'listen_time_daily');
+  static final FAVOURITES_PLAYLIST = _join(_USER_DATA, 'favs.json');
   static final NAMIDA_LOGO = '${AppDirs.ARTWORKS}.ARTWORKS.NAMIDA_DEFAULT_ARTWORK.PNG';
+  static final NAMIDA_LOGO_LAYER = '${AppDirs.ARTWORKS}.ARTWORKS.NAMIDA_DEFAULT_ARTWORK_LAYER.PNG';
 
   // ================= Youtube =================
-  static final YT_LIKES_PLAYLIST = '${AppDirs.YOUTUBE_MAIN_DIRECTORY}/yt_likes.json';
-  static final YT_SUBSCRIPTIONS = '${AppDirs.YOUTUBE_MAIN_DIRECTORY}/yt_subs.json';
+  static final YT_LIKES_PLAYLIST = _join(AppDirs.YOUTUBE_MAIN_DIRECTORY, 'yt_likes.json');
+  static final YT_SUBSCRIPTIONS = _join(AppDirs.YOUTUBE_MAIN_DIRECTORY, 'yt_subs.json');
+  static final YT_SUBSCRIPTIONS_GROUPS_ALL = _join(AppDirs.YOUTUBE_MAIN_DIRECTORY, 'yt_sub_groups.json');
+  static final VIDEO_ID_STATS_DB_INFO = DbWrapperFileInfo(directory: AppDirs.YOUTUBE_MAIN_DIRECTORY, dbName: 'ytid_stats');
+  static final CACHE_VIDEOS_PRIORITY = DbWrapperFileInfo(directory: _USER_DATA, dbName: 'cache_videos_priority');
+  static final CACHE_SERVERS_PRIORITY = DbWrapperFileInfo(directory: _USER_DATA, dbName: 'cache_servers_priority');
+}
+
+// by claude
+class _LogsRedactor {
+  static const _redactedHomeDirectory = '~';
+  static const _indentedJsonEncoder = JsonEncoder.withIndent('  ');
+
+  static const _excludedDeviceInfoKeys = {
+    'supported32BitAbis', 'supported64BitAbis', 'systemFeatures', //
+    'name', 'computerName', 'hostName', 'userName', 'registeredOwner', //
+    'deviceId', 'productId', 'digitalProductId', 'installDate', 'machineId', 'systemGUID', //
+  };
+
+  final _homeDirectoryRegex = _buildHomeDirectoryRegex();
+
+  static void removeExcludedDeviceInfo(Map<String, dynamic> deviceMap) {
+    for (final key in _excludedDeviceInfoKeys) {
+      deviceMap.remove(key);
+    }
+  }
+
+  static RegExp? _buildHomeDirectoryRegex() {
+    if (Platform.isAndroid) return null;
+
+    final homeEnvKey = Platform.isWindows ? 'USERPROFILE' : 'HOME';
+    final home = Platform.environment[homeEnvKey];
+    if (home == null) return null;
+
+    final isFilesystemRoot = Directory(home).parent.path == home;
+    if (isFilesystemRoot) return null;
+
+    final jsonEscapedHome = home.replaceAll(r'\', r'\\');
+    final forwardSlashesHome = home.replaceAll(r'\', '/');
+    final variants = {home, jsonEscapedHome, forwardSlashesHome};
+    final pattern = variants.map(RegExp.escape).join('|');
+    return RegExp(pattern, caseSensitive: !Platform.isWindows);
+  }
+
+  Future<File> copyRedacted(File source, File destination) async {
+    final homeDirectoryRegex = _homeDirectoryRegex;
+    if (homeDirectoryRegex == null) return source.copy(destination.path);
+
+    final text = await source.readAsString();
+    final redactedText = text.replaceAll(homeDirectoryRegex, _redactedHomeDirectory);
+    return destination.writeAsString(redactedText);
+  }
+
+  Future<File?> writeRedactedJson(Map<String, dynamic> json, File destination) async {
+    final homeDirectoryRegex = _homeDirectoryRegex;
+    if (homeDirectoryRegex == null) return destination.writeAsJson(json);
+
+    final text = _indentedJsonEncoder.convert(json);
+    final redactedText = text.replaceAll(homeDirectoryRegex, _redactedHomeDirectory);
+    return destination.writeAsString(redactedText);
+  }
 }
 
 /// Directories used by Namida
 class AppDirs {
+  static String ROOT_DIR = '';
   static String USER_DATA = '';
   static String APP_CACHE = '';
   static String INTERNAL_STORAGE = '';
 
+  static final _sep = Platform.pathSeparator;
+  static String _join(String part1, String part2, [String? part3]) {
+    return FileParts.joinPath(part1, part2, part3) + _sep;
+  }
+
   // ================= User Data =================
-  static final HISTORY_PLAYLIST = '$USER_DATA/History/';
-  static final PLAYLISTS = '$USER_DATA/Playlists/';
-  static final QUEUES = '$USER_DATA/Queues/';
-  static final ARTWORKS = '$USER_DATA/Artworks/'; // extracted audio artworks
-  static final PALETTES = '$USER_DATA/Palettes/';
-  static final VIDEOS_CACHE = '$USER_DATA/Videos/';
-  static final AUDIOS_CACHE = '$USER_DATA/Audios/';
-  static final VIDEOS_CACHE_TEMP = '$USER_DATA/Videos/Temp/';
-  static final THUMBNAILS = '$USER_DATA/Thumbnails/'; // extracted video thumbnails
-  static final LYRICS = '$USER_DATA/Lyrics/';
-  static final M3UBackup = '$USER_DATA/M3U Backup/'; // backups m3u on first found
-  static String get LOGS_DIRECTORY => '$USER_DATA/Logs/';
+  static final HISTORY_PLAYLIST = _join(USER_DATA, 'History');
+  static final PLAYLISTS = _join(USER_DATA, 'Playlists');
+  static final PLAYLISTS_ARTWORKS = _join(USER_DATA, 'Playlists Artworks');
+  static final SMART_PLAYLISTS_ARTWORKS = _join(USER_DATA, 'Smart Playlists Artworks');
+  static final PLAYLISTS_METADATA = _join(USER_DATA, 'Playlists Metadata');
+  static final QUEUES = _join(USER_DATA, 'Queues');
+  static final ARTWORKS = _join(USER_DATA, 'Artworks'); // extracted audio artworks
+  static final ARTWORKS_ARTISTS = _join(USER_DATA, 'Artworks Artists');
+  static final ARTWORKS_ALBUMS = _join(USER_DATA, 'Artworks Albums');
+  static final PALETTES = _join(USER_DATA, 'Palettes');
+  static final WALLPAPERS = _join(USER_DATA, 'Wallpapers');
+  static final VIDEOS_CACHE = _join(USER_DATA, 'Videos');
+  static final AUDIOS_CACHE = _join(USER_DATA, 'Audios');
+  static final SERVERS_CACHE = _join(USER_DATA, 'Servers Cache');
+  static final VIDEOS_CACHE_TEMP = _join(USER_DATA, 'Videos', 'Temp');
+  static final THUMBNAILS = _join(USER_DATA, 'Thumbnails'); // extracted video thumbnails
+  static final LYRICS = _join(USER_DATA, 'Lyrics');
+  static final LYRICS_DRAFTS = _join(USER_DATA, 'Lyrics Drafts');
+  static final SUBTITLES = _join(USER_DATA, 'Subtitles');
+  static final M3UBackup = _join(USER_DATA, 'M3U Backup'); // backups m3u on first found
+  static final RECENTLY_DELETED = _join(USER_DATA, 'Recently Deleted'); // stores files that was deleted recently
+  static String get LOGS_DIRECTORY => _join(USER_DATA, 'Logs');
+
+  // ================= App Cache =================
+  static final WAVEFORMS_CACHE = _join(APP_CACHE, 'waveform');
+  static final ABOUT_CACHE = _join(APP_CACHE, 'about');
+
+  static final LOGIN = _join(ROOT_DIR, 'login'); // this should never be accessed/backed up etc.
+  static final ROMANIZATION = _join(ROOT_DIR, 'romanization');
 
   // ================= Internal Storage =================
-  static final SAVED_ARTWORKS = '$INTERNAL_STORAGE/Artworks/';
-  static final BACKUPS = '$INTERNAL_STORAGE/Backups'; // only one without ending slash.
-  static final COMPRESSED_IMAGES = '$INTERNAL_STORAGE/Compressed/';
-  static final M3UPlaylists = '$INTERNAL_STORAGE/M3U Playlists/';
-  static final YOUTUBE_DOWNLOADS_DEFAULT = '$INTERNAL_STORAGE/Downloads/';
-  static String get YOUTUBE_DOWNLOADS => settings.ytDownloadLocation.value;
+  static final SAVED_ARTWORKS = _join(INTERNAL_STORAGE, 'Artworks');
+  static final BACKUPS = _join(INTERNAL_STORAGE, 'Backups'); // only one without ending slash.
+  static final COMPRESSED_IMAGES = _join(INTERNAL_STORAGE, 'Compressed');
+  static final M3UPlaylists = _join(INTERNAL_STORAGE, 'M3U Playlists');
+  static final YOUTUBE_DOWNLOADS_DEFAULT = _join(INTERNAL_STORAGE, 'Downloads');
+  static String get YOUTUBE_DOWNLOADS => settings.youtube.ytDownloadLocation.value;
 
   // ================= Youtube =================
-  static final YOUTUBE_MAIN_DIRECTORY = '$USER_DATA/Youtube';
+  static final YOUTUBE_MAIN_DIRECTORY = _join(USER_DATA, 'Youtube');
 
-  static final YT_PLAYLISTS = '$YOUTUBE_MAIN_DIRECTORY/Youtube Playlists/';
-  static final YT_HISTORY_PLAYLIST = '$YOUTUBE_MAIN_DIRECTORY/Youtube History/';
-  static final YT_THUMBNAILS = '$YOUTUBE_MAIN_DIRECTORY/YTThumbnails/';
-  static final YT_THUMBNAILS_CHANNELS = '$YOUTUBE_MAIN_DIRECTORY/YTThumbnails Channels/';
-  static final YT_METADATA = '$YOUTUBE_MAIN_DIRECTORY/Metadata Videos/';
-  static final YT_METADATA_TEMP = '$YOUTUBE_MAIN_DIRECTORY/Metadata Videos Temp/';
-  static final YT_METADATA_CHANNELS = '$YOUTUBE_MAIN_DIRECTORY/Metadata Channels/';
-  static final YT_METADATA_COMMENTS = '$YOUTUBE_MAIN_DIRECTORY/Metadata Comments/';
-  static final YT_STATS = '$YOUTUBE_MAIN_DIRECTORY/Youtube Stats/';
-  static final YT_PALETTES = '$YOUTUBE_MAIN_DIRECTORY/Palettes/';
-  static final YT_DOWNLOAD_TASKS = '$YOUTUBE_MAIN_DIRECTORY/Download Tasks/';
+  static final YOUTIPIE_CACHE = _join(YOUTUBE_MAIN_DIRECTORY, 'Youtipie');
+  static final YOUTIPIE_DATA = _join(ROOT_DIR, 'Youtipie', 'Youtipie_data'); // this should never be accessed/backed up etc.
+
+  static final YT_PLAYLISTS = _join(YOUTUBE_MAIN_DIRECTORY, 'Youtube Playlists');
+  static final YT_PLAYLISTS_ARTWORKS = _join(YOUTUBE_MAIN_DIRECTORY, 'Youtube Playlists Artworks');
+  static final YT_PLAYLISTS_METADATA = _join(YOUTUBE_MAIN_DIRECTORY, 'Youtube Playlists Metadata');
+  static final YT_HISTORY_PLAYLIST = _join(YOUTUBE_MAIN_DIRECTORY, 'Youtube History');
+  static final YT_THUMBNAILS = _join(YOUTUBE_MAIN_DIRECTORY, 'YTThumbnails');
+  static final YT_THUMBNAILS_CHANNELS = _join(YOUTUBE_MAIN_DIRECTORY, 'YTThumbnails Channels');
+
+  static final YT_STATS = _join(YOUTUBE_MAIN_DIRECTORY, 'Youtube Stats');
+  static final YT_PALETTES = _join(YOUTUBE_MAIN_DIRECTORY, 'Palettes');
+  static final YT_DOWNLOAD_TASKS = _join(YOUTUBE_MAIN_DIRECTORY, 'Download Tasks');
 
   // ===========================================
   static final List<String> values = [
     // -- User Data
     HISTORY_PLAYLIST,
     PLAYLISTS,
+    PLAYLISTS_ARTWORKS,
+    SMART_PLAYLISTS_ARTWORKS,
     QUEUES,
     ARTWORKS,
+    ARTWORKS_ARTISTS,
+    ARTWORKS_ALBUMS,
     PALETTES,
+    WALLPAPERS,
     VIDEOS_CACHE,
     VIDEOS_CACHE_TEMP,
     AUDIOS_CACHE,
     THUMBNAILS,
     LYRICS,
+    SUBTITLES,
     M3UBackup,
+    RECENTLY_DELETED,
     LOGS_DIRECTORY,
+    // -- App Cache
+    WAVEFORMS_CACHE,
+    ABOUT_CACHE,
     // -- Youtube
     YOUTUBE_MAIN_DIRECTORY,
     YT_PLAYLISTS,
+    YT_PLAYLISTS_ARTWORKS,
     YT_HISTORY_PLAYLIST,
     YT_THUMBNAILS,
     YT_THUMBNAILS_CHANNELS,
-    YT_METADATA,
-    YT_METADATA_TEMP,
-    YT_METADATA_CHANNELS,
-    YT_METADATA_COMMENTS,
+
+    YOUTIPIE_CACHE,
+
     YT_STATS,
     YT_PALETTES,
     YT_DOWNLOAD_TASKS,
@@ -259,11 +1217,77 @@ class AppDirs {
 class AppSocial {
   static const DONATE_KOFI = 'https://ko-fi.com/namidaco';
   static const DONATE_BUY_ME_A_COFFEE = 'https://www.buymeacoffee.com/namidaco';
+  static const DONATE_PATREON = 'https://www.patreon.com/namidaco';
+  static const PATREON_BENEFITS_POST = 'https://www.patreon.com/namidaco/posts/namida-yt-112913142';
   static const GITHUB = 'https://github.com/namidaco/namida';
+  static const GITHUB_SNAPSHOTS = 'https://github.com/namidaco/namida-snapshots';
   static const GITHUB_ISSUES = '$GITHUB/issues';
   static const GITHUB_RELEASES = '$GITHUB/releases/';
+  static const GITHUB_RELEASES_BETA = '$GITHUB_SNAPSHOTS/releases/';
   static const EMAIL = 'namida.coo@gmail.com';
   static const TRANSLATION_REPO = 'https://github.com/namidaco/namida-translations';
+
+  static const YOUTUBE_TAKEOUT = 'https://takeout.google.com/takeout/custom/youtube';
+
+  static const NAMIDA_SYNC_GITHUB_RELEASE = 'https://github.com/010101-sans/namida_sync/releases';
+}
+
+/// Links to the documentation website.
+class AppDocsLinks {
+  final String link;
+  const AppDocsLinks._(this.link);
+
+  Future<bool> launch() {
+    if (ConnectivityController.inst.hasConnection) {
+      return NamidaLinkUtils.openLink(this.link);
+    }
+    return OfflineDocs.open(this.link);
+  }
+
+  static const _BASE_RAW = 'https://docs.namida.app';
+  static const _SETTINGS_RAW = '$_BASE_RAW/settings/';
+  static const _SETTINGS_YOUTUBE_RAW = '${_SETTINGS_RAW}5-youtube-settings/';
+  static const _SETTINGS_BACKUP_RESTORE_RAW = '${_SETTINGS_RAW}7-backup-restore-settings/';
+  static const _FEATURES_RAW = '$_BASE_RAW/features/';
+
+  static const BASE = AppDocsLinks._(_BASE_RAW);
+
+  static const FEATURES = AppDocsLinks._(_FEATURES_RAW);
+  static const PAGES = AppDocsLinks._('$_BASE_RAW/pages/');
+  static const GUIDES = AppDocsLinks._('$_BASE_RAW/guides/');
+  static const TIPS = AppDocsLinks._('$_BASE_RAW/tips/');
+  static const FAQ = AppDocsLinks._('$_BASE_RAW/faq/');
+  static const NOT_PLANNED = AppDocsLinks._('$_BASE_RAW/not-planned/');
+  static const PERMISSIONS = AppDocsLinks._('$_BASE_RAW/permissions/');
+
+  static const SETTINGS = AppDocsLinks._(_SETTINGS_RAW);
+  static const SETTINGS_THEME = AppDocsLinks._('${_SETTINGS_RAW}1-theme-settings/');
+  static const SETTINGS_INDEXER = AppDocsLinks._('${_SETTINGS_RAW}2-indexer-settings/');
+  static const SETTINGS_PLAYBACK = AppDocsLinks._('${_SETTINGS_RAW}3-playback-settings/');
+  static const SETTINGS_CUSTOMIZATION = AppDocsLinks._('${_SETTINGS_RAW}4-customization-settings/');
+  static const SETTINGS_YOUTUBE = AppDocsLinks._('${_SETTINGS_RAW}5-youtube-settings/');
+  static const SETTINGS_EXTRA = AppDocsLinks._('${_SETTINGS_RAW}6-extras-settings/');
+  static const SETTINGS_BACKUP_RESTORE = AppDocsLinks._(_SETTINGS_BACKUP_RESTORE_RAW);
+  static const SETTINGS_ADVANCED = AppDocsLinks._('${_SETTINGS_RAW}8-advanced-settings/');
+
+  static const SETTINGS_SPONSORBLOCK = AppDocsLinks._('$_SETTINGS_YOUTUBE_RAW#sponsorblock');
+  static const SETTINGS_RETURN_YOUTUBE_DISLIKE = AppDocsLinks._('$_SETTINGS_YOUTUBE_RAW#return-youtube-dislike');
+  static const SETTINGS_SYNC = AppDocsLinks._('$_SETTINGS_BACKUP_RESTORE_RAW#sync');
+
+  static const PARTY_PRIVACY = AppDocsLinks._('${_FEATURES_RAW}party/#privacy');
+
+  static const YT_CACHING = AppDocsLinks._('${_FEATURES_RAW}youtube/#caching');
+
+  static AppDocsLinks getForSettingsPage(SettingSubpageEnum page) => switch (page) {
+    SettingSubpageEnum.theme => SETTINGS_THEME,
+    SettingSubpageEnum.indexer => SETTINGS_INDEXER,
+    SettingSubpageEnum.playback => SETTINGS_PLAYBACK,
+    SettingSubpageEnum.customization => SETTINGS_CUSTOMIZATION,
+    SettingSubpageEnum.youtube => SETTINGS_YOUTUBE,
+    SettingSubpageEnum.extra => SETTINGS_EXTRA,
+    SettingSubpageEnum.backupRestore => SETTINGS_BACKUP_RESTORE,
+    SettingSubpageEnum.advanced => SETTINGS_ADVANCED,
+  };
 }
 
 class LibraryCategory {
@@ -278,10 +1302,7 @@ const k_PLAYLIST_NAME_HISTORY = '_HISTORY_';
 const k_PLAYLIST_NAME_MOST_PLAYED = '_MOST_PLAYED_';
 const k_PLAYLIST_NAME_AUTO_GENERATED = '_AUTO_GENERATED_';
 
-List<Track> get allTracksInLibrary => UnmodifiableListView(Indexer.inst.tracksInfoList);
-
-bool get shouldAlbumBeSquared =>
-    (settings.albumGridCount.value > 1 && !settings.useAlbumStaggeredGridView.value) || (settings.albumGridCount.value == 1 && settings.forceSquaredAlbumThumbnail.value);
+List<Track> get allTracksInLibrary => Indexer.inst.tracksInfoList.value;
 
 /// Stock Video Qualities List
 final List<String> kStockVideoQualities = [
@@ -299,6 +1320,7 @@ final List<String> kStockVideoQualities = [
 /// Default values available for setting the Date Time Format.
 const kDefaultDateTimeStrings = {
   'yyyyMMdd': '20220413',
+  'MMM yyyy': 'Apr 2022',
   'dd/MM/yyyy': '13/04/2022',
   'MM/dd/yyyy': '04/13/2022',
   'yyyy/MM/dd': '2022/04/13',
@@ -311,160 +1333,129 @@ const kDefaultDateTimeStrings = {
   '[dd.MM.yyyy]': '[13.04.2022]',
 };
 
-/// Extensions used to filter audio files
-const Set<String> kAudioFileExtensions = {
-  '.m4a',
-  '.mp3',
-  '.weba',
-  '.ogg',
-  '.wav',
-  '.flac',
-  '.aac',
-  '.3gp',
-  '.ac3',
-  '.opus',
-  '.m4b',
-  '.pk',
-  '.8svx',
-  '.aa',
-  '.aax',
-  '.act',
-  '.aiff',
-  '.alac',
-  '.amr',
-  '.ape',
-  '.au',
-  '.awb',
-  '.cda',
-  '.dss',
-  '.dts',
-  '.dvf',
-  '.gsm',
-  '.iklax',
-  '.ivs',
-  '.m4p',
-  '.mmf',
-  '.movpkg',
-  '.mid',
-  '.mpc',
-  '.msv',
-  '.nmf',
-  '.oga',
-  '.mogg',
-  '.ra',
-  '.rm',
-  '.raw',
-  '.rf64',
-  '.sln',
-  '.tak',
-  '.tta',
-  '.voc',
-  '.vox',
-  '.wma',
-  '.wv',
-  '.aif',
-  '.aifc',
-  '.amz',
-  '.awc',
-  '.bwf',
-  '.caf',
-  '.dct',
-  '.dff',
-  '.dsf',
-  '.fap',
-  '.flp',
-  '.its',
-  '.kar',
-  '.kfn',
-  '.m4r',
-  '.mac',
-  '.mka',
-  '.mlp',
-  '.mp2',
-  '.mpp',
-  '.oma',
-  '.qcp',
-  '.rmi',
-  '.snd',
-  '.spx',
-  '.ts',
-  '.uax',
-  '.xmz',
-};
+class NamidaFileExtensionsWrapper {
+  final Set<String> extensions;
+  const NamidaFileExtensionsWrapper._(this.extensions);
 
-/// Extensions used to filter video files
-const Set<String> kVideoFilesExtensions = {
-  '.mp4',
-  '.mkv',
-  '.avi',
-  '.wmv',
-  '.flv',
-  '.mov',
-  '.3gp',
-  '.ogv',
-  '.webm',
-  '.mpg',
-  '.mpeg',
-  '.m4v',
-  '.ts',
-  '.vob',
-  '.asf',
-  '.rm',
-  '.swf',
-  '.f4v',
-  '.divx',
-  '.m2ts',
-  '.mts',
-  '.mpv',
-  '.mp2',
-  '.mpe',
-  '.mpa',
-  '.mxf',
-  '.m2v',
-  '.mpeg1',
-  '.mpeg2',
-  '.mpeg4'
-};
+  NamidaFileExtensionsWrapper without(List<String>? blacklist) {
+    if (blacklist == null || blacklist.isEmpty) return this;
+    final copy = Set<String>.from(extensions);
+    for (final b in blacklist) {
+      copy.remove(b);
+    }
+    return NamidaFileExtensionsWrapper._(copy);
+  }
 
-/// Extensions used to filter m3u files
-const Set<String> kM3UPlaylistsExtensions = {'.m3u', '.m3u8', '.M3U', '.M3U8'};
+  bool isPathValid(String path) {
+    return isExtensionValid(path.splitLast('.'));
+  }
 
-const Set<String> kImageFilesExtensions = {'.png', '.jpg', '.jpeg', '.bmp', '.gif', '.webp'};
+  bool isExtensionValid(String ext) {
+    return extensions.contains(ext.toLowerCase());
+  }
 
-const kDefaultOrientations = <DeviceOrientation>[DeviceOrientation.portraitUp, DeviceOrientation.portraitDown];
-const kDefaultLang = NamidaLanguage(
-  code: "en_US",
-  name: "English",
-  country: "United States",
-);
+  static const _audioExtensions = {
+    'm4a', 'mp3', 'wav', 'flac', 'ogg', 'oga', 'ogx', 'aac', 'opus', 'weba', 'm4b', 'alac', 'ac3', 'mp2', 'm4p', 'mpa', //
+    'amr', 'ape', 'aa', 'aax', 'act', 'dss', 'dts', 'dvf', 'dct', 'dff', 'dsf', 'mmf', 'mid', 'mpc', 'msv', 'mogg',
+    'raw', 'ra', 'voc', 'wma', 'caf', 'aiff', 'wv', 'aif', 'aifc', 'm4r', 'mac', 'mka', 'mlp', 'mpp', 'uax',
+  };
 
-const kDummyTrack = Track('');
-const kDummyExtendedTrack = TrackExtended(
+  static const _videoExtensions = {
+    'mp4', 'mkv', 'avi', 'wmv', 'flv', 'mov', '3gp', 'ogv', 'webm', 'mpg', 'mpeg', 'm4v', 'ts', 'vob', 'asf', //
+    'rm', 'f4v', 'divx', 'm2ts', 'mts', 'mpv', 'mpe', 'mxf', 'm2v', 'mpeg1', 'mpeg2', 'mpeg4',
+  };
+
+  static const _zipExtensions = {
+    'zip', 'rar', '7z', //
+  };
+
+  static const _lrcExtensions = {
+    'lrc', 'xml', 'ttml', 'srt', 'vtt', 'sbv', 'ssa', 'ass', //
+  };
+
+  static const audio = NamidaFileExtensionsWrapper._(_audioExtensions);
+  static const video = NamidaFileExtensionsWrapper._(_videoExtensions);
+  static const audioAndVideo = NamidaFileExtensionsWrapper._({..._audioExtensions, ..._videoExtensions});
+
+  static const image = NamidaFileExtensionsWrapper._({
+    'png', 'jpg', 'jpeg', 'bmp', 'gif', 'webp', //
+  });
+
+  static const m3u = NamidaFileExtensionsWrapper._({'m3u', 'm3u8'});
+  static const csv = NamidaFileExtensionsWrapper._({'csv'});
+  static const json = NamidaFileExtensionsWrapper._({'json'});
+  static const jsonl = NamidaFileExtensionsWrapper._({'jsonl'});
+  static const zip = NamidaFileExtensionsWrapper._(_zipExtensions);
+  static const html = NamidaFileExtensionsWrapper._({'html'});
+  static const jsonAndZip = NamidaFileExtensionsWrapper._({'json', ..._zipExtensions});
+  static const jsonHtmlAndZip = NamidaFileExtensionsWrapper._({'json', 'html', ..._zipExtensions});
+  static const jsonlAndZip = NamidaFileExtensionsWrapper._({'jsonl', ..._zipExtensions});
+  static const compressed = NamidaFileExtensionsWrapper._({..._zipExtensions, 'tar', 'gz', 'bz2', 'xz', 'cab', 'iso', 'jar'});
+  static const lrcOrTxt = NamidaFileExtensionsWrapper._({..._lrcExtensions, 'txt'});
+  static const lrc = NamidaFileExtensionsWrapper._({..._lrcExtensions});
+  static const txt = NamidaFileExtensionsWrapper._({'txt'});
+
+  static const exe = NamidaFileExtensionsWrapper._({'exe'});
+}
+
+final kDummyTrack = Track.explicit('');
+final kDummyExtendedTrack = TrackExtended(
   title: "",
   originalArtist: "",
   artistsList: [],
-  album: "",
+  originalAlbum: "",
+  albumsList: [],
   albumArtist: "",
+  albumArtistsList: [],
   originalGenre: "",
   genresList: [],
+  originalStyle: "",
+  stylesList: [],
   originalMood: "",
   moodList: [],
   composer: "",
+  composersList: [],
   trackNo: 0,
-  duration: 0,
+  trackTo: 0,
+  durationMS: 0,
   year: 0,
+  yearText: '',
   size: 0,
   dateAdded: 0,
   dateModified: 0,
   path: "",
   comment: "",
+  description: "",
+  synopsis: "",
   bitrate: 0,
   sampleRate: 0,
+  bits: 0,
+  isLossless: null,
   format: "",
   channels: "",
   discNo: 0,
+  discTo: 0,
   language: "",
+  languagesList: [],
   lyrics: "",
+  label: "",
+  releaseType: "",
+  bpm: 0,
+  musicalKey: '',
+  rating: 0.0,
+  originalTags: null,
+  tagsList: [],
+  hashKey: null,
+  gainData: null,
+  sortInfo: null,
+  multiValues: null,
+  extraTags: null,
+  chapters: null,
+  albumsIdentifiersWrappers: [],
+  isVideo: false,
+  server: null,
+  serverFolder: null,
+  hasNoEmbeddedArtwork: false,
 );
 
 /// Unknown Tag Fields
@@ -474,13 +1465,115 @@ class UnknownTags {
   static const ALBUMARTIST = '';
   static const ARTIST = 'Unknown Artist';
   static const GENRE = 'Unknown Genre';
+  static const STYLE = '';
   static const MOOD = '';
   static const COMPOSER = 'Unknown Composer';
 }
 
 int get currentTimeMS => DateTime.now().millisecondsSinceEpoch;
 
-const kThemeAnimationDurationMS = 350;
+const kThemeAnimationDurationMS = 250;
 
 const kMaximumSleepTimerTracks = 40;
 const kMaximumSleepTimerMins = 180;
+
+extension PathTypeUtils on String {
+  bool isVideo() => NamidaFileExtensionsWrapper.video.isPathValid(this);
+}
+
+abstract class NamidaFeaturesAvailablityBase {
+  const NamidaFeaturesAvailablityBase();
+
+  bool resolve();
+  String get text;
+}
+
+class NamidaFeaturesAvailablityGroup extends NamidaFeaturesAvailablityBase {
+  final List<NamidaFeaturesAvailablity> items;
+
+  const NamidaFeaturesAvailablityGroup({required this.items});
+
+  @override
+  String get text => items.join(' | ');
+
+  @override
+  bool resolve() {
+    return items.any((element) => element.resolve());
+  }
+}
+
+enum NamidaFeaturesAvailablity implements NamidaFeaturesAvailablityBase {
+  android('Android'),
+  windows('Windows'),
+  linux('Linux'),
+  android13and_plus('Android 13+'), // >= 33
+  android12and_plus('Android S/12+'), // >= 31
+  android12and_below('Android <= 12'), // <= 32
+  android11and_plus('Android 11+'), // >=30
+  android11and_below('Android <= 11'), // <=30
+  ;
+
+  @override
+  final String text;
+  const NamidaFeaturesAvailablity(this.text);
+
+  @override
+  bool resolve() {
+    final isAndroid = NamidaFeaturesVisibility._isAndroid;
+    return switch (this) {
+      NamidaFeaturesAvailablity.android => isAndroid,
+      NamidaFeaturesAvailablity.windows => NamidaFeaturesVisibility._isWindows,
+      NamidaFeaturesAvailablity.linux => NamidaFeaturesVisibility._isLinux,
+      NamidaFeaturesAvailablity.android13and_plus => isAndroid && NamidaDeviceInfo.sdkVersion >= 33,
+      NamidaFeaturesAvailablity.android12and_plus => isAndroid && NamidaDeviceInfo.sdkVersion >= 31,
+      NamidaFeaturesAvailablity.android12and_below => isAndroid && NamidaDeviceInfo.sdkVersion <= 32,
+      NamidaFeaturesAvailablity.android11and_plus => isAndroid && NamidaDeviceInfo.sdkVersion >= 30,
+      NamidaFeaturesAvailablity.android11and_below => isAndroid && NamidaDeviceInfo.sdkVersion <= 30,
+    };
+  }
+}
+
+class NamidaFeaturesVisibility {
+  static final _platform = defaultTargetPlatform;
+  static final _isAndroid = _platform == TargetPlatform.android;
+  static final _isWindows = _platform == TargetPlatform.windows;
+  static final _isLinux = _platform == TargetPlatform.linux;
+
+  static final wallpaperColors = NamidaFeaturesAvailablity.android12and_plus.resolve();
+  static final displayArtworkOnLockscreen = NamidaFeaturesAvailablity.android12and_below.resolve();
+  static final notificationButtonsMightDisplaceArtwork = NamidaFeaturesAvailablity.android11and_below.resolve();
+  static final displayAppIcons = _isAndroid;
+  static final showEqualizerBands = _isAndroid;
+  static final showSafFolders = _isAndroid;
+  static final showAndroidIntegrations = _isAndroid;
+  static final showToggleMediaStore = onAudioQueryAvailable;
+  static final showToggleImmersiveMode = _isAndroid;
+  static final showRotateScreenInFullScreen = _isAndroid;
+  static final deviceOrientationSensorAvailable = _isAndroid;
+  static final fullScreenChangesScreenSize = _isAndroid;
+  static final floatingArtworkEffect = _isAndroid;
+  static final mediaWaveHaptic = _isAndroid;
+  static const accessibilitySemantics = true;
+
+  static final methodSetCanEnterPip = _isAndroid;
+  static final methodSetMonoAudio = _isAndroid;
+  static final methodSetMusicAs = _isAndroid;
+  static final methodOpenSystemEqualizer = _isAndroid;
+  static final methodOnNotificationTapAction = _isAndroid;
+
+  static final onAudioQueryAvailable = _isAndroid;
+  static final recieveSharingIntents = _isAndroid;
+  static final changeApplicationBrightness = _isAndroid;
+  static final skipSilenceAvailable = PlayerConfig.isSkipSilenceSupported;
+  static final equalizerAvailable = PlayerConfig.isEqualizerSupported;
+  static final loudnessEnhancerAvailable = PlayerConfig.isLoudnessEnhancerSupported;
+  static final soundEffectsAvailable = _isAndroid;
+
+  static final showDownloadNotifications = _isWindows || _isLinux;
+  static final showVideoControlsOnHover = _isWindows || _isLinux;
+  static final tiltingCardsEffect = _isWindows || _isLinux;
+  static final smoothScrolling = _isWindows || _isLinux;
+
+  static final isStoragePermissionNotRequired = _isWindows || _isLinux;
+  static final recieveDragAndDrop = _isWindows || _isLinux;
+}

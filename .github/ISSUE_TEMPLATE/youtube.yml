@@ -1,0 +1,151 @@
+name: 📺 YouTube Problem
+description: videos won't play, downloads fail, sign in acting up, etc
+labels:
+  - bug
+type: Bug
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        youtube loves breaking stuff, so thanks for the heads up 🤎
+
+        psst, **Settings > About > Report an issue** opens this form with your version & device already filled in, and gets the logs zip ready for you
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: before we start
+      options:
+        - label: i searched the [existing issues](https://github.com/namidaco/namida/issues?q=is%3Aissue%20label%3A%22area%3A%20youtube%22) (closed ones too), nobody reported this yet
+          required: true
+        - label: i tried the latest [beta](https://github.com/namidaco/namida-snapshots/releases) and it still happens there, youtube fixes land there first
+          required: true
+        - label: i tried signing in again (yes, even if i was already signed in), or i don't use sign in
+          required: true
+  - type: input
+    id: version
+    attributes:
+      label: namida version
+      description: |
+        the exact version from **Settings > About**, ex: `7.4.0-beta`
+        please do NOT type "latest", it changes every few days
+    validations:
+      required: true
+  - type: dropdown
+    id: platforms
+    attributes:
+      label: platforms
+      description: every platform where it happens
+      multiple: true
+      options:
+        - Android
+        - Windows
+        - Linux
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: os version
+      placeholder: Android 14 (HyperOS 2) / Windows 11 24H2 / Fedora 42 (KDE, wayland)
+  - type: input
+    id: device
+    attributes:
+      label: device
+      placeholder: Pixel 8 / Galaxy S23 / whatever pc
+  - type: dropdown
+    id: source
+    attributes:
+      label: installed from
+      options:
+        - GitHub
+        - Obtainium
+        - AUR
+        - Flatpak
+        - AppImage
+        - deb / rpm
+        - winget
+        - portable / tarball
+        - somewhere else
+  - type: dropdown
+    id: yt_problem
+    attributes:
+      label: what's broken on youtube
+      options:
+        - ▶️ videos won't play / keep buffering
+        - ⬇️ downloads fail
+        - 🔑 sign in / memberships
+        - 🔎 search, home feed or channel pages
+        - 💬 comments
+        - 📃 playlists / history
+        - 🤷 something else
+    validations:
+      required: true
+  - type: dropdown
+    id: yt_scope
+    attributes:
+      label: which videos
+      options:
+        - every video
+        - some videos
+        - just one
+    validations:
+      required: true
+  - type: dropdown
+    id: yt_signed_in
+    attributes:
+      label: signed in?
+      options:
+        - "yes"
+        - "no"
+        - tried both, same thing
+    validations:
+      required: true
+  - type: textarea
+    id: yt_links
+    attributes:
+      label: video links
+      description: a couple of links where it happens
+      placeholder: https://youtu.be/...
+  - type: textarea
+    id: what_happened
+    attributes:
+      label: what happened
+      placeholder: tapped a video, spinner spun forever 🌀
+    validations:
+      required: true
+  - type: textarea
+    id: yt_error
+    attributes:
+      label: error message
+      description: copy it exactly if namida showed one
+      render: text
+  - type: input
+    id: yt_region
+    attributes:
+      label: country
+      description: optional, only matters for region locked stuff
+  - type: textarea
+    id: logs
+    attributes:
+      label: logs
+      description: |
+        **Settings > About > Share Logs** gives you a zip, drag it right here 📦
+        private stuff (device name, ids, your user folder) gets stripped out automatically 🔒
+      placeholder: drop the zip here
+  - type: checkboxes
+    id: no_logs
+    attributes:
+      label: can't share logs?
+      description: |
+        app won't open? the log files are still on your device, attach the `.txt` files from:
+        - **Android:** `Android/data/com.msob7y.namida/files/Logs` (needs a file manager that can open `Android/data`), or `Documents/namida_logs.txt` for startup errors
+        - **Windows:** `%USERPROFILE%\.namida\Logs`
+        - **Linux:** `~/.namida/Logs`
+      options:
+        - label: i can't get the logs at all
+  - type: textarea
+    id: media
+    attributes:
+      label: screenshots / video
+      description: a quick screen recording makes things sooo much easier

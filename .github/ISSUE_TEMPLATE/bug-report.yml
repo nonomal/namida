@@ -1,0 +1,149 @@
+name: 🐛 Bug Report
+description: something's broken, crashing or just acting weird
+labels:
+  - bug
+type: Bug
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        heyy thanks for taking the time 🤎
+
+        psst, **Settings > About > Report an issue** opens this form with your version & device already filled in, and gets the logs zip ready for you
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: before we start
+      options:
+        - label: i searched the [existing issues](https://github.com/namidaco/namida/issues?q=is%3Aissue) (closed ones too), nobody reported this yet
+          required: true
+        - label: i tried the latest [beta](https://github.com/namidaco/namida-snapshots/releases) and it still happens there
+          required: true
+  - type: input
+    id: version
+    attributes:
+      label: namida version
+      description: |
+        the exact version from **Settings > About**, ex: `7.4.0-beta`
+        please do NOT type "latest", it changes every few days
+    validations:
+      required: true
+  - type: dropdown
+    id: platforms
+    attributes:
+      label: platforms
+      description: every platform where it happens
+      multiple: true
+      options:
+        - Android
+        - Windows
+        - Linux
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: os version
+      placeholder: Android 14 (HyperOS 2) / Windows 11 24H2 / Fedora 42 (KDE, wayland)
+  - type: input
+    id: device
+    attributes:
+      label: device
+      placeholder: Pixel 8 / Galaxy S23 / whatever pc
+  - type: dropdown
+    id: source
+    attributes:
+      label: installed from
+      options:
+        - GitHub
+        - Obtainium
+        - AUR
+        - Flatpak
+        - AppImage
+        - deb / rpm
+        - winget
+        - portable / tarball
+        - somewhere else
+  - type: dropdown
+    id: severity
+    attributes:
+      label: how bad is it
+      options:
+        - 💥 crash / app won't open
+        - 🚫 something doesn't work
+        - 🤏 small glitch / looks off
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: where does it happen
+      options:
+        - Library & indexing
+        - Playback & queue
+        - Player & miniplayer
+        - Playlists & history
+        - Tags editor
+        - Lyrics
+        - YouTube
+        - Downloads
+        - Sync
+        - Widgets & notification
+        - Settings & backups
+        - other / not sure
+    validations:
+      required: true
+  - type: textarea
+    id: what_happened
+    attributes:
+      label: what happened
+      placeholder: i pressed play and namida started speaking french
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: what did you expect instead
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: how to make it happen
+      description: the clearer the steps, the faster the fix
+      placeholder: |
+        1. open ...
+        2. tap ...
+        3. boom
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: logs
+      description: |
+        **Settings > About > Share Logs** gives you a zip, drag it right here 📦
+        private stuff (device name, ids, your user folder) gets stripped out automatically 🔒
+      placeholder: drop the zip here
+  - type: checkboxes
+    id: no_logs
+    attributes:
+      label: can't share logs?
+      description: |
+        app won't open? the log files are still on your device, attach the `.txt` files from:
+        - **Android:** `Android/data/com.msob7y.namida/files/Logs` (needs a file manager that can open `Android/data`), or `Documents/namida_logs.txt` for startup errors
+        - **Windows:** `%USERPROFILE%\.namida\Logs`
+        - **Linux:** `~/.namida/Logs`
+      options:
+        - label: i can't get the logs at all
+  - type: textarea
+    id: media
+    attributes:
+      label: screenshots / video
+      description: a quick screen recording makes things sooo much easier
+  - type: textarea
+    id: fix_idea
+    attributes:
+      label: any idea how to fix it?
+      description: totally optional, big brain moves welcome

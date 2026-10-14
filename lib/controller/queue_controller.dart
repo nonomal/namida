@@ -1,56 +1,115 @@
+import 'dart:async';
 import 'dart:collection';
+import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
-import 'package:get/get.dart';
+import 'package:flutter/foundation.dart' show listEquals, visibleForTesting;
 
+import 'package:namico_db_wrapper/namico_db_wrapper.dart';
+
+import 'package:namida/class/file_parts.dart';
+import 'package:namida/class/func_execute_limiter.dart';
 import 'package:namida/class/queue.dart';
 import 'package:namida/class/track.dart';
+import 'package:namida/class/video.dart';
+import 'package:namida/controller/indexer_controller.dart';
+import 'package:namida/controller/navigator_controller.dart';
+import 'package:namida/controller/platform/namida_channel/namida_channel.dart';
 import 'package:namida/controller/player_controller.dart';
+import 'package:namida/controller/search_sort_controller.dart';
 import 'package:namida/controller/settings_controller.dart';
+import 'package:namida/controller/sync_manager/sync_manager.dart';
 import 'package:namida/core/constants.dart';
 import 'package:namida/core/enums.dart';
 import 'package:namida/core/extensions.dart';
+import 'package:namida/core/functions.dart';
+import 'package:namida/core/utils.dart';
+import 'package:namida/youtube/class/download_task_base.dart';
 import 'package:namida/youtube/class/youtube_id.dart';
+import 'package:namida/youtube/controller/youtube_playlist_controller.dart';
 
 class QueueController {
-  static QueueController get inst => _instance;
-  static final QueueController _instance = QueueController._internal();
+  static final QueueController inst = QueueController._internal();
   QueueController._internal();
 
-  /// holds all queues mapped & sorted by [date] chronologically & reversly.
+  static final latestPlayedForSourceManager = _LatestPlayedForSourceManager();
+
+  /// holds all queues mapped & sorted by `date` chronologically & reversly.
   final Rx<SplayTreeMap<int, Queue>> queuesMap = SplayTreeMap<int, Queue>((date1, date2) => date2.compareTo(date1)).obs;
+
+  /// counts the ones not loaded yet into [queuesMap] too.
+  final totalQueuesCount = 0.obs;
+
+  List<int> _unloadedQueuesDates = const [];
+  Future<void>? _loadAllQueuesOperation;
+
+  void _refreshTotalQueuesCount() => totalQueuesCount.value = queuesMap.value.length + _unloadedQueuesDates.length;
 
   Queue? get _latestQueueInMap => queuesMap.value[_latestAddedQueueDate];
 
   /// faster way to access latest queue
   int _latestAddedQueueDate = 0;
+  int _sessionQueueDate = 0;
+  Playable? _sessionQueuePendingItem;
+
+  void _bindSessionQueueDate(int date) {
+    if (date <= 0) return;
+    _sessionQueueDate = date;
+    final pendingItem = _sessionQueuePendingItem;
+    if (pendingItem != null) {
+      _sessionQueuePendingItem = null;
+      _updateLatestPlayedForQueueDate(date, pendingItem);
+    }
+  }
+
+  void _updateLatestPlayedForQueueDate(int date, Playable item) {
+    latestPlayedForSourceManager.update(QueueSource.queuePageByName(date.toString()), item);
+  }
+
+  void updateLatestPlayedForCurrentQueue(Playable item, {QueueSourceBase? alreadyUpdatedSource}) {
+    final date = _sessionQueueDate;
+    if (date <= 0) {
+      _sessionQueuePendingItem = item;
+      return;
+    }
+    if (alreadyUpdatedSource != null && alreadyUpdatedSource.s == QueueSourceEnum.queuePage && int.tryParse(alreadyUpdatedSource.title ?? '') == date) return;
+    _updateLatestPlayedForQueueDate(date, item);
+  }
+
+  static const kMaxQueueTracksCountToSave = 2000;
+
+  Future<bool> _allowSavingQueue(int count) async {
+    // -- if there are more than 2000 tracks.
+    if (count > kMaxQueueTracksCountToSave) {
+      printy("UWAH QUEUE DEKKA", isError: true);
+      return false;
+    }
+
+    await _queuesLoad.future;
+
+    return true;
+  }
 
   /// doesnt save queues with more than 2000 tracks.
   Future<void> addNewQueue({
-    required QueueSource source,
+    required QueueSourceBase source,
     required HomePageItems? homePageItem,
     int? date,
+    int? dateComparison,
     List<Track> tracks = const <Track>[],
   }) async {
-    /// If there are more than 2000 tracks.
-    if (tracks.length > 2000) {
-      printy("UWAH QUEUE DEKKA", isError: true);
-      return;
-    }
-
     date ??= currentTimeMS;
 
-    if (_isLoadingQueues) {
-      // after queues full load, [addNewQueue] will be called to add Queues inside [_queuesToAddAfterAllQueuesLoad].
-      _queuesToAddAfterAllQueuesLoad.add(Queue(source: source, homePageItem: homePageItem, date: date, isFav: false, tracks: tracks));
-      printy("Queue adding suspended until queues full load");
-      return;
-    }
+    if (!await _allowSavingQueue(tracks.length)) return;
 
-    // -- Prevents saving [allTracks] source over and over.
+    // -- Prevents saving [allTracksAll] source over and over.
     final latestQueue = _latestQueueInMap;
     if (latestQueue != null) {
-      if (source == QueueSource.allTracks && latestQueue.source == QueueSource.allTracks) {
+      final isSameAllTracksAll = source.s == QueueSourceEnum.allTracksAll && latestQueue.source.s == QueueSourceEnum.allTracksAll;
+      final isSameQueuePage = dateComparison == latestQueue.date && (source == latestQueue.source || source.s == QueueSourceEnum.queuePage);
+      if (isSameAllTracksAll || isSameQueuePage) {
+        if (isSameQueuePage) date = latestQueue.date;
         await removeQueue(latestQueue);
       }
     }
@@ -58,22 +117,32 @@ class QueueController {
     final q = Queue(source: source, homePageItem: homePageItem, date: date, isFav: false, tracks: tracks);
     _updateMap(q);
     _latestAddedQueueDate = q.date;
+    _bindSessionQueueDate(q.date);
     printy("Added New Queue");
     await _saveQueueToStorage(q);
   }
 
   Future<void> removeQueue(Queue queue) async {
-    if (queue.date == _latestAddedQueueDate) _latestAddedQueueDate = queuesMap.value.keys.lastOrNull ?? 0;
-
     queuesMap.value.remove(queue.date);
     queuesMap.refresh();
+    _refreshTotalQueuesCount();
+    if (queue.date == _latestAddedQueueDate) _latestAddedQueueDate = 0;
     await _deleteQueueFromStorage(queue);
   }
 
   Future<void> removeQueues(List<int> queuesDates) async {
-    _latestAddedQueueDate = queuesMap.value.keys.lastOrNull ?? 0;
-    queuesDates.loop((date, _) => queuesMap.value.remove(date));
+    bool hasLatestAdded = false;
+    for (var date in queuesDates) {
+      queuesMap.value.remove(date);
+      if (date == _latestAddedQueueDate) hasLatestAdded = true;
+    }
+    if (_unloadedQueuesDates.isNotEmpty) {
+      final removedDates = queuesDates.toSet();
+      _unloadedQueuesDates = _unloadedQueuesDates.where((date) => !removedDates.contains(date)).toList();
+    }
     queuesMap.refresh();
+    _refreshTotalQueuesCount();
+    if (hasLatestAdded) _latestAddedQueueDate = 0;
     await _deleteQueuesFromStorage(queuesDates);
   }
 
@@ -86,17 +155,15 @@ class QueueController {
     date ??= queue.date;
     queuesMap.value[date] = queue;
     queuesMap.refresh();
+    _refreshTotalQueuesCount();
   }
 
-  // void removeQueues(List<Queue> queues) async {
-  //   queues.loop((q) => removeQueue(q));
-  // }
-
-  Future<void> toggleFavButton(Queue oldQueue) async {
-    final newQueue = oldQueue.copyWith(isFav: !(queuesMap.value[oldQueue.date]?.isFav ?? false));
-    queuesMap.value[oldQueue.date] = newQueue;
+  Future<bool> toggleFavButton(Queue oldQueue) async {
+    final isNowFav = !(queuesMap.value[oldQueue.date]?.isFav ?? false);
+    final newQueue = oldQueue.copyWith(isFav: isNowFav);
     _updateMap(newQueue);
     await _saveQueueToStorage(newQueue);
+    return isNowFav;
   }
 
   Future<void> updateQueue(Queue oldQueue, Queue newQueue) async {
@@ -104,15 +171,62 @@ class QueueController {
     await _saveQueueToStorage(newQueue);
   }
 
-  Future<void> updateLatestQueue(List<Playable> items) async {
-    await _saveLatestQueueToStorage(items);
+  /// [originalIndices] is provided when the queue is shuffled, queues map saves the original order.
+  Future<void> updateLatestQueue(List<Playable> items, {required List<int>? originalIndices, required QueueSourceBase<Enum> source, HomePageItems? homePageItem}) async {
+    _sessionQueueDate = 0;
+    _playerQueueModifiedTime = _pendingSyncQueueTimestamp ?? currentTimeMS;
+    // -- some actions in ui would wait for this (ex: scrolling to current item in queue right after modifying queue)
+    // -- hopefully this doesn't cause other issues (pls)
+    unawaited(
+      Future.wait([
+        _saveLatestQueueToStorage(items, originalIndices),
+        if (await _allowSavingQueue(items.length))
+          _updateLatestQueueInsideMap(
+            originalIndices == null ? items : _toOriginalOrder(items, originalIndices),
+            source: source,
+            homePageItem: homePageItem,
+          ),
+      ]),
+    );
+  }
 
-    // updating last queue inside queuesMap.
-    if (items.firstOrNull is Track) {
-      final latestQueueInsideMap = _latestQueueInMap;
-      if (latestQueueInsideMap != null) {
-        updateQueue(latestQueueInsideMap, latestQueueInsideMap.copyWith(tracks: items.cast<Track>()));
+  Future<void> _updateLatestQueueInsideMap(List<Playable> items, {required QueueSourceBase<Enum> source, HomePageItems? homePageItem}) async {
+    try {
+      final firstItem = items.firstOrNull;
+      if (firstItem is Selectable) {
+        int? queueDate;
+        if (source.s == QueueSourceEnum.queuePage) {
+          // -- allow skip adding as a new queue (if same as latest queue)
+          final dateText = source.title;
+          if (dateText != null) {
+            queueDate = int.tryParse(dateText);
+          }
+        }
+
+        final tracks = items.map((e) => (e as Selectable).track).toList();
+        final latestQueueInsideMap = _latestQueueInMap;
+        final shouldUpdateLatestQueueInsteadOfAdding = latestQueueInsideMap != null && latestQueueInsideMap.source == source;
+        if (shouldUpdateLatestQueueInsteadOfAdding) {
+          await this.updateQueue(
+            latestQueueInsideMap,
+            latestQueueInsideMap.copyWith(
+              tracks: tracks,
+              source: source is QueueSource ? source : null,
+              homePageItem: homePageItem,
+            ),
+          );
+          _bindSessionQueueDate(latestQueueInsideMap.date);
+        } else {
+          await this.addNewQueue(
+            source: source,
+            dateComparison: queueDate,
+            homePageItem: homePageItem,
+            tracks: tracks,
+          );
+        }
       }
+    } catch (_) {
+      // -- is mixed queue
     }
   }
 
@@ -129,26 +243,42 @@ class QueueController {
   }
 
   /// Only use when updating missing track.
-  Future<void> replaceTracksDirectoryInQueues(String oldDir, String newDir, {Iterable<String>? forThesePathsOnly, bool ensureNewFileExists = false}) async {
-    String getNewPath(String old) => old.replaceFirst(oldDir, newDir);
-
+  Future<void> replaceTracksDirectoryInQueues(
+    String normalizedOldDir,
+    String normalizedNewDir, {
+    Iterable<String>? forThesePathsOnly,
+    bool ensureNewFileExists = false,
+  }) async {
+    await loadAllQueues();
     final queuesToSave = <Queue>{};
-    queuesMap.value.entries.toList().loop((entry, index) {
-      final q = entry.value;
+    final pathsOnlySet = forThesePathsOnly?.toSet();
+    final existenceCache = <String, bool>{};
+    final normalizedPathCache = <String, String>{};
+
+    for (final q in queuesMap.value.values) {
       q.tracks.replaceWhere(
         (e) {
-          final trackPath = e.path;
-          if (ensureNewFileExists) {
-            if (!File(getNewPath(trackPath)).existsSync()) return false;
-          }
-          final firstC = forThesePathsOnly != null ? forThesePathsOnly.contains(e.track.path) : true;
-          final secondC = trackPath.startsWith(oldDir);
-          return firstC && secondC;
+          final tr = e.track;
+          normalizedPathCache[tr.path] ??= replaceFunctionNormalizePath(tr.path);
+          return replaceFunctionForUpdatedPaths(
+            tr.path,
+            normalizedOldDir,
+            normalizedNewDir,
+            pathsOnlySet,
+            ensureNewFileExists,
+            existenceCache,
+          );
         },
-        (old) => Track(old.path.replaceFirst(oldDir, newDir)),
+        (old) {
+          final normalized = normalizedPathCache[old.path] ?? replaceFunctionNormalizePath(old.path);
+          return Track.fromTypeParameter(
+            old.runtimeType,
+            replaceFunctionGetNewPath(normalized, normalizedOldDir, normalizedNewDir),
+          );
+        },
         onMatch: () => queuesToSave.add(q),
       );
-    });
+    }
     for (final q in queuesToSave) {
       _updateMap(q);
       await _saveQueueToStorage(q);
@@ -156,125 +286,294 @@ class QueueController {
   }
 
   Future<void> replaceTrackInAllQueues(Map<Track, Track> oldNewTrack) async {
+    await loadAllQueues();
     final queuesToSave = <Queue>[];
-    queuesMap.value.entries.toList().loop((entry, index) {
-      final q = entry.value;
-      for (final e in oldNewTrack.entries) {
-        q.tracks.replaceItems(
-          e.key,
-          e.value,
-          onMatch: () => queuesToSave.add(q),
-        );
+    for (final q in queuesMap.value.values) {
+      final tracks = q.tracks;
+      final length = tracks.length;
+      bool didReplace = false;
+      for (int i = 0; i < length; i++) {
+        final newTrack = oldNewTrack[tracks[i]];
+        if (newTrack == null) continue;
+        tracks[i] = newTrack;
+        didReplace = true;
       }
-    });
+      if (didReplace) queuesToSave.add(q);
+    }
     for (final q in queuesToSave) {
       _updateMap(q);
       await _saveQueueToStorage(q);
     }
   }
 
-  ///
+  /// the rest are read on demand by [loadAllQueues].
+  static const _kInitialQueuesLoadCount = 20;
+
   Future<void> prepareAllQueuesFile() async {
-    final map = await _readQueueFilesCompute.thready(AppDirs.QUEUES);
-    queuesMap.value = map;
-    _latestAddedQueueDate = map.keys.lastOrNull ?? 0;
-    _isLoadingQueues = false;
-    // Adding queues that were rejected by [addNewQueue] since Queues wasn't fully loaded.
-    if (_queuesToAddAfterAllQueuesLoad.isNotEmpty) {
-      await _queuesToAddAfterAllQueuesLoad.loopFuture(
-        (q, index) async => await addNewQueue(source: q.source, homePageItem: q.homePageItem, date: q.date, tracks: q.tracks),
-      );
-      printy("Added ${_queuesToAddAfterAllQueuesLoad.length} queue that were suspended");
-      _queuesToAddAfterAllQueuesLoad.clear();
-    }
+    _loadAllQueuesOperation = null;
+    final res = await _readQueueFilesCompute.thready((AppDirs.QUEUES, _kInitialQueuesLoadCount));
+    queuesMap.value = res.map;
+    _unloadedQueuesDates = res.unloadedDates;
+    _latestAddedQueueDate = res.newestDate;
+    _refreshTotalQueuesCount();
+    _bindSessionQueueDate(res.newestDate);
+    _queuesLoad.completeIfWasnt(true);
   }
 
-  static Future<SplayTreeMap<int, Queue>> _readQueueFilesCompute(String path) async {
-    final map = SplayTreeMap<int, Queue>((date1, date2) => date1.compareTo(date2));
-    for (final f in Directory(path).listSyncSafe()) {
+  Future<void> loadAllQueues() => _loadAllQueuesOperation ??= _loadAllQueues();
+
+  Future<void> _loadAllQueues() async {
+    await _queuesLoad.future;
+    final dates = _unloadedQueuesDates;
+    if (dates.isEmpty) return;
+    final map = await _readQueuesForDatesCompute.thready((AppDirs.QUEUES, dates));
+    final remainingDates = _unloadedQueuesDates;
+    final didRemoveWhileReading = !identical(remainingDates, dates);
+    if (didRemoveWhileReading) {
+      final remainingDatesSet = remainingDates.toSet();
+      map.removeWhere((date, _) => !remainingDatesSet.contains(date));
+    }
+    _unloadedQueuesDates = const [];
+    queuesMap.value.addAll(map);
+    queuesMap.refresh();
+    _refreshTotalQueuesCount();
+  }
+
+  static ({SplayTreeMap<int, Queue> map, int newestDate, List<int> unloadedDates}) _readQueueFilesCompute((String, int) pathAndLoadCount) {
+    final (path, loadCount) = pathAndLoadCount;
+    final dates = <int>[];
+    final files = Directory(path).listSyncSafe();
+    for (final f in files) {
       if (f is File) {
-        try {
-          final response = f.readAsJsonSync();
-          final q = Queue.fromJson(response);
-          map[q.date] = q;
-        } catch (e) {
-          continue;
-        }
+        final date = int.tryParse(f.path.getFilenameWOExt);
+        if (date != null) dates.add(date);
       }
+    }
+    dates.sort((date1, date2) => date2.compareTo(date1));
+
+    int newestQueueDate = 0;
+    final map = SplayTreeMap<int, Queue>((date1, date2) => date1.compareTo(date2));
+    final loadedCount = dates.length < loadCount ? dates.length : loadCount;
+    for (int i = 0; i < loadedCount; i++) {
+      final q = _readQueueFile(path, dates[i]);
+      if (q == null) continue;
+      map[q.date] = q;
+      if (q.date > newestQueueDate) newestQueueDate = q.date;
+    }
+    return (
+      map: map,
+      newestDate: newestQueueDate,
+      unloadedDates: dates.length > loadedCount ? dates.sublist(loadedCount) : const <int>[],
+    );
+  }
+
+  static Map<int, Queue> _readQueuesForDatesCompute((String, List<int>) pathAndDates) {
+    final (path, dates) = pathAndDates;
+    final map = <int, Queue>{};
+    for (final date in dates) {
+      final q = _readQueueFile(path, date);
+      if (q != null) map[q.date] = q;
     }
     return map;
   }
 
+  /// adds the queues of [directoryPath] (ex: an extracted backup), replacing ours of the same date.
+  /// [resolvedTracks] maps paths of the source device to tracks on this one.
+  Future<void> importQueuesDirectory(String directoryPath, Map<String, Track> resolvedTracks) async {
+    await _importQueuesDirectorySync.thready((sourceDirPath: directoryPath, targetDirPath: AppDirs.QUEUES, resolvedTracks: resolvedTracks));
+    await prepareAllQueuesFile();
+  }
+
+  static void _importQueuesDirectorySync(({String sourceDirPath, String targetDirPath, Map<String, Track> resolvedTracks}) params) {
+    final sourceDirPath = params.sourceDirPath;
+    final resolvedTracks = params.resolvedTracks;
+    for (final f in Directory(sourceDirPath).listSyncSafe()) {
+      if (f is! File) continue;
+      final date = int.tryParse(f.path.getFilenameWOExt);
+      if (date == null) continue;
+      final targetPath = '${params.targetDirPath}$date.json';
+      try {
+        if (resolvedTracks.isEmpty) {
+          f.renameSync(targetPath);
+          continue;
+        }
+        final q = _readQueueFile(sourceDirPath, date);
+        if (q == null) continue;
+        final tracks = q.tracks.map((tr) => resolvedTracks[tr.path] ?? tr).toFixedList();
+        final bytes = _QueueSerializer.encode(tracks, meta: q.metaToJson());
+        final tempFile = File('$targetPath$_kTempFileSuffix');
+        tempFile.writeAsBytesSync(bytes, flush: true);
+        tempFile.renameSync(targetPath);
+      } catch (_) {}
+    }
+  }
+
+  static Queue? _readQueueFile(String dirPath, int date) {
+    try {
+      final bytes = File('$dirPath$date.json').readAsBytesSync();
+      if (bytes[0] != _QueueSerializer._kMagic) return Queue.fromJson(jsonDecodeUtf8(bytes));
+      final decoded = _QueueSerializer.decode<Track>(bytes);
+      final meta = decoded.meta;
+      return meta == null ? null : Queue.fromMeta(meta, decoded.items);
+    } catch (_) {}
+    return null;
+  }
+
   Future<void> emptyLatestQueue() async {
+    _playerQueueModifiedTime = _pendingSyncQueueTimestamp ?? currentTimeMS;
     await File(AppPaths.LATEST_QUEUE).tryDeleting();
   }
 
-  /// Assigns the last queue to the [Player]
-  Future<void> prepareLatestQueue() async {
-    int index = 0;
-    final latestQueue = <Playable>[];
+  /// media browser clients (android auto, wear, etc) can start the app on their own,
+  /// they have to wait for this before requesting anything
+  Future<void> get latestQueueRestored => _latestQueueRestoredCompleter.future;
+  final _latestQueueRestoredCompleter = Completer<void>();
+  void markLatestQueueRestored() {
+    if (!_latestQueueRestoredCompleter.isCompleted) _latestQueueRestoredCompleter.complete();
+  }
 
-    // -- Reading file.
+  Future<void> prepareLatestQueueAndLatestPlayedForSourceAsync() async {
     try {
-      final res = await File(AppPaths.LATEST_QUEUE).readAsJson() as Map?;
-      if (res != null) {
-        final t = res['type'] as String? ?? LibraryCategory.localTracks;
-        final items = res['items'] as List;
-        index = settings.player.lastPlayedIndices[t] ?? 0;
-        switch (t) {
-          case LibraryCategory.localTracks:
-            items.loop((e, _) => latestQueue.add(Track(e)));
-            break;
-          case LibraryCategory.youtube:
-            items.loop((e, _) => latestQueue.add(YoutubeID.fromJson(e)));
-            break;
-          // case LibraryCategory.localVideos:
-          // break;
-        }
-      }
+      await _prepareLatestQueueAsync();
     } catch (_) {}
 
+    markLatestQueueRestored();
+
+    unawaited(latestPlayedForSourceManager.prepareAll());
+  }
+
+  /// Assigns the last queue to the [Player]
+  Future<void> _prepareLatestQueueAsync() async {
+    final (latestQueue, originalIndices) = await _prepareLatestQueueSync.thready(AppPaths.LATEST_QUEUE);
     if (latestQueue.isEmpty) return;
+    final startPlaying = Player.inst.playWhenReady.value && await NamidaChannel.inst.consumeSelfSentMediaCommand();
+    _assignLatestQueue(latestQueue, originalIndices, startPlaying: startPlaying, updateQueue: false);
+  }
+
+  /// replaces the player queue with the one of [filePath] (ex: an extracted backup), paused.
+  Future<void> importLatestQueue(String filePath, String senderDeviceId) async {
+    final (latestQueue, originalIndices) = await _prepareLatestQueueSync.thready(filePath);
+    if (latestQueue.isEmpty) return;
+    Playable resolvePlayable(Playable item) {
+      if (item is! Track) return item;
+      return SyncPathResolver.resolveTrack(senderDeviceId, item) ?? item;
+    }
+
+    final resolvedQueue = latestQueue.map(resolvePlayable).toList();
+    // -- the player toggles play/pause when given the queue it already has
+    final isAlreadyPlayerQueue = listEquals(Player.inst.currentQueue.value, resolvedQueue);
+    if (isAlreadyPlayerQueue) return;
+    _assignLatestQueue(resolvedQueue, originalIndices, startPlaying: false, updateQueue: true);
+  }
+
+  void _assignLatestQueue(List<Playable> latestQueue, List<int>? originalIndices, {required bool startPlaying, required bool updateQueue}) {
+    int index = settings.extra.lastPlayedIndex.value;
+    if (index > latestQueue.length - 1) index = 0;
+
+    // -- shuffle was toggled off but the app was killed before the queue file was rewritten.
+    // -- 0.67% chance..
+    if (originalIndices != null && !settings.player.shuffleQueue.value) {
+      if (_isValidOriginalIndices(originalIndices, latestQueue.length)) {
+        latestQueue = _toOriginalOrder(latestQueue, originalIndices);
+        index = originalIndices[index];
+      }
+      originalIndices = null;
+    }
 
     Player.inst.playOrPause(
-      index > latestQueue.length - 1 ? 0 : index,
+      index,
       latestQueue,
       QueueSource.playerQueue,
-      startPlaying: false,
-      addAsNewQueue: false,
+      originalIndices: originalIndices,
+      startPlaying: startPlaying,
+      updateQueue: updateQueue,
+      maximumItems: null,
     );
   }
 
-  Future<void> _saveQueueToStorage(Queue queue) async {
-    await File('${AppDirs.QUEUES}${queue.date}.json').writeAsJson(queue.toJson());
+  /// a partially decodable queue file could hand us indices of a longer original list
+  static bool _isValidOriginalIndices(List<int> originalIndices, int length) {
+    if (originalIndices.length != length) return false;
+    final seen = List<bool>.filled(length, false);
+    for (int i = 0; i < length; i++) {
+      final index = originalIndices[i];
+      if (index < 0 || index >= length || seen[index]) return false;
+      seen[index] = true;
+    }
+    return true;
   }
 
-  Future<void> _saveLatestQueueToStorage(List<Playable> items) async {
-    String type = '';
-    final queue = <Object>[];
-    switch (items.firstOrNull.runtimeType) {
-      case Track:
-        type = LibraryCategory.localTracks;
-        (items.cast<Track>()).loop((e, _) => queue.add(e.path));
-        break;
-      case TrackWithDate:
-        type = LibraryCategory.localTracks;
-        (items.cast<TrackWithDate>()).loop((e, _) => queue.add(e.track.path));
-        break;
-      case YoutubeID:
-        type = LibraryCategory.youtube;
-        (items.cast<YoutubeID>()).loop((e, _) => queue.add(e.toJson()));
-        break;
+  /// [originalIndices] can be stale (live player list), items without a valid unique index go to the end.
+  static List<Playable> _toOriginalOrder(List<Playable> items, List<int> originalIndices) {
+    final length = items.length;
+    final indicesLength = originalIndices.length;
+    final ordered = List<Playable>.of(items);
+    final placed = Uint8List(length);
+    List<Playable>? misplaced;
+    for (int i = 0; i < length; i++) {
+      final index = i < indicesLength ? originalIndices[i] : -1;
+      if (index >= 0 && index < length && placed[index] == 0) {
+        placed[index] = 1;
+        ordered[index] = items[i];
+      } else {
+        (misplaced ??= <Playable>[]).add(items[i]);
+      }
     }
-    final map = {
-      'type': type,
-      'items': queue,
-    };
-    await File(AppPaths.LATEST_QUEUE).writeAsJson(map);
+    if (misplaced == null) return ordered;
+
+    int writeIndex = 0;
+    for (int i = 0; i < length; i++) {
+      if (placed[i] == 1) ordered[writeIndex++] = ordered[i];
+    }
+    ordered.setAll(writeIndex, misplaced);
+    return ordered;
+  }
+
+  static (List<Playable>, List<int>?) _prepareLatestQueueSync(String filePath) {
+    try {
+      final bytes = File(filePath).readAsBytesSync();
+      if (bytes.isNotEmpty) {
+        if (bytes[0] != _QueueSerializer._kMagic) return _QueueSerializer.decodeLegacyJson(bytes);
+        final decoded = _QueueSerializer.decode<Playable>(bytes);
+        return (decoded.items, decoded.originalIndices);
+      }
+    } catch (_) {}
+    return (const [], null);
+  }
+
+  @visibleForTesting
+  static (List<Playable>, List<int>?) debugReadLatestQueueFile(String filePath) => _prepareLatestQueueSync(filePath);
+
+  Future<void> _saveQueueToStorage(Queue queue) async {
+    final bytes = _QueueSerializer.encode(queue.tracks, meta: queue.metaToJson());
+    await _writeAtomic(FileParts.joinPath(AppDirs.QUEUES, '${queue.date}.json'), bytes);
+  }
+
+  static const _kTempFileSuffix = '.tmp';
+
+  static Future<void> _writeAtomic(String path, Uint8List bytes) async {
+    final tempFile = await File('$path$_kTempFileSuffix').writeAsBytes(bytes, flush: true);
+    await tempFile.rename(path);
+  }
+
+  final _queueFnLimiter = FunctionExecuteLimiter(
+    considerRapid: const Duration(seconds: 2),
+    executeAfter: const Duration(seconds: 2),
+    considerRapidAfterNExecutions: 1,
+  );
+  Future<void> _saveLatestQueueToStorage(List<Playable> items, List<int>? originalIndices) async {
+    return _queueFnLimiter.executeFuture(() async {
+      try {
+        final bytes = _QueueSerializer.encode(items, originalIndices: originalIndices);
+        await _writeAtomic(AppPaths.LATEST_QUEUE, bytes);
+      } catch (e) {
+        printy(e, isError: true);
+      }
+    });
   }
 
   Future<void> _deleteQueueFromStorage(Queue queue) async {
-    await File('${AppDirs.QUEUES}${queue.date}.json').tryDeleting();
+    await FileParts.join(AppDirs.QUEUES, '${queue.date}.json').tryDeleting();
   }
 
   Future<void> _deleteQueuesFromStorage(List<int> queuesDates) async {
@@ -282,15 +581,518 @@ class QueueController {
   }
 
   static void _deleteQueuesFromStorageIsolate((String, List<int>) pathAndDates) async {
-    pathAndDates.$2.loop((date, _) {
+    for (var date in pathAndDates.$2) {
       try {
         File('${pathAndDates.$1}$date.json').deleteSync();
       } catch (_) {}
+    }
+  }
+
+  final _queuesLoad = Completer<bool>();
+  bool get isQueuesLoaded => _queuesLoad.isCompleted;
+
+  int get playerQueueModifiedTime => _playerQueueModifiedTime;
+  int _playerQueueModifiedTime = 0;
+
+  /// used when importing queue from another device,
+  /// cuz [_playerQueueModifiedTime] is used as a token
+  int? _pendingSyncQueueTimestamp;
+
+  (Iterable<Map<String, dynamic>>, int, int)? buildPlayerQueueSyncPayload() {
+    final queue = Player.inst.currentQueue.value;
+    if (queue.isEmpty) return null;
+    final originalIndices = Player.inst.currentQueueOriginalIndices;
+    final withOriginal = originalIndices != null && originalIndices.length == queue.length;
+    final items = List.generate(
+      queue.length,
+      (i) {
+        final item = queue[i];
+        return <String, dynamic>{
+          'p': item.toJson(),
+          't': item.playableType.jsonKey,
+          if (withOriginal) _QueueSerializer._kOriginalIndex: originalIndices[i],
+        };
+      },
+      growable: false,
+    );
+    return (items, _playerQueueModifiedTime, Player.inst.currentIndex.value);
+  }
+
+  Future<void> importPlayerQueue(Iterable<dynamic> items, int queueModifiedTime, int currentIndex, String senderDeviceId) async {
+    final resolvedItems = <Playable>[];
+    List<int>? originalIndices = <int>[];
+    for (final e in items) {
+      final map = (e as Map).cast<String, dynamic>();
+      final type = _QueueSerializer.typeFromJsonKey(map['t']);
+      if (type == null) continue;
+      final (resolvedType, payload) = _QueueSerializer.resolveSyncPayload(type, map['p'], senderDeviceId);
+      resolvedItems.add(_QueueSerializer.build(resolvedType, payload));
+      if (originalIndices != null) {
+        final originalIndex = map[_QueueSerializer._kOriginalIndex];
+        if (originalIndex is int) {
+          originalIndices.add(originalIndex);
+        } else {
+          originalIndices = null;
+        }
+      }
+    }
+    if (resolvedItems.isEmpty) return;
+    if (currentIndex < 0 || currentIndex >= resolvedItems.length) currentIndex = 0;
+
+    _pendingSyncQueueTimestamp = queueModifiedTime;
+    try {
+      await Player.inst.playOrPause(
+        currentIndex,
+        resolvedItems,
+        QueueSource.playerQueue,
+        originalIndices: originalIndices,
+      );
+    } finally {
+      _playerQueueModifiedTime = queueModifiedTime;
+      _pendingSyncQueueTimestamp = null;
+    }
+  }
+}
+
+class _LatestPlayedForSourceManager {
+  RxBaseCore<Map<QueueSourceBase<dynamic>, Playable>> get map => _mapRx;
+  static final _mapRx = <QueueSourceBase<dynamic>, Playable>{}.obs;
+
+  static final _modifiedTimesMap = <QueueSourceBase<dynamic>, int>{};
+
+  int? latestPlayedTime(QueueSourceBase source) => _modifiedTimesMap[source];
+
+  late final _dBManager = DBWrapper.openFromInfo(
+    fileInfo: AppPaths.LATEST_PLAYED_FOR_SOURCE,
+    config: const DBConfig(createIfNotExist: true),
+  );
+
+  Future<void> prepareAll() async {
+    final res = await _dBManager.loadEverythingKeyedResult();
+    for (final entry in res.entries) {
+      final sourceRaw = jsonDecode(entry.key);
+      final QueueSourceBase source = QueueSource.fromJson(sourceRaw) ?? QueueSourceYoutubeID.fromJson(sourceRaw) ?? QueueSource.others(null);
+
+      final map = entry.value;
+      final type = map['t'] as String;
+      final valueMap = map['p'];
+      final item = _QueueSerializer.buildFromJson(type, valueMap);
+      if (item != null) {
+        _mapRx.value[source] ??= item;
+        final mt = map['_mt'] as int? ?? 0;
+        if (mt > 0) _modifiedTimesMap[source] ??= mt;
+        if (source is QueueSource && source.s == QueueSourceEnum.album && _canBeLegacyAlbumSource(source)) {
+          _legacyAlbumSources.add((source: source, dbKey: entry.key));
+        }
+      }
+    }
+    _mapRx.refresh();
+    if (Indexer.inst.mainMapsGroup.didFill) migrateLegacyAlbumSources();
+    _markAllSortsDirty();
+    _sortDirty();
+  }
+
+  // -- saved before the identifier joined the key or against a cleaned up (`AC_DC`) or untrimmed (`Foo `) album name, the saved track tells which album once the library is loaded.
+  final _legacyAlbumSources = <_LegacyAlbumSource>[];
+
+  static bool _canBeLegacyAlbumSource(QueueSource source) {
+    final identifier = source.albumIdentifier;
+    if (identifier == null) return true;
+    return _canBeLegacyText(identifier.album) || _canBeLegacyText(identifier.albumArtist) || _canBeLegacyText(identifier.year);
+  }
+
+  static bool _canBeLegacyText(String text) => text.contains('_') || _untrimmedWhitespaceRegex.hasMatch(text);
+
+  /// matches when `trimAll()` would change the text, `trim()` also strips U+0085.
+  static final _untrimmedWhitespaceRegex = RegExp(r'^[\s\u0085]|[\s\u0085]$|\s\s|[^\S ]');
+
+  void migrateLegacyAlbumSources() async {
+    if (_legacyAlbumSources.isEmpty) return;
+
+    final albumsMap = Indexer.inst.mainMapAlbums.value;
+    final unresolved = <_LegacyAlbumSource>[];
+    final legacyKeys = <String>[];
+    final migratedEntries = <MapEntry<String, Map<String, dynamic>>>[];
+    for (final legacy in _legacyAlbumSources) {
+      final source = legacy.source;
+      final item = _mapRx.value[source];
+      if (item == null) continue;
+      final identifier = source.albumIdentifier;
+      if (identifier != null && albumsMap.containsKey(identifier)) continue;
+      final newSource = _resolveLegacyAlbumSource(source, item);
+      if (newSource == null) {
+        unresolved.add(legacy);
+        continue;
+      }
+      legacyKeys.add(legacy.dbKey);
+      _mapRx.value.remove(source);
+      final mt = _modifiedTimesMap.remove(source) ?? 0;
+      final existingMt = _modifiedTimesMap[newSource];
+      if (existingMt != null && existingMt >= mt) continue;
+      _mapRx.value[newSource] = item;
+      _modifiedTimesMap[newSource] = mt;
+      final newDbKey = newSource.toDbKey();
+      final newEntry = MapEntry(newDbKey, <String, dynamic>{
+        'p': item.toJson(),
+        't': item.playableType.jsonKey,
+        '_mt': mt,
+      });
+      migratedEntries.add(newEntry);
+    }
+    _legacyAlbumSources
+      ..clear()
+      ..addAll(unresolved);
+    if (legacyKeys.isEmpty) return;
+
+    _mapRx.refresh();
+    await _dBManager.putAll(migratedEntries, (e) => e);
+    await _dBManager.deleteBulk(legacyKeys);
+  }
+
+  static QueueSource? _resolveLegacyAlbumSource(QueueSource source, Playable item) {
+    if (item is! Selectable) return null;
+    final trackExt = item.track.toTrackExtOrNull();
+    if (trackExt == null) return null;
+    final identifiers = trackExt.albumsIdentifiersModified;
+    final legacyIdentifier = source.albumIdentifier;
+    final AlbumIdentifierWrapper? identifier;
+    if (legacyIdentifier == null) {
+      final title = source.title;
+      final sameTitleIdentifier = identifiers.firstWhereEff((e) => e.displayAlbumName == title);
+      identifier = sameTitleIdentifier ?? identifiers.firstOrNull;
+    } else {
+      identifier = identifiers.firstWhereEff((e) => _isLegacyOf(legacyIdentifier, e));
+    }
+    if (identifier == null) return null;
+    return QueueSource.album(identifier, null);
+  }
+
+  static bool _isLegacyOf(AlbumIdentifierWrapper legacy, AlbumIdentifierWrapper identifier) {
+    return _isLegacyTextOf(legacy.album, identifier.album) &&
+        _isLegacyTextOf(legacy.albumArtist, identifier.albumArtist) &&
+        _isLegacyTextOf(legacy.year, identifier.year) &&
+        legacy.mbAlbumId == identifier.mbAlbumId &&
+        legacy.mbAlbumArtistId == identifier.mbAlbumArtistId;
+  }
+
+  static bool _isLegacyTextOf(String legacyText, String text) {
+    if (legacyText == text) return true;
+    final trimmedLegacyText = legacyText.trimAll();
+    if (trimmedLegacyText == text) return true;
+    final cleanedText = text.replaceAll(DownloadTaskFilename.cleanupFilenameRegex, '_');
+    if (trimmedLegacyText == cleanedText) return true;
+    // -- older versions replaced only `/`
+    final slashesCleanedText = text.replaceAll('/', '_');
+    return trimmedLegacyText == slashesCleanedText;
+  }
+
+  void update(QueueSourceBase source, Playable item) async {
+    _mapRx[source] = item;
+    final mt = currentTimeMS;
+    _modifiedTimesMap[source] = mt;
+    _markSortDirty(source);
+    await _dBManager.put(source.toDbKey(), {
+      'p': item.toJson(),
+      't': item.playableType.jsonKey,
+      '_mt': mt,
     });
   }
 
-  /// Used to add Queues that were rejected by [addNewQueue] after full loading of queues.
-  final List<Queue> _queuesToAddAfterAllQueuesLoad = <Queue>[];
-  bool _isLoadingQueues = true;
-  bool get isLoadingQueues => _isLoadingQueues;
+  Future<void> move(QueueSourceBase oldSource, QueueSourceBase newSource) async {
+    final oldValue = _mapRx.value.remove(oldSource);
+    if (oldValue != null) {
+      _mapRx.value[newSource] = oldValue;
+      _mapRx.refresh();
+    }
+    final mt = _modifiedTimesMap.remove(oldSource);
+    if (mt != null) _modifiedTimesMap[newSource] = mt;
+    final oldValueDB = await _dBManager.get(oldSource.toDbKey());
+    await _dBManager.put(newSource.toDbKey(), oldValueDB);
+    await delete(oldSource);
+  }
+
+  Future<void> delete(QueueSourceBase source) async {
+    _mapRx.remove(source);
+    _modifiedTimesMap.remove(source);
+    await _dBManager.delete(source.toDbKey());
+  }
+
+  Future<void> deleteMultiple(Iterable<QueueSourceBase> sources) async {
+    final keysToRemove = <String>[];
+    for (final source in sources) {
+      _mapRx.value.remove(source);
+      _modifiedTimesMap.remove(source);
+      keysToRemove.add(source.toDbKey());
+    }
+    _mapRx.refresh();
+    await _dBManager.deleteBulk(keysToRemove);
+  }
+
+  Iterable<MapEntry<String, Map<String, dynamic>>> buildSyncEntries() {
+    return _mapRx.value.entries.map(
+      (e) => MapEntry(e.key.toDbKey(), <String, dynamic>{
+        'p': e.value.toJson(),
+        't': e.value.playableType.jsonKey,
+        '_mt': _modifiedTimesMap[e.key] ?? 0,
+      }),
+    );
+  }
+
+  /// [incomingWins] skips the newest wins check, ex: restoring a backup.
+  Future<void> import(Iterable<MapEntry<String, Map<String, dynamic>>> incomingEntries, String senderDeviceId, {bool incomingWins = false}) async {
+    final dbEntries = <MapEntry<String, Map<String, dynamic>>>[];
+    for (final entry in incomingEntries) {
+      final incoming = entry.value;
+      final incomingMt = incoming['_mt'] as int? ?? 0;
+
+      final sourceRaw = jsonDecode(entry.key);
+      final QueueSourceBase? source = QueueSource.fromJson(sourceRaw) ?? QueueSourceYoutubeID.fromJson(sourceRaw);
+      if (source == null) continue; // -- unknown source, dont force into `others`
+
+      if (!incomingWins && _mapRx.value[source] != null && (_modifiedTimesMap[source] ?? 0) >= incomingMt) continue;
+
+      final type = _QueueSerializer.typeFromJsonKey(incoming['t']);
+      if (type == null) continue;
+      final (resolvedType, payload) = _QueueSerializer.resolveSyncPayload(type, incoming['p'], senderDeviceId);
+      final item = _QueueSerializer.build(resolvedType, payload);
+
+      _mapRx.value[source] = item;
+      _modifiedTimesMap[source] = incomingMt;
+      final row = <String, dynamic>{
+        'p': payload,
+        't': resolvedType.jsonKey,
+        '_mt': incomingMt,
+      };
+      dbEntries.add(MapEntry(source.toDbKey(), row));
+    }
+    if (dbEntries.isEmpty) return;
+    _mapRx.refresh();
+    _markAllSortsDirty();
+    await _dBManager.putAll(dbEntries, (e) => e);
+  }
+
+  // -- lists sorted by last played reorder on the next page change, never while being viewed.
+  final _dirtyMedias = <MediaType>{};
+  bool _isYTPlaylistsDirty = false;
+
+  void _markSortDirty(QueueSourceBase source) {
+    switch (source) {
+      case QueueSource():
+        final media = source.s.lastPlayedSortMedia;
+        if (media != null) _markMediaSortDirty(media);
+      case QueueSourceYoutubeID():
+        if (source.s.hasLastPlayedSort) _markYTPlaylistsSortDirty();
+    }
+  }
+
+  void _markAllSortsDirty() {
+    for (final s in QueueSourceEnum.values) {
+      final media = s.lastPlayedSortMedia;
+      if (media != null) _markMediaSortDirty(media);
+    }
+    _markYTPlaylistsSortDirty();
+  }
+
+  void _markMediaSortDirty(MediaType media) {
+    final sorting = settings.groupSortingOf(media);
+    if (!sorting.hasType(GroupSortType.lastPlayed)) return;
+    _listenToPageChangeIfIdle();
+    _dirtyMedias.add(media);
+  }
+
+  void _markYTPlaylistsSortDirty() {
+    if (settings.ytPlaylistSort.value != GroupSortType.lastPlayed) return;
+    _listenToPageChangeIfIdle();
+    _isYTPlaylistsDirty = true;
+  }
+
+  void _listenToPageChangeIfIdle() {
+    if (_dirtyMedias.isEmpty && !_isYTPlaylistsDirty) NamidaNavigator.inst.currentWidgetStack.addListener(_sortDirty);
+  }
+
+  void _sortDirty() {
+    NamidaNavigator.inst.currentWidgetStack.removeListener(_sortDirty);
+    for (final media in _dirtyMedias) {
+      if (_isActiveMedia(media)) SearchSortController.inst.sortMedia(media);
+    }
+    _dirtyMedias.clear();
+    if (_isYTPlaylistsDirty) {
+      _isYTPlaylistsDirty = false;
+      YoutubePlaylistController.inst.sortPlaylists();
+    }
+  }
+
+  // -- inactive artist/genre types sort when switched to.
+  static bool _isActiveMedia(MediaType media) {
+    final activeMedia = switch (media) {
+      MediaType.artist || MediaType.albumArtist || MediaType.composer => settings.activeArtistType.value,
+      MediaType.genre || MediaType.style => settings.activeGenreType.value,
+      _ => media,
+    };
+    return activeMedia == media;
+  }
 }
+
+/// Binary layout: `magic u8, flags u8, metaLength u32, meta utf8 json, count u32, items...`
+/// item: `type u8, [originalIndex u32], length u32, payload bytes`
+/// payload is the raw path for tracks/videos, utf8 json otherwise.
+// optimizations by claude
+class _QueueSerializer {
+  const _QueueSerializer();
+
+  static const _kMagic = 0x01;
+  static const _kFlagOriginalIndices = 0x01;
+
+  static final _kEmptyBytes = Uint8List(0);
+
+  static const _kOriginalIndex = 'o';
+
+  static final _typesByJsonKey = <String, PlayableType>{for (final t in PlayableType.values) t.jsonKey: t};
+
+  static final _playableTypeFromId = () {
+    final list = [...PlayableType.values]..sort((a, b) => a.binaryId.compareTo(b.binaryId));
+    assert(() {
+      for (int i = 0; i < list.length; i++) {
+        if (list[i].binaryId != i) return false;
+      }
+      return true;
+    }(), 'PlayableType.binaryId must be unique & contiguous');
+    return list;
+  }();
+
+  static PlayableType? typeFromJsonKey(dynamic key) => _typesByJsonKey[key];
+
+  static Playable build(PlayableType type, dynamic payload) => switch (type) {
+    PlayableType.track => Track.explicit(payload),
+    PlayableType.video => Video.explicit(payload),
+    PlayableType.trackWithDate => TrackWithDate.fromJson(payload),
+    PlayableType.ytVideo => YoutubeID.fromJson(payload),
+  };
+
+  static Playable? buildFromJson(dynamic typeKey, dynamic payload) {
+    final type = _typesByJsonKey[typeKey];
+    return type == null ? null : build(type, payload);
+  }
+
+  /// resolves sender paths into local ones
+  static (PlayableType, dynamic) resolveSyncPayload(PlayableType type, dynamic payload, String senderDeviceId) {
+    switch (type) {
+      case PlayableType.track || PlayableType.video:
+        final resolved = SyncPathResolver.resolveTrackByPath(senderDeviceId, payload as String);
+        if (resolved != null) return (resolved.playableType, resolved.path);
+      case PlayableType.trackWithDate:
+        payload = SyncPathResolver.resolveTrackWithDate(senderDeviceId, TrackWithDate.fromJson(payload)).toJson();
+      case PlayableType.ytVideo:
+        break;
+    }
+    return (type, payload);
+  }
+
+  static Uint8List encode(List<Playable> items, {List<int>? originalIndices, Map<String, dynamic>? meta}) {
+    final count = items.length;
+    final metaBytes = meta == null ? _kEmptyBytes : jsonEncodeUtf8(meta);
+    final payloads = List<Uint8List>.generate(count, (i) => _encodePayload(items[i]), growable: false);
+    final indices = originalIndices != null && originalIndices.length == count ? originalIndices : null;
+
+    int total = 10 + metaBytes.length + count * (indices != null ? 9 : 5);
+    for (int i = 0; i < count; i++) {
+      total += payloads[i].length;
+    }
+
+    final bytes = Uint8List(total);
+    final data = ByteData.sublistView(bytes);
+    bytes[0] = _kMagic;
+    bytes[1] = indices != null ? _kFlagOriginalIndices : 0;
+    int offset = _writeChunk(bytes, data, 2, metaBytes);
+    data.setUint32(offset, count, Endian.little);
+    offset += 4;
+
+    for (int i = 0; i < count; i++) {
+      bytes[offset++] = items[i].playableType.binaryId;
+      if (indices != null) {
+        data.setUint32(offset, indices[i], Endian.little);
+        offset += 4;
+      }
+      offset = _writeChunk(bytes, data, offset, payloads[i]);
+    }
+    return bytes;
+  }
+
+  static int _writeChunk(Uint8List bytes, ByteData data, int offset, Uint8List chunk) {
+    data.setUint32(offset, chunk.length, Endian.little);
+    offset += 4;
+    bytes.setRange(offset, offset + chunk.length, chunk);
+    return offset + chunk.length;
+  }
+
+  static Uint8List _encodePayload(Playable item) {
+    final json = item.toJson();
+    return utf8.encode(json is String ? json : jsonEncode(json));
+  }
+
+  static ({List<T> items, List<int>? originalIndices, Map<String, dynamic>? meta}) decode<T extends Playable>(Uint8List bytes) {
+    final items = <T>[];
+    List<int>? originalIndices;
+    Map<String, dynamic>? meta;
+    try {
+      final data = ByteData.sublistView(bytes);
+      final hasIndices = bytes[1] & _kFlagOriginalIndices != 0;
+      if (hasIndices) originalIndices = <int>[];
+      int offset = 2;
+      final metaLength = data.getUint32(offset, Endian.little);
+      offset += 4;
+      if (metaLength > 0) {
+        meta = jsonDecodeUtf8(Uint8List.sublistView(bytes, offset, offset + metaLength)) as Map<String, dynamic>;
+        offset += metaLength;
+      }
+      final count = data.getUint32(offset, Endian.little);
+      offset += 4;
+      for (int i = 0; i < count; i++) {
+        final type = _playableTypeFromId[bytes[offset++]];
+        int originalIndex = 0;
+        if (hasIndices) {
+          originalIndex = data.getUint32(offset, Endian.little);
+          offset += 4;
+        }
+        final length = data.getUint32(offset, Endian.little);
+        offset += 4;
+        final text = utf8.decoder.convert(bytes, offset, offset + length);
+        offset += length;
+        final payload = switch (type) {
+          PlayableType.track || PlayableType.video => text,
+          PlayableType.trackWithDate || PlayableType.ytVideo => jsonDecode(text),
+        };
+        items.add(build(type, payload) as T);
+        originalIndices?.add(originalIndex);
+      }
+    } catch (_) {}
+    return (items: items, originalIndices: originalIndices, meta: meta);
+  }
+
+  static (List<Playable>, List<int>?) decodeLegacyJson(Uint8List bytes) {
+    final items = <Playable>[];
+    List<int>? originalIndices = <int>[];
+    try {
+      final list = jsonDecodeUtf8(bytes) as List?;
+      if (list != null) {
+        for (final e in list) {
+          final item = buildFromJson(e['t'], e['p']);
+          if (item != null) {
+            items.add(item);
+            if (originalIndices != null) {
+              final originalIndex = e[_kOriginalIndex];
+              if (originalIndex is int) {
+                originalIndices.add(originalIndex);
+              } else {
+                originalIndices = null;
+              }
+            }
+          }
+        }
+      }
+    } catch (_) {}
+    return (items, originalIndices);
+  }
+}
+
+typedef _LegacyAlbumSource = ({QueueSource source, String dbKey});
